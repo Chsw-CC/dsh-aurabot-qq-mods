@@ -11,7 +11,7 @@ const { profileToolVisible, profilePermits } = __lib('chat/access.js')
 export default {
   id: 'heybox',
   name: '刷小黑盒',
-  version: '1.1.3',
+  version: '1.2.0',
   api: 1,
   description: '用主人的账号逛小黑盒：看帖子和热评，点赞、评论、发帖。支持谷时逛、扫码登录和浏览器验证。',
   tab: 'heybox',
@@ -69,6 +69,13 @@ export default {
           properties: {},
           execute: guarded('heyboxBrowse', () => hb.topicList()),
         }))
+        tools.push(defineTool({
+          name: 'heybox_acts',
+          description: '查小黑盒可挂的话题：创作活动（有奖励，排最前）和普通话题，都带热度。发帖要挂话题时先用这个查，再用 heybox_post 的 hashtags 传 id 或名字。传 keywords 可以按关键词搜。话题表每天自动更新一次。注意：创作活动和普通话题互斥，一个帖子只能选一类。',
+          properties: { keywords: str('可选：按关键词搜话题（如 游戏 / 养鱼 / steam），不填列出全部') },
+          execute: guarded('heyboxBrowse', ({ keywords }) =>
+            String(keywords || '').trim() ? hb.searchTopics(String(keywords), 30) : hb.actList()),
+        }))
       }
       if (profileToolVisible(cfg, 'heyboxLike', chat)) tools.push(defineTool({
         name: 'heybox_like',
@@ -96,11 +103,26 @@ export default {
             enum: ['diary', 'news', 'mix'],
             description: '写作风格：diary = 大肥鱼日记（第一人称随手记，跟空间日记一个味，120-300字）；news = 热搜文（报道新闻体，200-800字）；mix = 肥鱼热搜（日记口吻写热搜，150-500字）。不填用默认。',
           },
-          images: { type: 'array', items: { type: 'string' }, description: '可选：本机图片绝对路径，最多 4 张' },
+          images: { type: 'array', items: { type: 'string' }, description: '可选：本机图片绝对路径，最多 4 张（放文末）' },
+          imagesByPos: {
+            type: 'object',
+            description: '可选：分位置配图。intro=首段后（大肥鱼形象图，正文不足500字时不放）、inline=文中（只放跟内容贴合的）、tail=文末（大肥鱼形象图）',
+            properties: {
+              intro: { type: 'array', items: { type: 'string' }, description: '首段后配图（本机绝对路径）' },
+              inline: { type: 'array', items: { type: 'string' }, description: '文中配图（只放贴合内容的，没有就不填）' },
+              tail: { type: 'array', items: { type: 'string' }, description: '文末配图（本机绝对路径）' },
+            },
+          },
+          hashtags: { type: 'array', items: { type: 'string' }, description: '可选：话题 id 或名字（只能从 heybox_acts 里挑）。活动和普通互斥，最多选一类' },
         },
         required: ['title', 'text'],
-        execute: guarded('heyboxPost', ({ title, text, topic, style, images }) =>
-          hb.post({ title: String(title || ''), text: String(text || ''), topic: String(topic || ''), style: String(style || ''), images: Array.isArray(images) ? images.slice(0, 4) : [] })),
+        execute: guarded('heyboxPost', ({ title, text, topic, style, images, imagesByPos, hashtags }) =>
+          hb.post({
+            title: String(title || ''), text: String(text || ''), topic: String(topic || ''), style: String(style || ''),
+            images: Array.isArray(images) ? images.slice(0, 4) : [],
+            imagesByPos: imagesByPos && typeof imagesByPos === 'object' ? imagesByPos : null,
+            hashtags: Array.isArray(hashtags) ? hashtags.slice(0, 3) : [],
+          })),
       }))
       if (profileToolVisible(cfg, 'heyboxPost', chat)) tools.push(defineTool({
         name: 'heybox_delete',
@@ -121,6 +143,7 @@ export default {
       '小黑盒评论要短：15-40 字，超过 60 字就是在写小作文。抓住对方话里的具体措辞顶回去，别写「闲鱼水深」这种贴哪都成立的空话。自检：这条回复贴到同帖另一条评论下还说得通吗？说得通说明没针对，重写。',
       '定时刷小黑盒跑在独立后台会话里；可选分享给主人，由模块执行并限制额度。',
       '小黑盒返回验证码或限流后暂停所有普通请求，等待冷却；不要换接口反复重试。',
+      '发帖想挂话题就先用 heybox_acts 查（可以传 keywords 搜）：创作活动有奖励、优先挂；普通话题按热度挑。创作活动和普通话题互斥，只能选一类。不在表里的话题别挂。',,
     ].join('\n'))
 
     // 面板：全部只读状态下拉，不带副作用
@@ -128,6 +151,21 @@ export default {
     api.route('/heybox/feed', async () => hb.feedReport())
     api.route('/heybox/hot', async () => hb.hot(10))
     api.route('/heybox/topics', async () => hb.topicList())
+    api.route('/heybox/topics/refresh', async () => {
+      const r = await hb.refreshTopics(true)
+      return { ok: true, count: (r.list || []).length, message: `分区表已更新：${(r.list || []).length} 个` }
+    })
+    api.route('/heybox/acts', async () => hb.actList())
+    api.route('/heybox/acts/refresh', async () => {
+      const r = await hb.refreshActs(true)
+      const a = (r.list || []).length, p = (r.plain || []).length
+      return { ok: true, count: a + p, actCount: a, plainCount: p, message: `话题已更新：活动 ${a} 个、普通 ${p} 个` }
+    })
+    api.route('/heybox/acts/search', async (req) => {
+      const q = http.query(req)
+      return hb.searchTopics(String(q.kw || q.q || ''), Number(q.limit) || 20)
+    })
+    api.route('/heybox/post-plan', async () => ({ ok: true, ...hb.postPlanState() }))
     api.route('/heybox/account', async () => hb.account(true))
     api.route('/heybox/login-cookie', async (req) => {
       const b = await http.body(req).catch(() => ({}))

@@ -1,3 +1,5 @@
+// ⚠ 必须最先导入：给测试环境注入 globalThis.aurabot（真实宿主由插件提供）
+import './setup.mjs'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

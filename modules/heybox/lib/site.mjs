@@ -29,6 +29,10 @@ const DEFAULT_STATE = {
   risk: { level: 0, until: 0, reason: '', at: 0 },
   failures: 0,
   retryAt: 0,
+  // 分区缓存：每天拉一次真实分区表（含热门游戏分区）
+  topics: { fetchedAt: 0, date: '', list: [] },
+  // 话题缓存：每天扫一次信息流，收集创作活动 + 普通话题（都带热度）
+  acts: { fetchedAt: 0, date: '', list: [], plain: [] },
 }
 const RETRY_BACKOFF_MS = [2, 5, 15, 30, 60, 120].map((n) => n * 60_000)
 
@@ -323,24 +327,264 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     }
   }
 
-  async function topicList() {
-    const fallback = Object.entries(TOPICS).map(([id, name]) => ({ id, name }))
-    try {
-      const d = await getClient().get('/bbs/app/api/topic/index', { is_post: 1 })
-      const r = d.result || {}
-      const raw = r.topics || r.list || r.categories || []
-      const out = []
-      const walk = (arr, dep = 0) => {
-        if (!Array.isArray(arr) || dep > 2) return
-        for (const t of arr) {
-          if (t && t.topic_id && t.name) out.push({ id: String(t.topic_id), name: String(t.name) })
-          if (t && Array.isArray(t.children)) walk(t.children, dep + 1)
-        }
+  /**
+   * 从接口返回里把分区抽成 { id, name, hot, game } 列表。
+   * /bbs/app/topic/categories 给三组：为你推荐 / 近期热门 / 我的偏好，都有 children。
+   * 近期热门那组最全（几十个，含游戏分区）。
+   */
+  function extractTopics(result) {
+    const r = result || {}
+    const groups = ['recommend_for_user_topics', 'latest_hot_topics', 'subscribed_topics']
+    const seen = new Map()
+    for (const key of groups) {
+      const g = r[key]
+      const kids = Array.isArray(g?.children) ? g.children : []
+      for (const t of kids) {
+        const id = String(t?.topic_id ?? t?.id ?? '')
+        const name = String(t?.name ?? '').trim()
+        if (!id || !name) continue
+        const hot = Number(t?.hot?.raw_hot_value ?? 0) || 0
+        const game = Boolean(t?.game?.app_id)
+        const prev = seen.get(id)
+        if (prev) { prev.hot = Math.max(prev.hot, hot); prev.game = prev.game || game; continue }
+        seen.set(id, { id, name, hot, game })
       }
-      walk(raw)
-      if (out.length) return { ok: true, list: out, message: out.map((t) => `${t.id} = ${t.name}`).join('\n') }
-    } catch { /* 拿不到就用内置的三个 */ }
-    return { ok: true, list: fallback, message: fallback.map((t) => `${t.id} = ${t.name}`).join('\n') + '（接口没返回，这是内置的三个）' }
+    }
+    return [...seen.values()]
+  }
+
+  /**
+   * 分区列表：每天自动刷新一次，缓存在状态文件里。
+   * 旧的 /bbs/app/api/topic/index 已废弃（返回 expired），改用 /bbs/app/topic/categories。
+   * @param {boolean} force 强制刷新
+   */
+  async function refreshTopics(force = false) {
+    const st = readState()
+    const cache = st.topics || {}
+    if (!force && cache.date && cache.date === localToday() && Array.isArray(cache.list) && cache.list.length) {
+      return { ok: true, cached: true, list: cache.list }
+    }
+    try {
+      const d = await getClient().get('/bbs/app/topic/categories', {})
+      const list = extractTopics(d.result)
+      if (list.length) {
+        const next = readState()
+        next.topics = { fetchedAt: nowMs(), date: localToday(), list }
+        writeState(next)
+        log?.info?.(`小黑盒分区表已更新：${list.length} 个`)
+        return { ok: true, cached: false, list }
+      }
+    } catch (e) {
+      log?.warn?.('拉小黑盒分区表失败：' + e.message)
+    }
+    if (Array.isArray(cache.list) && cache.list.length) return { ok: true, cached: true, stale: true, list: cache.list }
+    const fallback = Object.entries(TOPICS).map(([id, name]) => ({ id, name, hot: 0, game: false }))
+    return { ok: true, cached: false, fallback: true, list: fallback }
+  }
+
+  // ── 话题（创作活动 + 普通话题）：每天扫一次信息流收集 ────────
+  //
+  // 小黑盒没有公开的「活动/话题列表」接口（试了二十多个路径都是 404）。
+  // 但信息流里挂了话题的帖子会带 hashtags，其中 sub_title === '活动' 的是创作活动。
+  // 所以扫十几页信息流收集话题，活动再逐个查 /bbs/app/hashtag/feeds 拿 end_ts 判断是否过期。
+
+  /**
+   * 刷新话题表（活动 + 普通）。
+   * @param {boolean} force 强制刷新
+   */
+  async function refreshActs(force = false) {
+    const st = readState()
+    const cache = st.acts || {}
+    if (!force && cache.date && cache.date === localToday() && ((cache.list || []).length || (cache.plain || []).length)) {
+      return { ok: true, cached: true, list: cache.list || [], plain: cache.plain || [] }
+    }
+    const found = new Map()
+    const plainFound = new Map()
+    // 扫 12 页（约 120 条）。实测只扫 4 页只能捡 4 个活动，扫到 120 条能拿 9 个活动 + 近百个普通话题。
+    const offsets = []
+    for (let o = 0; o <= 110; o += 10) offsets.push(o)
+    for (const offset of offsets) {
+      try {
+        const d = await getClient().get('/bbs/app/feeds', { pull: 0, offset, dw: 604 })
+        const list = d.result?.links || d.result?.list || []
+        for (const item of list) {
+          for (const h of (item.hashtags || [])) {
+            const id = String(h.hashtag_id || '')
+            const name = String(h.name || '').trim()
+            if (!id || !name) continue
+            const inAct = h.sub_title === '活动'
+              || (item.act_hashtags || []).some((a) => String(a.hashtag_id) === id)
+            const bucket = inAct ? found : plainFound
+            if (!bucket.has(id)) bucket.set(id, { id, name, seen: 0 })
+            bucket.get(id).seen += 1
+          }
+        }
+      } catch (e) {
+        log?.warn?.('扫话题失败（offset ' + offset + '）：' + e.message)
+        break
+      }
+    }
+
+    // 活动逐个验证「还在进行」并拿活动名/热度（活动只有十来个，验证得起）
+    const nowSec = Math.floor(nowMs() / 1000)
+    const actAlive = []
+    for (const a of found.values()) {
+      if (risk().leftMs > 0) break
+      try {
+        const d = await getClient().get('/bbs/app/hashtag/feeds', { hashtag_id: a.id, offset: 0, limit: 3 })
+        const h = d.result?.hashtag || {}
+        const rel = d.result?.related_act_info || {}
+        const endTs = Number((h.act_prop || {}).end_ts) || 0
+        if (endTs && endTs <= nowSec) continue
+        actAlive.push({
+          id: a.id, name: a.name,
+          actTitle: String(rel.title || ''),
+          endTs,
+          contentNum: Number((h.num || {}).content_num) || 0,
+          seen: a.seen, isAct: true,
+        })
+      } catch (e) {
+        actAlive.push({ id: a.id, name: a.name, actTitle: '', endTs: 0, contentNum: 0, seen: a.seen, isAct: true })
+      }
+    }
+
+    // 普通话题：只给最常出现的前 20 个补真实热度（100 个逐个查要 80 秒），其余用出现次数当热度
+    const plainTop = [...plainFound.values()].sort((x, y) => y.seen - x.seen).slice(0, 20)
+    const heatOf = new Map()
+    for (const a of plainTop) {
+      if (risk().leftMs > 0) break
+      try {
+        const d = await getClient().get('/bbs/app/hashtag/feeds', { hashtag_id: a.id, offset: 0, limit: 1 })
+        const n = Number((d.result?.hashtag?.num || {}).content_num) || 0
+        if (n) heatOf.set(a.id, n)
+      } catch { /* 拿不到就退回出现次数 */ }
+    }
+    const plainAlive = [...plainFound.values()].map((a) => ({
+      id: a.id, name: a.name, actTitle: '', endTs: 0,
+      contentNum: heatOf.get(a.id) || a.seen,
+      seen: a.seen, isAct: false,
+    }))
+
+    actAlive.sort((x, y) => (y.seen - x.seen) || (y.contentNum - x.contentNum))
+    plainAlive.sort((x, y) => (y.contentNum - x.contentNum) || (y.seen - x.seen))
+    // 扫到的太少时别把旧缓存冲掉：活动用新的（可能变化），普通话题合并保留
+    const prevAct = Array.isArray(cache.list) ? cache.list : []
+    const prevPlain = Array.isArray(cache.plain) ? cache.plain : []
+    const mergeById = (older, newer) => {
+      const m = new Map()
+      for (const x of older) m.set(x.id, x)
+      for (const x of newer) m.set(x.id, { ...(m.get(x.id) || {}), ...x })
+      return [...m.values()]
+    }
+    const finalAct = actAlive.length ? actAlive : prevAct
+    const finalPlain = mergeById(prevPlain, plainAlive)
+    const next = readState()
+    next.acts = { fetchedAt: nowMs(), date: localToday(), list: finalAct, plain: finalPlain }
+    writeState(next)
+    log?.info?.(`小黑盒话题已更新：活动 ${finalAct.length} 个，普通 ${finalPlain.length} 个`)
+    return { ok: true, cached: false, list: finalAct, plain: finalPlain }
+  }
+
+  /** 面板/工具用的话题清单：活动在前、普通在后，都带热度 */
+  async function actList() {
+    const r = await refreshActs(false)
+    const act = r.list || []
+    const plain = r.plain || []
+    const heat = (n) => (n >= 10000 ? (n / 10000).toFixed(1) + '万' : String(n))
+    const line = (a) => `${a.id} = #${a.name}#${a.actTitle ? '（' + a.actTitle + '）' : ''} · 热度 ${heat(a.contentNum || 0)}`
+    const parts = []
+    if (act.length) parts.push('【创作活动】', ...act.map(line))
+    if (plain.length) parts.push('', '【普通话题】', ...plain.slice(0, 40).map(line))
+    return {
+      ok: true,
+      list: [...act, ...plain], act, plain,
+      cached: Boolean(r.cached),
+      message: parts.length ? parts.join('\n') : '现在没扫到话题',
+    }
+  }
+
+  /** 按关键词搜话题（活动优先，其次按热度） */
+  async function searchTopics(keyword = '', limit = 20) {
+    const kw = String(keyword || '').trim().toLowerCase()
+    const r = await refreshActs(false)
+    const all = [...(r.list || []), ...(r.plain || [])]
+    const hit = kw
+      ? all.filter((t) => String(t.name).toLowerCase().includes(kw) || String(t.actTitle || '').toLowerCase().includes(kw))
+      : all
+    const sorted = hit.sort((x, y) => (y.isAct - x.isAct) || (y.contentNum - x.contentNum))
+    return { ok: true, list: sorted.slice(0, Math.max(1, Number(limit) || 20)), total: sorted.length, message: sorted.length ? `匹配到 ${sorted.length} 个话题` : '没匹配到话题' }
+  }
+
+  // 规则：创作活动和普通话题互斥，只能选一类。
+  //   · 选了创作活动 → 只要那 1 个活动，普通话题全丢；
+  //   · 选了普通话题 → 活动全丢，最多 3 个。
+  async function resolveHashtags(input) {
+    const raw = (Array.isArray(input) ? input : (input ? [input] : []))
+      .map((x) => (x && typeof x === 'object' ? (x.id ?? x.hashtag_id ?? x.name) : x))
+      .map((x) => String(x ?? '').trim())
+      .filter(Boolean)
+    if (!raw.length) return []
+    const r = await refreshActs(false)
+    const list = [...(r.list || []), ...(r.plain || [])]
+    const acts = []
+    const plains = []
+    for (const want of raw.slice(0, 6)) {
+      const hit = list.find((a) => a.id === want)
+        || list.find((a) => a.name === want)
+        || list.find((a) => a.name.includes(want) || want.includes(a.name))
+      if (!hit) { log?.warn?.(`小黑盒：话题「${want}」不在当前话题表里，跳过`); continue }
+      if (hit.isAct) {
+        if (acts.length >= 1) { log?.warn?.('小黑盒：创作活动只能挂 1 个，多余的已跳过'); continue }
+        acts.push(hit.id)
+      } else {
+        if (plains.length >= 3) { log?.warn?.('小黑盒：普通话题最多 3 个，多余的已跳过'); continue }
+        if (!plains.includes(hit.id)) plains.push(hit.id)
+      }
+    }
+    if (acts.length) {
+      if (plains.length) log?.warn?.('小黑盒：创作活动和普通话题互斥，已只保留创作活动')
+      return [acts[0]]
+    }
+    return plains
+  }
+
+  /** 面板/工具用的分区清单 */
+  async function topicList() {
+    const r = await refreshTopics(false)
+    const list = r.list || []
+    const msg = list.map((t) => `${t.id} = ${t.name}${t.game ? '（游戏）' : ''}`).join('\n')
+    return {
+      ok: true, list, cached: Boolean(r.cached), stale: Boolean(r.stale),
+      message: msg + (r.fallback ? '（接口没返回，这是内置的三个）' : ''),
+    }
+  }
+
+  /**
+   * 自动挑分区：按正文内容匹配分区名（游戏名优先），挑不到回落默认。
+   * 只做名字匹配，宁可回落也不用错分区——挂错分区比不挂更难看。
+   */
+  async function pickTopicFor(text, fallbackId = '7214') {
+    const c = getConfig().heybox || {}
+    if (String(c.topicMode || 'manual') !== 'auto') return String(fallbackId)
+    const hay = String(text || '')
+    if (!hay.trim()) return String(fallbackId)
+    const r = await refreshTopics(false)
+    const list = Array.isArray(r.list) ? r.list : []
+    let best = null
+    for (const t of list) {
+      const name = String(t.name || '').trim()
+      if (!name || name.length < 2) continue
+      if (t.id === String(fallbackId)) continue
+      if (!hay.includes(name)) continue
+      // 命中更长的分区名优先（「影之刃零」比「AI」更有区分度），游戏分区加成
+      const score = name.length * 10 + (t.game ? 5 : 0) + Math.min(4, Math.log10((t.hot || 0) + 1))
+      if (!best || score > best.score) best = { id: t.id, name, score }
+    }
+    if (best) {
+      log?.info?.(`小黑盒：按内容自动选了分区「${best.name}」(${best.id})`)
+      return best.id
+    }
+    return String(fallbackId)
   }
 
   // ── 写：点赞 / 评论 / 删帖 ───────────────────────────────────────
@@ -419,33 +663,82 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
   }
 
   /** 文章模式组装：html 块（行内 <img>）+ 末尾 img 引用块（封面/图库） */
-  async function buildArticle(segments) {
-    const htmlParts = []
-    const imgRefs = []
+  /** 上传一张图并返回行内 <img> 片段（失败只记日志，不打断发帖） */
+  async function uploadInline(seg) {
+    try {
+      const up = await uploadImage(seg.buf, seg.filename, seg.width, seg.height)
+      return { ...up, html: `<p><img data-type="image" data-original="${up.url}" data-width="${up.width}" data-height="${up.height}" data-description=""></p>` }
+    } catch (e) {
+      log?.warn?.('小黑盒配图上传失败，跳过这张：' + e.message)
+      return null
+    }
+  }
+
+  /**
+   * 文章模式组装。三种插图位置：
+   *   1) afterIntro —— 首段（自我介绍）之后，文首配图：以大肥鱼形象图为主
+   *   2) inline     —— 文章中段，与内容贴合的图（没有就不放）
+   *   3) tail       —— 文末，以大肥鱼形象图为主
+   * 规则：正文不足 500 字时不放文首图（短文配大图显得凑数）。
+   */
+  async function buildArticle(segments, opts = {}) {
+    const minWords = Number(opts.minWordsForIntroImage) > 0 ? Number(opts.minWordsForIntroImage) : 500
+    const paras = []
     const texts = []
     for (const seg of segments || []) {
-      if (seg.type === 'text') {
-        const t = String(seg.text || '').replace(/\n+$/, '')
-        if (!t.trim()) continue
-        texts.push(t)
-        const esc = htmlEscape(t)
-        for (const para of esc.split(/\n\s*\n/)) {
-          if (para.trim()) htmlParts.push('<p>' + para.trim().replace(/\n/g, '<br>') + '</p>')
-        }
-      } else if (seg.type === 'img' && seg.buf) {
-        let up
-        try { up = await uploadImage(seg.buf, seg.filename, seg.width, seg.height) } catch (e) {
-          log?.warn?.('小黑盒配图上传失败，跳过这张：' + e.message)
-          continue
-        }
-        imgRefs.push(up)
-        htmlParts.push(`<p><img data-type="image" data-original="${up.url}" data-width="${up.width}" data-height="${up.height}" data-description=""></p>`)
+      if (seg.type !== 'text') continue
+      const t = String(seg.text || '').replace(/\n+$/, '')
+      if (!t.trim()) continue
+      texts.push(t)
+      const esc = htmlEscape(t)
+      for (const para of esc.split(/\n\s*\n/)) {
+        if (para.trim()) paras.push('<p>' + para.trim().replace(/\n/g, '<br>') + '</p>')
       }
     }
-    if (!htmlParts.length) throw new HeyboxError('没内容可发', 'input')
-    const blocks = [{ type: 'html', text: htmlParts.join('') }]
-    for (const b of imgRefs) blocks.push({ type: 'img', url: b.url, width: String(b.width), height: String(b.height) })
-    return { blocks, fullText: texts.join('\n') || '（图片帖）' }
+    if (!paras.length && !(segments || []).some((x) => x.type === 'img' && x.buf)) {
+      throw new HeyboxError('没内容可发', 'input')
+    }
+    const fullText = texts.join('\n') || '（图片帖）'
+    const words = countWords(fullText)
+    const canIntroImg = words >= minWords
+
+    const intro = []
+    const inline = []
+    const tail = []
+    for (const seg of segments || []) {
+      if (seg.type !== 'img' || !seg.buf) continue
+      const pos = seg.position === 'tail' ? 'tail' : (seg.position === 'inline' ? 'inline' : 'afterIntro')
+      const up = await uploadInline(seg)
+      if (!up) continue
+      if (pos === 'afterIntro') { if (canIntroImg) intro.push(up) }
+      else if (pos === 'inline') inline.push(up)
+      else tail.push(up)
+    }
+
+    const html = []
+    const insertAt = (imgs) => { for (const u of imgs) html.push(u.html) }
+    paras.forEach((para, i) => {
+      html.push(para)
+      if (i === 0) insertAt(intro)
+      if (inline.length && i > 0 && i < paras.length - 1) {
+        const slots = Math.max(1, Math.min(inline.length, paras.length - 2))
+        const per = Math.ceil(inline.length / slots)
+        const slotIdx = i - 1
+        if (slotIdx < slots) insertAt(inline.slice(slotIdx * per, slotIdx * per + per))
+      }
+      if (i === paras.length - 1) insertAt(tail)
+    })
+    if (!paras.length) { for (const u of [...intro, ...inline, ...tail]) html.push(u.html) }
+    if (!html.length) throw new HeyboxError('没内容可发', 'input')
+
+    const allImgs = [...intro, ...inline, ...tail]
+    const blocks = [{ type: 'html', text: html.join('') }]
+    for (const b of allImgs) blocks.push({ type: 'img', url: b.url, width: String(b.width), height: String(b.height) })
+    return {
+      blocks, fullText, words,
+      images: { intro: intro.length, inline: inline.length, tail: tail.length, total: allImgs.length },
+      introSkipped: !canIntroImg && words < minWords,
+    }
   }
 
   /** 创作者中心最新帖 id：文章模式一般直接返回 link_id，这个只做兜底 */
@@ -461,31 +754,53 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     } catch { return '' }
   }
 
-  async function post({ title, text = '', images = [], topic = '', style = '' }) {
+  async function post({ title, text = '', images = [], imagesByPos = null, topic = '', style = '', hashtags = [] } = {}) {
     const cfg = getConfig().heybox || {}
+    // 没显式给风格/分区/话题时，按「今天第几篇」的排期取
+    const plan = currentPostPlan()
     if (left('post') <= 0) return { ok: false, message: '今天的发帖额度用完了（建议一天别超过 3 篇）' }
     const t = String(title || '').trim()
     if (!t) return { ok: false, message: '标题不能空' }
     if (t.length > 30) return { ok: false, message: `标题 ${t.length} 字，太长了（最多 30 字）` }
 
-    // 风格只影响提示词和字数下限，不改发帖接口
-    const st = styleOf(style || cfg.postStyle)
+    // 字数范围：排期 > 面板手改 > 风格自带值
+    const wordCfg = (plan.wordsMin || plan.wordsMax)
+      ? { postWordsMin: plan.wordsMin, postWordsMax: plan.wordsMax }
+      : cfg
+    const st = styleOf(style || plan.style || cfg.postStyle, wordCfg)
     const words = countWords(text)
     if (text && words && words < st.words[0] * 0.6) {
       log?.warn?.(`小黑盒发帖正文 ${words} 字，比「${st.label}」建议的 ${st.words[0]}~${st.words[1]} 字短不少`)
     }
 
-    const topicId = String(topic || cfg.defaultTopic || 7214)
-    const segs = []
-    if (text) segs.push({ type: 'text', text })
-    for (const p of images) {
-      try {
-        const buf = fs.readFileSync(p)
-        segs.push({ type: 'img', buf, filename: path.basename(p) })
-      } catch { log?.warn?.('配图读不到，跳过：' + p) }
+    // 分区：显式给了就用；否则按 topicMode 决定（manual 用默认 / auto 按内容挑）
+    let topicId = String(topic || plan.topic || '').trim()
+    if (!topicId) {
+      const fallback = String(cfg.defaultTopic || 7214)
+      topicId = await pickTopicFor(`${t}\n${text}`, fallback).catch(() => fallback)
     }
 
-    const { blocks, fullText } = await buildArticle(segs)
+    // 话题（活动 hashtag）：互斥规则在 resolveHashtags 里
+    const actIds = await resolveHashtags(hashtags.length ? hashtags : (plan.hashtags || [])).catch(() => [])
+    const readImg = (p, position) => {
+      try { return { type: 'img', buf: fs.readFileSync(p), filename: path.basename(p), position } } catch { log?.warn?.('配图读不到，跳过：' + p); return null }
+    }
+
+    const segs = []
+    if (text) segs.push({ type: 'text', text })
+    const byPos = imagesByPos && typeof imagesByPos === 'object' ? imagesByPos : null
+    if (byPos) {
+      for (const p of (byPos.intro || []).slice(0, 3)) segs.push(readImg(p, 'afterIntro'))
+      for (const p of (byPos.inline || []).slice(0, 3)) segs.push(readImg(p, 'inline'))
+      for (const p of (byPos.tail || []).slice(0, 3)) segs.push(readImg(p, 'tail'))
+    }
+    // 旧参数 images：没有 byPos 时当作文末配图（保持老行为）
+    if (!byPos) for (const p of images) segs.push(readImg(p, 'tail'))
+    const cleanSegs = segs.filter(Boolean)
+
+    const built = await buildArticle(cleanSegs)
+    const blocks = built.blocks
+    const fullText = built.fullText
     const desc = fullText.replace(/\s+/g, ' ').slice(0, 80)
     const d = await getClient().post('/bbs/app/api/link/post', {
       link_tag: '11',                         // 11=文章（富文本，行内插图真正生效）
@@ -494,7 +809,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
       desc,
       words_count: String(countWords(fullText)),
       topic_ids: topicId,                     // 必须给，否则「请添加分区」
-      hashtags: '[]',
+      hashtags: JSON.stringify(actIds.map((id) => ({ hashtag_id: Number(id) }))),
       schedule_ts: '0',
       view_limit: '1',                        // 1=所有人
       post_type: '1',
@@ -514,13 +829,69 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     return {
       ok: true,
       message: (url ? `发出去了：${url}` : '发出去了，但没拿到帖子编号') + `（风格：${st.label}，行内图 ${inline} 张）`,
-      url, linkId: id, inline, topicId, style: st.id,
+      url, linkId: id, inline, topicId, style: st.id, images: built.images, introSkipped: built.introSkipped, hashtags: actIds, plan: plan.fromPlan ? plan.slot : null,
     }
   }
 
   /** 按风格给「这一帖该怎么写」的提示词（她生成正文前拿这个） */
+  // ── 每天每篇的排期 ──────────────────────────────────────────
+  //
+  // 面板可以配置「今天发 N 篇，每篇用什么风格/分区/话题/字数」。
+  // 发帖时按今天已经发了几篇来取对应那一项的配置；排期用完或没配就用全局设置。
+
+  /** 今天已经发了几篇（用于排期取第几项） */
+  function postsToday() {
+    const q = quota()
+    return Number(q.post) || 0
+  }
+
+  /**
+   * 取「这一篇」该用的配置。
+   * 排期里配了几项就按今天的第几篇取；超出排期范围或没配，返回全局设置。
+   */
+  function currentPostPlan() {
+    const c = getConfig().heybox || {}
+    const plan = Array.isArray(c.dailyPosts) ? c.dailyPosts : []
+    const idx = postsToday()
+    const slot = plan[idx]
+    if (!slot) {
+      return {
+        style: c.postStyle || '', topic: '', hashtags: [],
+        wordsMin: Number(c.postWordsMin) || 0, wordsMax: Number(c.postWordsMax) || 0,
+        hint: '', fromPlan: false, slot: idx,
+      }
+    }
+    return {
+      style: slot.style || c.postStyle || '',
+      topic: slot.topic || '',
+      hashtags: slot.hashtags || [],
+      wordsMin: slot.wordsMin || Number(c.postWordsMin) || 0,
+      wordsMax: slot.wordsMax || Number(c.postWordsMax) || 0,
+      hint: slot.hint || '',
+      fromPlan: true, slot: idx,
+    }
+  }
+
+  /** 面板显示：今天计划发几篇、每篇是什么、现在到第几篇 */
+  function postPlanState() {
+    const c = getConfig().heybox || {}
+    const plan = Array.isArray(c.dailyPosts) ? c.dailyPosts : []
+    const done = postsToday()
+    return {
+      configured: plan.length,
+      done,
+      current: plan[done] ? { ...plan[done], index: done + 1 } : null,
+      items: plan.map((p, i) => ({ ...p, index: i + 1, done: i < done })),
+    }
+  }
+
   function postBrief(style = '', ctx = {}) {
-    return stylePrompt(style || (getConfig().heybox || {}).postStyle, ctx)
+    const c = getConfig().heybox || {}
+    const owner = getConfig().ownerName || '主人'
+    const plan = currentPostPlan()
+    const wordCfg = (plan.wordsMin || plan.wordsMax) ? { postWordsMin: plan.wordsMin, postWordsMax: plan.wordsMax } : c
+    const extra = plan.hint ? { materials: [...(ctx.materials || []), '本篇要求：' + plan.hint] } : {}
+    return stylePrompt(style || plan.style || c.postStyle, { cfg: wordCfg, owner, ...extra, ...ctx })
   }
 
   // 分享前同步落盘占额。超时结果不确定，保留占额和帖子记录，避免重复发送。
@@ -750,6 +1121,14 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
       hasCookie: Boolean(cookie()),
       hasToken: /x_xhh_tokenid=/.test(cookie()),
       topics: TOPICS,
+      // 面板下拉的选项来源：分区全表 + 话题全表（活动在前）
+      topicsList: (st.topics?.list || []).map((t) => ({ id: t.id, name: t.name, game: Boolean(t.game), hot: t.hot || 0 })),
+      actsList: [...(st.acts?.list || []), ...(st.acts?.plain || [])].map((a) => ({ id: a.id, name: a.name, actTitle: a.actTitle || '', contentNum: a.contentNum || 0, isAct: Boolean(a.isAct) })),
+      topicsCache: { count: (st.topics?.list || []).length, date: st.topics?.date || '', cached: Boolean(st.topics?.date && st.topics.date === localToday()), fetchedAt: st.topics?.fetchedAt || 0 },
+      actsCache: { count: ((st.acts?.list || []).length + (st.acts?.plain || []).length), actCount: (st.acts?.list || []).length, plainCount: (st.acts?.plain || []).length, date: st.acts?.date || '', cached: Boolean(st.acts?.date && st.acts.date === localToday()) },
+      topicMode: String(c.topicMode || 'manual'),
+      postWords: { min: Number(c.postWordsMin) || 0, max: Number(c.postWordsMax) || 0 },
+      postPlan: postPlanState(),
     }
   }
 
@@ -890,7 +1269,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
   log?.info?.('小黑盒模块起来了' + (cookie() ? '' : '（还没填 Cookie）'))
 
   return {
-    feed, feedReport, detail, watch, hot, search, topicList,
+    feed, feedReport, detail, watch, hot, search, topicList, refreshTopics, pickTopicFor, actList, refreshActs, resolveHashtags, searchTopics, currentPostPlan, postPlanState,
     like, comment, remove, post, browse, tick, account, saveCookie, clearQuota, state,
     risk, clearRisk, qrStart, qrPoll, verifyStart, verifyFinish, verifyShow, shareToOwner, hasLogin, dispose,
     linkIdOf, postBrief, POST_STYLES, DEFAULT_POST_STYLE, runDuty,
