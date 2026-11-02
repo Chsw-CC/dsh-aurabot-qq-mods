@@ -964,14 +964,29 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     if (!/^\d+$/.test(topicId)) {
       return { ok: false, code: 'bad_topic', message: `分区「${topicId}」不是数字 id。用 heybox_topics 查，或用面板选的默认分区。` }
     }
-    // TOPICS 是个 { id: 名字 } 的对象，已知分区以外的 id 发出去会报「错误的帖子类型」
-    const knownIds = Object.keys(TOPICS || {})
-    if (knownIds.length && !knownIds.includes(topicId)) {
-      const known = knownIds.map((k) => `${k}=${TOPICS[k]}`).join('、')
-      return {
-        ok: false, code: 'bad_topic',
-        message: `分区 id ${topicId} 不在已知分区表里（${known}），发出去会报「错误的帖子类型」。`
-          + `请用 heybox_topics 查真实 id，或清空这一个参数走默认分区。`,
+    // ⚠ 分区校验的集合必须是「内置 ∪ 动态」：
+    //   TOPICS（api.mjs）只有内置 3 个，而 topicMode=auto 时 pickTopicFor 是从
+    //   refreshTopics() 的动态表（实测 71 个，含游戏分区）里挑的；面板的默认分区和
+    //   排期里的 topic 也来自同一份动态表。只认内置 3 个会把它们全判成 bad_topic，
+    //   等于把正常发帖挡死（这是 P0）。
+    //   缓存拿不到时退回内置三个，不能因为拉不到分区表就拒发。
+    const topicCacheList = (() => {
+      try { return readState().topics?.list || [] } catch { return [] }
+    })()
+    const knownIds = new Set([
+      ...Object.keys(TOPICS || {}),
+      ...topicCacheList.map((t) => String(t.id)).filter(Boolean),
+    ])
+    if (knownIds.size && !knownIds.has(topicId)) {
+      // 缓存是空的/过期的就别硬拦：宁可让她发一次可能失败的帖，也不要挡住正常发帖。
+      // 只有「缓存里确实有一批分区、但这个 id 不在其中」才判为错填。
+      if (topicCacheList.length > 0) {
+        const sample = topicCacheList.slice(0, 6).map((t) => `${t.id}=${t.name}`).join('、')
+        return {
+          ok: false, code: 'bad_topic',
+          message: `分区 id ${topicId} 不在当前分区表里（共 ${knownIds.size} 个，例如 ${sample} 等）。`
+            + `请用 heybox_topics 查真实 id，或清空这一个参数走默认分区。`,
+        }
       }
     }
 
@@ -1032,28 +1047,48 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
       }
     }
 
-    // 配图硬校验：以前她经常一张都不传，发出来全是纯文字。
-    // 现在要求至少 1 张（正文里的行内图或末尾图都算），没图就拒发并告诉她怎么传。
+    // 配图校验：以前她经常一张都不传，发出来全是纯文字，所以这里要拦。
+    //
+    // ⚠ 但拦必须拦得有理：只在「**本来能配**却没配」时拒发。如果：
+    //   · 生图模块没开（或调不动），并且
+    //   · 本机也没有可用的表情包图库（干净机器上 ~/.dsh/meme-packs 不存在）
+    //   那么她是真的拿不到任何图 —— 这时硬拒会让所有发帖全部失败，和
+    //   styles.mjs 里那句「本机没找到可用的形象图，可以不配图」直接冲突。
+    //   这种情况就放行纯文字帖，并在返回值里标明 textOnly，别静默降级。
     const hasImageSeg = cleanSegs.some((x) => x.type === 'img' && x.buf)
     if (!hasImageSeg) {
       const avail = availableImages()
-      return {
-        ok: false,
-        code: 'no_image',
-        available: avail.length,
-        samplePaths: avail.slice(0, 3).map((x) => x.path),
-        message: avail.length
-          ? `这帖没带图，没有发出。小黑盒的帖子要配图才好有人看：请从下面这些本机形象图里挑 1-2 张，`
-            + `用 imagesByPos 传（tail 最稳，intro 需要正文满 500 字才生效）。样例：${avail.slice(0, 2).map((x) => x.path).join(' ； ')}`
-          : '这帖没带图，没有发出；而且本机也没找到可用的形象图。如果确实要发纯文字帖，请先确认图库目录存在。',
+      const canGenerate = await (async () => {
+        try { return Boolean(await imagegen?.enabled?.()) } catch { return false }
+      })()
+      if (avail.length > 0 || canGenerate) {
+        return {
+          ok: false,
+          code: 'no_image',
+          available: avail.length,
+          canGenerate,
+          samplePaths: avail.slice(0, 3).map((x) => x.path),
+          message: canGenerate && !avail.length
+            ? '这帖没带图，没有发出。生图是开着的，请传 mood / look 让它按内容现画，'
+              + '或者不传 imagesByPos 让它自动配图（配几张按字数算）。'
+            : `这帖没带图，没有发出。小黑盒的帖子要配图才好有人看：请从下面这些本机形象图里挑 1-2 张，`
+              + `用 imagesByPos 传（tail 最稳，intro 需要正文满 500 字才生效）。样例：${avail.slice(0, 2).map((x) => x.path).join(' ； ')}`,
+        }
       }
+      // 既没图库、生图也没开：放行纯文字帖
+      log?.warn?.('拿不到任何配图（生图未开 + 图库为空），这一帖按纯文字发：' + t)
     }
 
     const built = await buildArticle(cleanSegs)
 
     // 上传后校验：图「读到」不等于「传上去了」。
     // buildArticle 遇到上传失败只 warn 一句就跳过，帖子照发 —— 线上那些纯文字帖就是这么来的。
-    if (!built.images.total) {
+    //
+    // ⚠ 但要区分两种情况，否则会把「本来就没图」的纯文字帖也拦掉：
+    //   · 这一帖压根没打算配图（segs 里没有图片段）→ 不算上传失败
+    //   · 有图片段但一张都没传上去 → 这才是真的失败
+    const wantedImages = cleanSegs.some((x) => x.type === 'img' && x.buf)
+    if (wantedImages && !built.images.total) {
       const avail = availableImages()
       return {
         ok: false,
@@ -1117,6 +1152,8 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
       ok: true,
       message: (url ? `发出去了：${url}` : '发出去了，但没拿到帖子编号') + `（风格：${st.label}，行内图 ${inline} 张）`,
       url, linkId: id, inline, topicId, style: st.id, images: built.images, introSkipped: built.introSkipped,
+      // textOnly=true 表示「既没图库、生图也没开」，这一帖是被迫发的纯文字（不是配图失败）
+      textOnly: built.images.total === 0,
       // 话题以纯文本名字随帖提交，服务端写进 content_tags；这里如实回报带了哪些。
       hashtags: actItems.map((x) => x.name),
       hashtagsVerified: tagsVerified,          // 真正落进 content_tags 的话题名；null=没回查/失败
@@ -1255,6 +1292,33 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     return ''
   }
 
+  /** 生图超时上限：单张超过这个时间就当失败，走表情包兜底，别把发帖拖死。 */
+  const GENERATE_TIMEOUT_MS = 90_000
+  /** 生图落盘目录最多保留多少张（再多就删最旧的）。按月增长的话用户磁盘会一直涨。 */
+  const KEEP_GENERATED = 60
+
+  /** 给 promise 套一个超时；超时就 reject，调用方按失败处理。 */
+  function withTimeout(promise, ms, message) {
+    let timer
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms)
+      // 别让这个 timer 拖住进程退出
+      if (typeof timer?.unref === 'function') timer.unref()
+    })
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+  }
+
+  /** 只留最近 KEEP_GENERATED 张生图，更旧的删掉；失败不抛（清理失败不该拦住发帖）。 */
+  function pruneImageDir(dir) {
+    try {
+      const files = fs.readdirSync(dir)
+        .filter((f) => /^hb-[\w-]+\.(png|jpe?g|webp)$/i.test(f))
+        .map((f) => { const p = path.join(dir, f); return { p, t: fs.statSync(p).mtimeMs } })
+        .sort((a, b) => b.t - a.t)
+      for (const x of files.slice(KEEP_GENERATED)) { try { fs.unlinkSync(x.p) } catch { /* 删不掉就算了 */ } }
+    } catch { /* 目录读不了就算了 */ }
+  }
+
   /**
    * 规划这一帖的配图。
    * @returns {Promise<{slots: {kind:string, path:string}[], generated:number, fallback:number, note:string}>}
@@ -1295,7 +1359,13 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
         try {
           const gen = await imagegen.enabled?.()
           if (gen) {
-            const buf = await imagegen.generate(imageIdeaFor(s.kind, { mood, excerpt: s.excerpt, style: realStyle }), { shape: 'square' })
+            // 生图加超时：GENERATE_TIMEOUT_MS 里没回来就当这次失败、走表情包兜底。
+            // 不加超时的话，生图服务卡住会把整个发帖拖死（发帖是串行等图的）。
+            const buf = await withTimeout(
+              imagegen.generate(imageIdeaFor(s.kind, { mood, excerpt: s.excerpt, style: realStyle }), { shape: 'square' }),
+              GENERATE_TIMEOUT_MS,
+              '生图超过 ' + Math.round(GENERATE_TIMEOUT_MS / 1000) + ' 秒没返回',
+            )
             if (buf && buf.length) {
               const f = path.join(HOME, '.dsh', 'heybox-imgs')
               fs.mkdirSync(f, { recursive: true })
@@ -1306,6 +1376,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
               fs.writeFileSync(file, buf)
               p = file
               generated++
+              pruneImageDir(f)
             }
           }
         } catch (e) { log?.warn?.('生图失败，用表情包兜底：' + String(e.message).slice(0, 60)) }

@@ -5,9 +5,6 @@ const __lib = globalThis.aurabot.lib // 插件内部源码（复制出来后靠�
 // 写操作各有权限（面板「权限」页），默认仅主人；发帖前有自检清单（见面板与规则）。
 
 import { createHeybox } from './lib/site.mjs'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
 const { defineTool, str } = __lib('tools/tools.js')
 const { profileToolVisible, profilePermits } = __lib('chat/access.js')
 
@@ -132,7 +129,8 @@ export default {
             title: String(title || ''), text: String(text || ''), topic: String(topic || ''), style: String(style || ''),
             images: Array.isArray(images) ? images.slice(0, 4) : [],
             imagesByPos: imagesByPos && typeof imagesByPos === 'object' ? imagesByPos : null,
-            hashtags: Array.isArray(hashtags) ? hashtags.slice(0, 3) : [],
+            // 活动最多 1 个 + 普通最多 3 个 = 4 个（模块侧 resolveHashtagItems 的规则，这里别收紧到 3）
+            hashtags: Array.isArray(hashtags) ? hashtags.slice(0, 4) : [],
             mood: String(mood || ''),
             look: String(look || ''),
           })),
@@ -208,46 +206,6 @@ export default {
       return hb.verifyShow(b?.visible !== false)
     })
 
-    // ── 调试路由：只读探测生图能力（面板/排查用，没有副作用）──────────
-    // 生图调不动是本模块最常见的故障（服务没开、模型没加载），留一个只读探针省得瞎猜。
-    api.route('/heybox/debug/imagegen', async () => {
-      const g = api.lazy('imagegen')
-      const out = { hasModule: false, enabled: null, generateOk: false, error: '', bytes: 0, saved: '' }
-      try {
-        const en = await g.enabled?.()
-        out.hasModule = typeof g.generate === 'function'
-        out.enabled = en ?? null
-        if (out.hasModule && en) {
-          // 用真实的少女大肥鱼描述，顺便确认形象对不对
-          const buf = await g.generate('二次元日系动漫插画风格，一位可爱的少女（名字叫大肥鱼），蓝渐变长发，蓝色大眼睛，鲸鱼鳍形状的耳朵，深蓝色女仆连衣裙配白色荷叶边围裙，身后一条蓝色鱼尾，白色背景，半身像，开心', { shape: 'square' })
-          out.generateOk = Boolean(buf && buf.length)
-          out.bytes = buf ? buf.length : 0
-          if (buf && buf.length) {
-            const f = path.join(os.homedir(), '.dsh', 'heybox-imgs')
-            fs.mkdirSync(f, { recursive: true })
-            const ext = buf.slice(1, 4).toString('latin1') === 'PNG' ? '.png' : '.jpg'
-            const file = path.join(f, 'probe-' + Date.now() + ext)
-            fs.writeFileSync(file, buf)
-            out.saved = file
-          }
-        }
-      } catch (e) { out.error = String(e.message).slice(0, 120) }
-      return out
-    })
-
-    // 调试路由：按当前正文自动配图并发一篇（真发，主人手动验配图用）
-    api.route('/heybox/debug/post-auto', async (req) => {
-      const b = await api.core.http.body(req).catch(() => ({}))
-      const text = String(b?.text || '')
-      if (!text.trim()) return { ok: false, message: '正文不能空' }
-      return hb.post({
-        title: String(b?.title || '自动配图验证'),
-        text,
-        hashtags: Array.isArray(b?.hashtags) ? b.hashtags : [],
-        mood: String(b?.mood || ''),
-        look: String(b?.look || ''),
-      })
-    })
     return hb
   },
 }

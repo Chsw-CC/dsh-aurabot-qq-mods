@@ -12,7 +12,7 @@ const PNG_1x1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUl
 const TODAY = () => new Date().toISOString().slice(0, 10)
 
 /** 造一个发帖 fixture；uploads/links 记录调用，方便断言 */
-function fx({ heybox = {}, imagegen = null, uploadOk = true, postOk = true, linkId = '1' } = {}) {
+function fx({ heybox = {}, imagegen = null, uploadOk = true, postOk = true, linkId = '1', memeRoot = 'empty', initialState = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'heybox-fix-'))
   const cfg = {
     enabled: true, dryRun: false, ownerName: '主人',
@@ -22,7 +22,7 @@ function fx({ heybox = {}, imagegen = null, uploadOk = true, postOk = true, link
     },
   }
   const stateFile = join(dir, 'state.json')
-  writeFileSync(stateFile, JSON.stringify({
+  writeFileSync(stateFile, JSON.stringify(initialState || {
     quota: { date: TODAY(), post: 0, like: 0, comment: 0, browse: 0, share: 0 },
     acts: { date: TODAY(), fetchedAt: 1, list: [{ id: '8401', name: '盒友日常', seen: 3, isAct: false }], plain: [] },
   }))
@@ -56,6 +56,8 @@ function fx({ heybox = {}, imagegen = null, uploadOk = true, postOk = true, link
     log: { info: () => {}, warn: () => {} },
     stateFile, credFile: join(dir, 'x.json'), clientFactory: () => client,
     imagegen,
+    // 默认指向空目录：测试不该隐式依赖本机的 ~/.dsh/meme-packs
+    memeRoot: memeRoot === 'empty' ? join(dir, 'packs') : memeRoot,
   })
   return { hb, cfg, uploads, dir, get posted() { return posted }, close() { rmSync(dir, { recursive: true, force: true }) } }
 }
@@ -104,24 +106,37 @@ test('上传失败拒发时额度也退回', async (t) => {
 })
 
 // ── 必改 2：排期下标错位（空项要保留）────────────────────────────
-test('排期空项按「跟全局」处理，不影响后面那篇的配置', async (t) => {
-  // 第 1 篇留空（跟全局），第 2 篇单独配 2000 字
-  const f = fx({ heybox: { dailyPosts: [{}, { style: 'news', wordsMin: 2000, wordsMax: 3000 }] } })
+test('排期空项按「跟全局」处理，第 2 篇真正用上自己的配置', async (t) => {
+  // 第 1 篇留空（跟全局），第 2 篇单独配 2000-3000 字 + news 风格
+  const f = fx({ heybox: { dailyPosts: [{}, { style: 'news', wordsMin: 2000, wordsMax: 3000, hint: '第二篇的要求' }] } })
   t.after(() => f.close())
-  // 今天还没发过，取到的是第 1 篇（空项）
+
+  // 今天还没发过 → 取第 1 篇（空项，跟全局）
   const plan1 = f.hb.currentPostPlan()
   assert.equal(plan1.slot, 0)
   assert.equal(plan1.empty, true, '空项要标成 empty')
   assert.equal(plan1.style, 'diary', '空项走全局默认风格')
-  // 模拟已发 1 篇，取第 2 篇
-  const st = JSON.parse(f.hb.state() ? '{}' : '{}')
-  f.hb.state() // 确保可读
-  // 直接把计数置到 1（通过公开的 state 写入不可行，这里用 plan 的第 0 项语义断言即可）
+  assert.equal(plan1.wordsMin, 100, '空项走全局字数下限')
+
+  // 真发一篇让计数变成 1，然后再取 plan —— 这次应该拿到第 2 篇，且用的是第 2 篇自己的配置
+  const img = join(f.dir, 'i.png'); writeFileSync(img, PNG_1x1)
+  const r1 = await f.hb.post({ title: '第一篇', text: body(200), imagesByPos: { tail: [img] } })
+  assert.equal(r1.ok, true)
+  assert.equal(f.hb.state().quota.post, 1)
+
+  const plan2 = f.hb.currentPostPlan()
+  assert.equal(plan2.slot, 1, '发过一篇后取第 2 篇')
+  assert.notEqual(plan2.empty, true)
+  assert.equal(plan2.style, 'news', '第 2 篇用自己的风格，不能是第 1 篇的默认值')
+  assert.equal(plan2.wordsMin, 2000, '第 2 篇用自己的字数下限')
+  assert.equal(plan2.hint, '第二篇的要求', '第 2 篇用自己的 hint')
+
+  // 状态里也要能看出来
   const items = f.hb.postPlanState().items
   assert.equal(items.length, 2, '两篇都要在列表里，空项不能被过滤')
   assert.equal(items[0].empty, true)
   assert.equal(items[1].empty, false)
-  assert.equal(items[1].wordsMin, 2000, '第 2 篇的字数不能变成第 1 篇的')
+  assert.equal(items[1].wordsMin, 2000)
 })
 
 // ── 必改 3：本篇额外要求（hint）不能被 ctx 覆盖 ────────────────────
@@ -142,13 +157,16 @@ test('四种风格都能取到配置，deal 也在内', async () => {
 
 // ── 待确认项：分区校验 ────────────────────────────────────────
 test('显式传入的非法分区被拦下，不会发出一个必然失败的请求', async (t) => {
-  const f = fx({})
+  // 分区缓存里有一批真实分区时，表外的 id 才判 bad_topic（缓存空时按「不硬拦」处理）
+  const f = fx({ initialState: { topics: { date: TODAY(), fetchedAt: 1, list: [
+    { id: '7214', name: '盒友杂谈' }, { id: '18745', name: '数码硬件' },
+  ] }, acts: { date: TODAY(), fetchedAt: 1, list: [], plain: [] } } })
   t.after(() => f.close())
   const p = img(f)
   const r = await f.hb.post({ title: '乱填分区', text: body(200), topic: '58144', imagesByPos: { tail: [p] } })
   assert.equal(r.ok, false)
   assert.equal(r.code, 'bad_topic')
-  assert.match(String(r.message), /不在已知分区表/)
+  assert.match(String(r.message), /不在当前分区表/)
   assert.equal(f.hb.state().quota.post, 0, '被拦下不该扣额度')
 })
 
@@ -166,4 +184,61 @@ test('正文太短时不放文首图，而且不会白上传一张', async (t) =
   assert.equal(r.images.intro, 0, '短文不该有文首图')
   assert.equal(r.images.tail, 1)
   assert.equal(f.uploads.length, 1, '只上传了文末那张，首图没白传')
+})
+
+// ── 必改 5：分区校验要认动态分区（P0 回归）───────────────────────
+test('动态分区（非内置 3 个）能通过校验，不会被 bad_topic 拒发', async (t) => {
+  // 面板新增的 549999 校园 / 73907 沙雕 / 425422 Steam 都不在内置 TOPICS 里，
+  // topicMode=auto 挑出来的动态分区也一样。只认内置 3 个会把正常发帖挡死。
+  const today = new Date().toISOString().slice(0, 10)
+  const f = fx({
+    initialState: {
+      quota: { date: today, post: 0 },
+      acts: { date: today, fetchedAt: 1, list: [], plain: [] },
+      topics: { date: today, fetchedAt: 1, list: [
+        { id: '549999', name: '校园', hot: 1, game: false },
+        { id: '73907', name: '沙雕', hot: 1, game: false },
+        { id: '425422', name: 'Steam', hot: 1, game: false },
+      ] },
+    },
+  })
+  t.after(() => f.close())
+  const img = join(f.dir, 'i.png'); writeFileSync(img, PNG_1x1)
+
+  for (const topic of ['549999', '73907', '425422']) {
+    const r = await f.hb.post({ title: '动态分区' + topic, text: body(200), topic, imagesByPos: { tail: [img] } })
+    assert.notEqual(r.code, 'bad_topic', `分区 ${topic} 不该被判 bad_topic`)
+  }
+})
+
+test('分区表为空时不硬拦（宁可发一次可能失败的帖，也别挡正常发帖）', async (t) => {
+  const today = new Date().toISOString().slice(0, 10)
+  const f = fx({ initialState: { quota: { date: today, post: 0 }, acts: { date: today, fetchedAt: 1, list: [], plain: [] }, topics: { date: '', fetchedAt: 0, list: [] } } })
+  t.after(() => f.close())
+  const img = join(f.dir, 'i.png'); writeFileSync(img, PNG_1x1)
+  const r = await f.hb.post({ title: '冷启动', text: body(200), topic: '549999', imagesByPos: { tail: [img] } })
+  assert.notEqual(r.code, 'bad_topic', '缓存空时不该拦')
+})
+
+// ── 必改 6：拿不到任何图时放行纯文字帖（否则干净机器上永远发不出去）──
+test('生图没开 + 没有图库时，纯文字帖能发出去并标 textOnly', async (t) => {
+  const today = new Date().toISOString().slice(0, 10)
+  const f = fx({ imagegen: { enabled: async () => false, generate: async () => PNG_1x1 } })
+  t.after(() => f.close())
+  // 这个 fx 的 memeRoot 指向的空目录里没有图（见 fx 的实现）
+  const r = await f.hb.post({ title: '纯文字', text: body(200) })
+  assert.equal(r.ok, true, '既没图库又没生图时应放行')
+  assert.equal(r.textOnly, true, '要被标成纯文字帖')
+})
+
+test('能配图却没配时仍然拒发（no_image），文案说明怎么配', async (t) => {
+  const gen = { enabled: async () => true, generate: async () => PNG_1x1 }
+  const f = fx({ imagegen: gen })
+  t.after(() => f.close())
+  // 关掉自动配图：显式传 imagesByPos: {} 走「手动指定但没给图」
+  const r = await f.hb.post({ title: '能配没配', text: body(200), imagesByPos: {} })
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'no_image')
+  assert.match(String(r.message), /没带图|没有发出/)
+  assert.equal(f.hb.state().quota.post, 0, '拒发要退额')
 })
