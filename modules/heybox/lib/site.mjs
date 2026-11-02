@@ -1013,6 +1013,24 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     if (!byPos) for (const p of images) segs.push(readImg(p, 'tail'))
     const cleanSegs = segs.filter(Boolean)
 
+    // 「每日羊毛」(deal) 硬校验：这一档的价值全在真实入口链接上，没链接的羊毛帖
+    // 发出去就是水贴（还可能是编造的 URL）。提示词里早就写了「没链接别发」，
+    // 但只有提示词约束不够——这里真拦：正文里一个链接都没有就拒发。
+    if (st.id === 'deal') {
+      const links = String(text).match(/https?:\/\/[^\s"'<>）)]+/g) || []
+      // 只在「确实没给任何链接」时拦；给了链接（哪怕是小黑盒自己的）就放行，
+      // 具体链接是否有效由她按提示词里那份「手里有的链接」自己判断。
+      if (!links.length) {
+        return {
+          ok: false,
+          code: 'no_link',
+          message: '「每日羊毛」这一档必须带真实可点的入口链接，这帖正文里一个链接都没有，没有发出。'
+            + '请补上直达链接（活动页 / 商店页 / 领取入口），链接只能从手里真实有的里挑，不要自己拼凑 URL。'
+            + '如果这波确实拿不到链接，就换个有链接的角度，或者改用别的风格发。',
+        }
+      }
+    }
+
     // 配图硬校验：以前她经常一张都不传，发出来全是纯文字。
     // 现在要求至少 1 张（正文里的行内图或末尾图都算），没图就拒发并告诉她怎么传。
     const hasImageSeg = cleanSegs.some((x) => x.type === 'img' && x.buf)
