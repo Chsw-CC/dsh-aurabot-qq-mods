@@ -1292,8 +1292,10 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     return ''
   }
 
-  /** 生图超时上限：单张超过这个时间就当失败，走表情包兜底，别把发帖拖死。 */
-  const GENERATE_TIMEOUT_MS = 90_000
+  /** 生图超时上限：单张超过这个时间就当失败，走表情包兜底，别把发帖拖死。
+   *  本地大模型（ComfyUI + MOSS）实测单张 40-90 秒，机器繁忙时会更久，
+   *  所以放到 5 分钟：宁可多等一会儿，也别把一张正在生成的图当失败丢掉。 */
+  const GENERATE_TIMEOUT_MS = 300_000
   /** 生图落盘目录最多保留多少张（再多就删最旧的）。按月增长的话用户磁盘会一直涨。 */
   const KEEP_GENERATED = 60
 

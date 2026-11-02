@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHeybox } from '../lib/site.mjs'
@@ -229,6 +229,31 @@ test('生图没开 + 没有图库时，纯文字帖能发出去并标 textOnly',
   const r = await f.hb.post({ title: '纯文字', text: body(200) })
   assert.equal(r.ok, true, '既没图库又没生图时应放行')
   assert.equal(r.textOnly, true, '要被标成纯文字帖')
+})
+
+test('no_image 两种文案：有图库时让挑图，只有生图时让传 mood / 走自动配图', async (t) => {
+  // 情形 A：本机有图库（真的造一个出来），拒发文案要给样例路径
+  const dirA = mkdtempSync(join(tmpdir(), 'heybox-packs-'))
+  const packDir = join(dirA, 'dafeiyu-learned', 'memes', 'daily')
+  mkdirSync(packDir, { recursive: true })
+  for (let i = 0; i < 3; i++) writeFileSync(join(packDir, 'm' + i + '.png'), PNG_1x1)
+  const fA = fx({ memeRoot: dirA })
+  t.after(() => fA.close())
+  const rA = await fA.hb.post({ title: '有图库但不传', text: body(200), imagesByPos: {} })
+  assert.equal(rA.code, 'no_image')
+  assert.ok(Number(rA.available) > 0, '要报可用图数量')
+  assert.match(String(rA.message), /形象图|挑/, '有图库时应让她去挑图')
+  assert.ok(Array.isArray(rA.samplePaths) && rA.samplePaths.length > 0, '要给样例路径')
+  rmSync(dirA, { recursive: true, force: true })
+
+  // 情形 B：没有图库、生图开着 → 提示传 mood/look 或走自动配图
+  const gen = { enabled: async () => true, generate: async () => PNG_1x1 }
+  const fB = fx({ imagegen: gen })
+  t.after(() => fB.close())
+  const rB = await fB.hb.post({ title: '只有生图但不传', text: body(200), imagesByPos: {} })
+  assert.equal(rB.code, 'no_image')
+  assert.equal(rB.canGenerate, true, '要标出生图可用')
+  assert.match(String(rB.message), /生图|自动配图/, '生图开着时应提示走自动配图')
 })
 
 test('能配图却没配时仍然拒发（no_image），文案说明怎么配', async (t) => {
