@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { HeyboxClient } from '../lib/api.mjs'
@@ -30,6 +30,13 @@ function postFixture({ imagegen, images = [], text = '' } = {}) {
     acts: { date: new Date().toISOString().slice(0, 10), fetchedAt: 1, list: [], plain: [] },
   }))
 
+  // CI 里没有用户的 ~/.dsh/meme-packs，兜底路径必须有图可挑，否则这些用例会假失败。
+  // 这里在临时目录造一个最小图库，并把它注入给模块。
+  const memeRoot = join(dir, 'meme-packs')
+  const packDir = join(memeRoot, 'dafeiyu-learned', 'memes', 'daily')
+  mkdirSync(packDir, { recursive: true })
+  for (let i = 0; i < 8; i++) writeFileSync(join(packDir, 'm' + i + '.png'), PNG_1x1)
+
   const uploads = []
   let posted = null
   const client = {
@@ -55,6 +62,7 @@ function postFixture({ imagegen, images = [], text = '' } = {}) {
     stateFile, credFile: join(dir, 'missing.json'),
     clientFactory: () => client,
     imagegen: imagegen === undefined ? null : imagegen,
+    memeRoot,
   })
 
   return {

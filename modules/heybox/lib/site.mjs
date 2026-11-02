@@ -98,7 +98,7 @@ export function linkIdOf(input) {
   return digits.length >= 6 ? digits : ''
 }
 
-export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile = path.join(HOME, '.dsh', 'heybox-state.json'), credFile = CRED_FILE, now = () => Date.now(), clientFactory = (options) => new HeyboxClient(options), verifier: injectedVerifier, imagegen = null } = {}) {
+export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile = path.join(HOME, '.dsh', 'heybox-state.json'), credFile = CRED_FILE, now = () => Date.now(), clientFactory = (options) => new HeyboxClient(options), verifier: injectedVerifier, imagegen = null, memeRoot = null } = {}) {
   let client = null
   let verifier = injectedVerifier || null
   let verifySession = null
@@ -1124,7 +1124,8 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
 
   /** 大肥鱼表情包图库目录（有就按类别收，没有返回空） */
   function memeImageDirs() {
-    const base = path.join(HOME, '.dsh', 'meme-packs')
+    // 根目录可注入（测试用临时假图库，避免依赖用户机器上有没有这些表情包）
+    const base = memeRoot ? String(memeRoot) : path.join(HOME, '.dsh', 'meme-packs')
     const packs = ['dafeiyu-learned', 'dafeiyu', 'deepseek-chan']
     const out = []
     for (const p of packs) {
