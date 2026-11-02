@@ -1016,7 +1016,8 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     // 「每日羊毛」(deal) 硬校验：这一档的价值全在真实入口链接上，没链接的羊毛帖
     // 发出去就是水贴（还可能是编造的 URL）。提示词里早就写了「没链接别发」，
     // 但只有提示词约束不够——这里真拦：正文里一个链接都没有就拒发。
-    if (st.id === 'deal') {
+    // 判定看 st.needLink（styles.mjs 里标在 deal 上），这样新增「要链接」的风格不用改这里。
+    if (st.needLink) {
       const links = String(text).match(/https?:\/\/[^\s"'<>）)]+/g) || []
       // 只在「确实没给任何链接」时拦；给了链接（哪怕是小黑盒自己的）就放行，
       // 具体链接是否有效由她按提示词里那份「手里有的链接」自己判断。
