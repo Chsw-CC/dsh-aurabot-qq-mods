@@ -198,13 +198,21 @@ export default {
     // 去那个专用浏览器配置里现读一次（见 sessionCookie）。
     let memCookie = ''
     /** Chrome 把登录态存在这个文件里；有它就说明「可能登过」，值得去读一次 */
-    const cookiesFile = () => join(chromeDir(), 'Default', 'Cookies')
-    const hasLogin = () => Boolean(memCookie || readState().loginAt || existsSync(cookiesFile()))
+    const cookiesFile = () => {
+      // 新版 Chrome 把 cookie 库放在 Default/Network 下，老版在 Default 下，两个都认
+      const dir = chromeDir()
+      for (const p of [join(dir, 'Default', 'Network', 'Cookies'), join(dir, 'Default', 'Cookies')]) {
+        if (existsSync(p)) return p
+      }
+      return ''
+    }
+    const hasCookieStore = () => Boolean(cookiesFile())
+    const hasLogin = () => Boolean(memCookie || readState().loginAt || hasCookieStore())
 
     /** 现取的登录态：内存里有就用，没有就从专用浏览器配置里读一次 */
     async function sessionCookie() {
       if (memCookie) return memCookie
-      if (!existsSync(cookiesFile()) && !readState().loginAt) return ''
+      if (!hasCookieStore() && !readState().loginAt) return ''
       try {
         await startBrowser({ headless: true })
         const parts = await grabCookies()

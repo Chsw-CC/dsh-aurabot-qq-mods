@@ -99,11 +99,25 @@ ok true | engine http | mime audio/mpeg | bytes 54272
 }
 ```
 
-这一版把登录态从「明文文件」改成了「只在内存 + 需要时从专用浏览器配置里现读」，本地那份专用配置是新建的，
-所以需要人工点一次「登录」把登录态建起来，签到才能复测；签到接口本身与上面同一个 `claim()`，没有改动。
+### 1.3.0 的登录态现读路径（实测）
+
+这一版登录态不落明文，只在内存里；进程重启后需要从专用浏览器配置里重读。按下面的办法真跑了一遍：
+
+1. 在面板点一次「登录」，登完自动领了一次，返回 `{"ok":true,"message":"今天已经领过了（余额 2126）"}`
+2. 把 `checkin.json` 里的 `loginAt` 删掉（模拟重启后内存与标记都空了），再 `POST /aurabot/api/modules/reload {"id":"breeze"}`
+3. `GET /aurabot/api/ext/breeze/status` → `{"ok":true,"hasCookie":true,"hasLogin":true}`
+   —— 此时状态里没有 `loginAt`，说明 `hasLogin` 是靠「配置目录里有 cookie 库」判断出来的
+4. `POST /aurabot/api/ext/breeze/checkin` → `{"ok":true,"message":"今天已经领过了（余额 2126）"}`
+
+第 4 步说明：内存里没有 cookie、`loginAt` 也没有的情况下，模块确实用无头模式起了一次专用配置目录的浏览器、
+从 CDP 读到登录态并把接口调通了（日志 `13:42:49 [info] [breeze] 签到：今天已经领过了（余额 2126）`）。
+
+顺手修掉一个隐患：新版 Chrome 的 cookie 库在 `browser/Default/Network/Cookies`，老版在 `browser/Default/Cookies`，
+原来只认老路径，重启后会误判成「没登录过」。现在两个路径都认。
 
 现在的失败处理：到点领不到就隔 5 分钟再试，一天最多 3 次；碰到 401/403 会先把内存里那份丢掉、下次重新从配置里读；
 三次都失败才私聊主人「可能登录过期了，去面板点『登录』」。
+
 
 ## 5. 单元测试与仓库检查
 
