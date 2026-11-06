@@ -1,4 +1,4 @@
-﻿// Breeze 语音：这张卡里的设置都写进面板的草稿，跟原生表单一起用底部「保存设置」。
+// Breeze 语音：这张卡里的设置都写进面板的草稿，跟原生表单一起用底部「保存设置」。
 // 面板会给 React / h / ui / call / settings / draftSettings / setSettings / toast。
 const { useState, useEffect, useRef } = React
 return function BreezePanel({ settings, draftSettings, setSettings, toast }) {
@@ -12,11 +12,13 @@ return function BreezePanel({ settings, draftSettings, setSettings, toast }) {
   const load = () => {
     call('/status').then((r) => { if (r && r.ok) setSt(r) }).catch(() => {})
   }
-  useEffect(() => { load() }, [])
-  // 切走页面时清掉计时器、标记已卸载，别去动已经不存在的组件
-  useEffect(() => () => {
-    alive.current = false
-    clearTimeout(timer.current)
+  useEffect(() => {
+    load()
+    // 切走页面时清掉计时器、标记已卸载，别去动已经不存在的组件
+    return () => {
+      alive.current = false
+      clearTimeout(timer.current)
+    }
   }, [])
 
   const upd = (k, v) => setSettings({ [k]: v })

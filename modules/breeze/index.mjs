@@ -201,13 +201,12 @@ export default {
       }
       return ''
     }
-    const hasCookieStore = () => Boolean(cookiesFile())
-    const hasLogin = () => Boolean(memCookie || readState().loginAt || hasCookieStore())
+    const hasLogin = () => Boolean(memCookie || readState().loginAt || cookiesFile())
 
     /** 现取的登录态：内存里有就用，没有就从专用浏览器配置里读一次 */
     async function sessionCookie() {
       if (memCookie) return memCookie
-      if (!hasCookieStore() && !readState().loginAt) return ''
+      if (!cookiesFile() && !readState().loginAt) return ''
       let opened = null
       try {
         opened = await startBrowser({ headless: true })
@@ -282,12 +281,11 @@ export default {
     /** 到点没领过就领；启动时也补一次；没成功 5 分钟后再试，一天最多三次 */
     async function tick(reason) {
       const s = api.settings() || {}
-      if (!s.checkinOn) return
       const st = readState()
       const d = today()
       const tried = st.day === d ? st.tries || 0 : 0
       const action = checkinAction({
-        on: Boolean(s.checkinOn),
+        on: s.checkinOn !== false,
         hasCookie: hasLogin(),
         done: st.done,
         day: d,
@@ -298,7 +296,7 @@ export default {
       })
       if (action === 'skip') return
       const r = await claim()
-      markDone(r.ok, r.message, reason)
+      markDone(r.ok, r.message, reason, d)
       if (r.ok) {
         if (r.claimed) notifyClaimed(r.balance)
         return
@@ -312,10 +310,9 @@ export default {
       }
     }
 
-    /** 记一笔这次的结果（顺便数今天试了几次） */
-    function markDone(ok, message, reason) {
+    /** 记一笔这次的结果（顺便数今天试了几次）；d 是调用方算好的「今天」，省得再算一遍 */
+    function markDone(ok, message, reason, d = today()) {
       const cur = readState()
-      const d = today()
       const next = {
         ...cur,
         lastTry: new Date().toISOString(),
@@ -334,8 +331,14 @@ export default {
       const token = ++scheduleToken
       api.later(msUntil(checkinTime()), async () => {
         if (token !== scheduleToken) return
-        await tick('timer')
-        scheduleNext()
+        try {
+          await tick('timer')
+        } catch (error) {
+          api.log.warn('[breeze] 定时签到出错：', error.message)
+        } finally {
+          // 出错也要排下一天，不然一次异常就把定时签到彻底停了
+          if (token === scheduleToken) scheduleNext()
+        }
       })
     }
     scheduleNext()
@@ -425,7 +428,15 @@ export default {
 
     function cdpCall(ws, id, method, params) {
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(`${method} 超时`)), 20000)
+        const drop = () => {
+          try {
+            ws.removeEventListener('message', onMsg)
+          } catch {}
+        }
+        const timer = setTimeout(() => {
+          drop()
+          reject(new Error(`${method} 超时`))
+        }, 20000)
         const onMsg = (event) => {
           let m
           try {
@@ -435,9 +446,7 @@ export default {
           }
           if (m.id !== id) return
           clearTimeout(timer)
-          try {
-            ws.removeEventListener('message', onMsg)
-          } catch {}
+          drop()
           resolve(m)
         }
         ws.addEventListener('message', onMsg)
