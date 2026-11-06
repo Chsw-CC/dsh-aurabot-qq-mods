@@ -1,4 +1,4 @@
-﻿// Breeze 语音：这张卡里的设置都写进面板的草稿，跟原生表单一起用底部「保存设置」。
+// Breeze 语音：这张卡里的设置都写进面板的草稿，跟原生表单一起用底部「保存设置」。
 // 面板会给 React / h / ui / call / settings / draftSettings / setSettings / toast。
 const { useState, useEffect, useRef } = React
 return function BreezePanel({ settings, draftSettings, setSettings, toast }) {

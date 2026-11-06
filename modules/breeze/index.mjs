@@ -1,16 +1,17 @@
-﻿// Breeze Blue 在线语音：设置放在面板「语音」页最下面。
-// 语音模块（modules/voice）合成时来问我一句 ttsOptions()，返回 null 就走它原来的引擎。
+// Breeze Blue 在线语音：设置放在面板「语音」页最下面。
+// 不改插件核心：自己在 127.0.0.1 起一个小的 HTTP 语音服务，再把面板「语音」页的引擎
+// 设成插件本来就支持的「通用 HTTP」，地址指过来 —— 这样任何人都能直接用。
 // 另外带一个每日自动签到（领 400 免费积分）：到点试一次，DSH 那时候没开就在启动时补一次。
+import http from 'node:http'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
-import net from 'node:net'
 import { checkinAction, describeClaim, formatDate, looksLoggedIn, msUntil, nowMinutes } from './lib/pure.mjs'
 
 export default {
   id: 'breeze',
   name: 'Breeze 语音',
-  version: '1.2.0',
+  version: '1.3.0',
   api: 1,
   description: 'Breeze Blue 在线文字转语音 + 每日自动签到领积分',
   tab: 'voice',
@@ -28,26 +29,149 @@ export default {
     browserPath: '',
   },
   setup(api) {
-    /** 给语音模块用：返回 null = 不接管，用原来的引擎 */
-    function ttsOptions() {
+    // ---------- 语音：本地小服务 + 让插件走「通用 HTTP」引擎 ----------
+    const BREEZE_URL = 'https://api.breeze.blue'
+    const OUTPUT_FORMAT = 'mp3_24000_128'
+    const BRIDGE_PORT = 47653
+    const BRIDGE_PORT_TRIES = 4
+    let bridgeServer = null
+    let bridgePort = 0
+    let restoreVoice = null
+    // listen 是异步的：回调可能在模块被停掉之后才到。用「代际」判断这次回调还算不算数，
+    // 不算就只是关掉 server —— 绝不能再调用 api（stopped 的模块调用 api 会同步抛错，
+    // 而在 net 的回调里抛出去就是 uncaught exception，会直接把 host 进程带走）。
+    let bridgeGen = 0
+
+    function breezeReady() {
       const s = api.settings() || {}
-      if (!s.on) return null
+      return Boolean(s.on && String(s.apiKey || '').trim() && String(s.voiceId || '').trim())
+    }
+
+    /** 调 Breeze 合成一段，返回 mp3 字节 */
+    async function synthMp3(text) {
+      const s = api.settings() || {}
       const apiKey = String(s.apiKey || '').trim()
       const voiceId = String(s.voiceId || '').trim()
-      if (!apiKey || !voiceId) return null
-      return {
-        engine: 'breeze',
-        breeze: {
-          url: 'https://api.breeze.blue',
-          apiKey,
-          voiceId,
-          modelId: String(s.model || 'breeze-tts-2').trim(),
-          language: String(s.language || 'zh').trim(),
+      if (!apiKey || !voiceId) throw new Error('还没填 API Key 或音色 ID')
+      const url = `${BREEZE_URL}/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=${OUTPUT_FORMAT}`
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'xi-api-key': apiKey, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          model_id: String(s.model || 'breeze-tts-2').trim() || 'breeze-tts-2',
+          language_code: String(s.language || 'zh').trim() || 'zh',
           instructions: String(s.instructions || ''),
-          outputFormat: 'mp3_24000_128',
-        },
+        }),
+        signal: AbortSignal.timeout(60000),
+      })
+      if (!res.ok) {
+        const t = await res.text().catch(() => '')
+        throw new Error(`Breeze HTTP ${res.status}：${t.slice(0, 160)}`)
+      }
+      const buf = Buffer.from(await res.arrayBuffer())
+      if (buf.length < 400) throw new Error('Breeze 返回的音频太短')
+      return buf
+    }
+
+    /**
+     * 给「语音」模块的钩子：她那边是 `api.use('breeze').ttsOptions()`，
+     * 返回的对象会并到 voice 配置上。没起服务（没填 key / 已停）就返回 null，她照旧用原引擎。
+     */
+    function ttsOptions() {
+      if (!bridgeServer || !bridgePort) return null
+      const v = api.config().voice || {}
+      return {
+        engine: 'http',
+        http: { ...(v.http || {}), urlTemplate: `http://127.0.0.1:${bridgePort}/?text={text}`, method: 'GET' },
       }
     }
+
+    /** 起本地语音服务（端口随机），并把「语音」页的引擎指过来 */
+    function startBridge() {
+      if (bridgeServer || !breezeReady()) return
+      const gen = ++bridgeGen
+      const srv = http.createServer(async (req, res) => {
+        const u = new URL(req.url || '/', 'http://127.0.0.1')
+        const text = u.searchParams.get('text') || ''
+        if (!text.trim()) {
+          res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
+          res.end('text 是空的')
+          return
+        }
+        try {
+          const buf = await synthMp3(text)
+          res.writeHead(200, { 'content-type': 'audio/mpeg', 'content-length': buf.length })
+          res.end(buf)
+        } catch (error) {
+          api.log.warn('[breeze] 合成失败：', error.message)
+          res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
+          res.end(String(error.message || '合成失败'))
+        }
+      })
+      // 端口尽量固定：配置里要写这个地址，重启后还能用；真被占了就往后挪一个
+      let want = BRIDGE_PORT
+      srv.on('error', (error) => {
+        if (error.code === 'EADDRINUSE' && want < BRIDGE_PORT + BRIDGE_PORT_TRIES) {
+          want += 1
+          srv.listen(want, '127.0.0.1')
+          return
+        }
+        api.log.warn('[breeze] 本地语音服务出错：', error.message)
+      })
+      srv.listen(want, '127.0.0.1', () => {
+        // 回调晚到 / 模块已停：只收尾，不碰 api
+        if (gen !== bridgeGen) {
+          try {
+            srv.close()
+          } catch {}
+          return
+        }
+        let port = 0
+        try {
+          port = srv.address().port
+        } catch {
+          return
+        }
+        bridgePort = port
+        bridgeServer = srv
+        const v = api.config().voice || {}
+        if (!restoreVoice) restoreVoice = { engine: v.engine, http: { ...(v.http || {}) } }
+        try {
+          api.setConfig({
+            voice: {
+              enabled: true,
+              engine: 'http',
+              http: { ...(v.http || {}), urlTemplate: `http://127.0.0.1:${port}/?text={text}`, method: 'GET' },
+            },
+          })
+        } catch (error) {
+          api.log.warn('[breeze] 写回语音设置失败：', error.message)
+        }
+        api.log.info(`[breeze] 本地语音服务已开：127.0.0.1:${port}`)
+      })
+    }
+
+    /** 关掉本地服务，并把引擎还原成开之前的 */
+    function stopBridge() {
+      bridgeGen++
+      if (bridgeServer) {
+        try {
+          bridgeServer.close()
+        } catch {}
+        bridgeServer = null
+        bridgePort = 0
+      }
+      if (restoreVoice) {
+        try {
+          api.setConfig({ voice: { engine: restoreVoice.engine, http: restoreVoice.http } })
+        } catch {}
+        restoreVoice = null
+      }
+    }
+
+    startBridge()
+    api.onDispose(stopBridge)
 
     // ---- 每日签到 ----
     const stateFile = join(api.dataDir(), 'checkin.json')
@@ -70,19 +194,32 @@ export default {
     /** 设置里的签到时间，形如 '08:10' */
     const checkinTime = () => String((api.settings() || {}).checkinTime || '08:10').trim() || '08:10'
 
-    /** 登录态只认模块数据夹里的 cookie.txt（自动抓的时候写进去） */
-    function loginCookie() {
+    // 登录态只在内存里放一份，不往磁盘写明文；DSH 重启后要用的话，
+    // 去那个专用浏览器配置里现读一次（见 sessionCookie）。
+    let memCookie = ''
+    /** Chrome 把登录态存在这个文件里；有它就说明「可能登过」，值得去读一次 */
+    const cookiesFile = () => join(chromeDir(), 'Default', 'Cookies')
+    const hasLogin = () => Boolean(memCookie || readState().loginAt || existsSync(cookiesFile()))
+
+    /** 现取的登录态：内存里有就用，没有就从专用浏览器配置里读一次 */
+    async function sessionCookie() {
+      if (memCookie) return memCookie
+      if (!existsSync(cookiesFile()) && !readState().loginAt) return ''
       try {
-        return readFileSync(join(api.dataDir(), 'cookie.txt'), 'utf8').trim()
-      } catch {
-        return ''
+        await startBrowser({ headless: true })
+        const parts = await grabCookies()
+        await closeBrowser()
+        if (looksLoggedIn(parts)) memCookie = parts.join('; ')
+      } catch (error) {
+        api.log.debug('[breeze] 从浏览器配置里读登录态失败：', error.message)
       }
+      return memCookie
     }
 
     /** 真去领一次。返回 { ok, message, balance? } */
     async function claim() {
-      const cookie = loginCookie()
-      if (!cookie) return { ok: false, message: '还没抓到登录 Cookie，先在面板点一下「登录」' }
+      const cookie = await sessionCookie()
+      if (!cookie) return { ok: false, message: '还没登录，先在面板点一下「登录」' }
       const headers = {
         'content-type': 'application/json',
         'user-agent': 'Mozilla/5.0',
@@ -100,6 +237,8 @@ export default {
         const text = await res.text()
         if (!res.ok) {
           api.log.warn(`签到失败 HTTP ${res.status}：${text.slice(0, 300)}`)
+          // 401/403 多半是登录态过期了：把内存里那份丢掉，下次重新从浏览器配置读
+          if (res.status === 401 || res.status === 403) memCookie = ''
           return { ok: false, message: `HTTP ${res.status} ${text.slice(0, 200)}` }
         }
         let data = {}
@@ -139,7 +278,7 @@ export default {
       const tried = st.day === today() ? st.tries || 0 : 0
       const action = checkinAction({
         on: Boolean(s.checkinOn),
-        hasCookie: Boolean(loginCookie()),
+        hasCookie: hasLogin(),
         done: st.done,
         day: today(),
         tries: tried,
@@ -199,8 +338,8 @@ export default {
     api.later(8000, () => tick('startup'))
 
     // ---------- 登录并抓 cookie：按需开一次 Chrome，抽完就关 ----------
-    const PORT_FROM = 9333
-    const PORT_TO = 9343
+    // 调试端口不让用户填、也不扫 9333-9343：让 Chrome 自己挑（--remote-debugging-port=0），
+    // 它会把自己的端口写进配置目录的 DevToolsActivePort，我们只认这个文件。
     let debugPort = 0
 
     /** 找浏览器：面板里填的优先，其次常见安装位置（Chrome → Edge → 其他 Chromium） */
@@ -237,41 +376,40 @@ export default {
       return dir
     }
 
+    /** Chrome 自己把调试端口写在这个文件里（第一行端口、第二行 ws 地址） */
+    function activePortFile() {
+      return join(chromeDir(), 'DevToolsActivePort')
+    }
+
     async function debugJson(path) {
       if (!debugPort) throw new Error('还没找到调试端口')
       const res = await fetch(`http://127.0.0.1:${debugPort}${path}`, { signal: AbortSignal.timeout(3000) })
       return res.json()
     }
 
-    /** 上次开的那个窗口还活着吗？活着就沿用它的端口，别再 spawn 一个同配置的 */
+    /** 上次开的那个窗口还活着吗？只看自己配置目录里的 DevToolsActivePort，
+     *  不去扫端口 —— 免得连到别人开着的 Chrome 上读别人的 cookie。 */
+    function readActivePort() {
+      try {
+        const [p] = readFileSync(activePortFile(), 'utf8').split(/\r?\n/)
+        const port = Number(p)
+        return port > 0 ? port : 0
+      } catch {
+        return 0
+      }
+    }
+
     async function findExistingPort() {
-      for (let p = PORT_FROM; p <= PORT_TO; p++) {
-        try {
-          const res = await fetch(`http://127.0.0.1:${p}/json/version`, { signal: AbortSignal.timeout(800) })
-          if (!res.ok) continue
-          const v = await res.json()
-          if (v?.webSocketDebuggerUrl) return p
-        } catch {}
+      const port = readActivePort()
+      if (!port) return 0
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1500) })
+        if (!res.ok) return 0
+        const v = await res.json()
+        return v?.webSocketDebuggerUrl ? port : 0
+      } catch {
+        return 0
       }
-      return 0
-    }
-
-    /** 这个端口能不能拿来监听（true = 空着） */
-    function portFree(port) {
-      return new Promise((resolve) => {
-        const srv = net.createServer()
-        srv.once('error', () => resolve(false))
-        srv.once('listening', () => srv.close(() => resolve(true)))
-        srv.listen(port, '127.0.0.1')
-      })
-    }
-
-    /** 挑一个空闲端口给浏览器调试用 */
-    async function pickPort() {
-      for (let p = PORT_FROM; p <= PORT_TO; p++) {
-        if (await portFree(p)) return p
-      }
-      throw new Error(`${PORT_FROM}-${PORT_TO} 都被占着，腾一个出来再试`)
     }
 
     function cdpCall(ws, id, method, params) {
@@ -296,8 +434,8 @@ export default {
       })
     }
 
-    /** 起 Chrome（带专用配置目录 + 调试端口）；上一次开的还活着就直接用 */
-    async function startBrowser() {
+    /** 起 Chrome（专用配置目录 + 让 Chrome 自己挑调试端口）；上一次开的还活着就直接用 */
+    async function startBrowser({ headless = false } = {}) {
       const alive = await findExistingPort()
       if (alive) {
         debugPort = alive
@@ -305,28 +443,34 @@ export default {
       }
       const browser = findBrowser()
       if (!browser) throw new Error('没找到 Chrome 或 Edge，可以在设置里手填浏览器路径')
-      debugPort = await pickPort()
+      try {
+        unlinkSync(activePortFile())
+      } catch {}
       const child = spawn(
         browser,
         [
-          `--remote-debugging-port=${debugPort}`,
+          '--remote-debugging-port=0',
           `--user-data-dir=${chromeDir()}`,
           '--no-first-run',
           '--no-default-browser-check',
-          'https://breezeblue.ai/zh/auth/login',
+          ...(headless ? ['--headless=new', 'about:blank'] : ['https://breezeblue.ai/zh/auth/login']),
         ],
         { detached: true, stdio: 'ignore' },
       )
       child.on('error', (error) => api.log.warn('[breeze] 浏览器起不来：', error.message))
       child.unref()
-      for (let i = 0; i < 40; i++) {
-        try {
-          const v = await debugJson('/json/version')
-          if (v?.webSocketDebuggerUrl) return { reused: false }
-        } catch {}
-        await new Promise((r) => setTimeout(r, 500))
+      for (let i = 0; i < 60; i++) {
+        const port = readActivePort()
+        if (port) {
+          debugPort = port
+          try {
+            const v = await debugJson('/json/version')
+            if (v?.webSocketDebuggerUrl) return { reused: false }
+          } catch {}
+        }
+        await new Promise((r) => setTimeout(r, 250))
       }
-      throw new Error('Chrome 20 秒内没开出调试端口')
+      throw new Error('Chrome 15 秒内没开出调试端口')
     }
 
     /** 把那个登录窗口关掉（连不上就算了） */
@@ -417,17 +561,11 @@ export default {
       }
     }
 
-    /** 存下 cookie、关掉窗口、顺手领一次 */
+    /** 记下这次登录（只在内存里）、关掉窗口、顺手领一次 */
     async function saveAndClaim(parts) {
-      const cookie = parts.join('; ')
-      try {
-        mkdirSync(api.dataDir(), { recursive: true })
-        writeFileSync(join(api.dataDir(), 'cookie.txt'), cookie, 'utf8')
-      } catch (error) {
-        api.log.warn('cookie.txt 写不进去：', error.message)
-        return 'cookie 存不进去：' + error.message
-      }
+      memCookie = parts.join('; ')
       await closeBrowser()
+      writeState({ ...readState(), loginAt: new Date().toISOString() })
       const r = await claim()
       markDone(r.ok, r.message, 'login')
       if (!r.ok) return '登录好了，但今天没签到成功：' + r.message
@@ -463,18 +601,17 @@ export default {
     async function logout() {
       loginGen++
       watching = false
+      memCookie = ''
       await closeBrowser()
       await new Promise((r) => setTimeout(r, 800))
-      try {
-        unlinkSync(join(api.dataDir(), 'cookie.txt'))
-      } catch {}
       try {
         rmSync(chromeDir(), { recursive: true, force: true })
       } catch (error) {
         api.log.warn('[breeze] 浏览器配置目录没删干净：', error.message)
       }
-      writeState({ ...readState(), lastResult: '已退出登录', lastReason: 'logout' })
-      api.log.info('[breeze] 已退出登录，cookie 和浏览器配置都清了')
+      const { loginAt, ...rest } = readState()
+      writeState({ ...rest, lastResult: '已退出登录', lastReason: 'logout' })
+      api.log.info('[breeze] 已退出登录，浏览器里的登录态清掉了')
     }
 
     api.route('/logout', async () => {
@@ -494,7 +631,7 @@ export default {
 
     api.route('/status', async () => {
       const st = readState()
-      return { ok: true, hasCookie: Boolean(loginCookie()), checkin: st }
+      return { ok: true, hasCookie: hasLogin(), hasLogin: hasLogin(), checkin: st }
     })
 
     return { ttsOptions, claim }

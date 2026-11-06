@@ -1,4 +1,4 @@
-﻿// breeze 的纯函数测试：时间和登录态的折算、签到返回怎么翻成人话。
+// breeze 的纯函数测试：时间和登录态的折算、签到返回怎么翻成人话。
 // 跑法（仓库根目录）：AURABOT_PLUGIN_DIR=<插件源码> node --import ./scripts/plugin-env.mjs --test "modules/*/test/*.test.mjs"
 import test from 'node:test'
 import assert from 'node:assert/strict'
