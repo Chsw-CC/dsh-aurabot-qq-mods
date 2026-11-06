@@ -90,7 +90,7 @@ return function BreezePanel({ settings, draftSettings, setSettings, toast }) {
   }
 
   const input = (props) => h('input', { className: 'ab-input', style: { width: '100%' }, ...props })
-  const hasCookie = Boolean(st && (st.hasLogin || st.hasCookie))
+  const hasLogin = Boolean(st && st.hasLogin)
   const last = st && st.checkin ? st.checkin.lastResult : ''
 
   return h(ui.Card, {
@@ -104,11 +104,11 @@ return function BreezePanel({ settings, draftSettings, setSettings, toast }) {
           busy === 'login' ? '正在开…' : '登录'),
         h(ui.Btn, { small: true, disabled: busy === 'checkin', onClick: doCheckin },
           busy === 'checkin' ? '正在领…' : '手动签到'),
-        h(ui.Btn, { small: true, disabled: busy === 'logout' || !hasCookie, onClick: doLogout },
+        h(ui.Btn, { small: true, disabled: busy === 'logout' || !hasLogin, onClick: doLogout },
           busy === 'logout' ? '正在退…' : confirmOut ? '再点一次就退出' : '退出登录'),
       ),
       h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } },
-        hasCookie ? '登录态已建好' : '还没登录',
+        hasLogin ? '登录态已建好' : '还没登录',
         last ? ' ｜ 上次签到：' + last : '',
         ' ｜ 登完我会自己抓，不用点第二下',
         ' ｜ 想换号就先退出登录，再点「登录」重新登'),

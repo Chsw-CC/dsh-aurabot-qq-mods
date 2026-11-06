@@ -208,10 +208,12 @@ export default {
     async function sessionCookie() {
       if (memCookie) return memCookie
       if (!hasCookieStore() && !readState().loginAt) return ''
+      let opened = null
       try {
-        await startBrowser({ headless: true })
+        opened = await startBrowser({ headless: true })
         const parts = await grabCookies()
-        await closeBrowser()
+        // 复用别人（用户正开着的登录窗口）时别去关它，只关我们自己起的
+        if (opened && !opened.reused) await closeBrowser()
         if (looksLoggedIn(parts)) memCookie = parts.join('; ')
       } catch (error) {
         api.log.debug('[breeze] 从浏览器配置里读登录态失败：', error.message)
@@ -561,7 +563,10 @@ export default {
           api.log.info('[breeze] 自动抓取完成：' + msg)
           return
         }
-        notifyOwner('Breeze 登录窗口开了 5 分钟还没看到登录，先不等了；要是已经登好了，再点一次「登录」就会直接抓')      } catch (error) {
+        if (wantNotify()) {
+          notifyOwner('Breeze 登录窗口开了 5 分钟还没看到登录，先不等了；要是已经登好了，再点一次「登录」就会直接抓')
+        }
+      } catch (error) {
         api.log.warn('[breeze] 自动抓取出错：', error.message)
       } finally {
         watching = false
@@ -642,6 +647,5 @@ export default {
 
     api.route('/status', async () => ({ ok: true, hasLogin: hasLogin(), checkin: readState() }))
 
-    return { claim }
   },
 }
