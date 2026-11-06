@@ -1,4 +1,4 @@
-// Breeze 语音：这张卡里的设置都写进面板的草稿，跟原生表单一起用底部「保存设置」。
+﻿// Breeze 语音：这张卡里的设置都写进面板的草稿，跟原生表单一起用底部「保存设置」。
 // 面板会给 React / h / ui / call / settings / draftSettings / setSettings / toast。
 const { useState, useEffect, useRef } = React
 return function BreezePanel({ settings, draftSettings, setSettings, toast }) {
@@ -90,7 +90,7 @@ return function BreezePanel({ settings, draftSettings, setSettings, toast }) {
   }
 
   const input = (props) => h('input', { className: 'ab-input', style: { width: '100%' }, ...props })
-  const hasCookie = Boolean(st && st.hasCookie)
+  const hasCookie = Boolean(st && (st.hasLogin || st.hasCookie))
   const last = st && st.checkin ? st.checkin.lastResult : ''
 
   return h(ui.Card, {
@@ -108,7 +108,7 @@ return function BreezePanel({ settings, draftSettings, setSettings, toast }) {
           busy === 'logout' ? '正在退…' : confirmOut ? '再点一次就退出' : '退出登录'),
       ),
       h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } },
-        hasCookie ? '登录 cookie 已保存' : '还没抓过登录 cookie',
+        hasCookie ? '登录态已建好' : '还没登录',
         last ? ' ｜ 上次签到：' + last : '',
         ' ｜ 登完我会自己抓，不用点第二下',
         ' ｜ 想换号就先退出登录，再点「登录」重新登'),

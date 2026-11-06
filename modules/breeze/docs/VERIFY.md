@@ -105,7 +105,7 @@ ok true | engine http | mime audio/mpeg | bytes 54272
 
 1. 在面板点一次「登录」，登完自动领了一次，返回 `{"ok":true,"message":"今天已经领过了（余额 2126）"}`
 2. 把 `checkin.json` 里的 `loginAt` 删掉（模拟重启后内存与标记都空了），再 `POST /aurabot/api/modules/reload {"id":"breeze"}`
-3. `GET /aurabot/api/ext/breeze/status` → `{"ok":true,"hasCookie":true,"hasLogin":true}`
+3. `GET /aurabot/api/ext/breeze/status` → `{"ok":true,"hasLogin":true,...}`
    —— 此时状态里没有 `loginAt`，说明 `hasLogin` 是靠「配置目录里有 cookie 库」判断出来的
 4. `POST /aurabot/api/ext/breeze/checkin` → `{"ok":true,"message":"今天已经领过了（余额 2126）"}`
 

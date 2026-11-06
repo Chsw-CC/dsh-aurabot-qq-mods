@@ -74,20 +74,7 @@ export default {
       return buf
     }
 
-    /**
-     * 给「语音」模块的钩子：她那边是 `api.use('breeze').ttsOptions()`，
-     * 返回的对象会并到 voice 配置上。没起服务（没填 key / 已停）就返回 null，她照旧用原引擎。
-     */
-    function ttsOptions() {
-      if (!bridgeServer || !bridgePort) return null
-      const v = api.config().voice || {}
-      return {
-        engine: 'http',
-        http: { ...(v.http || {}), urlTemplate: `http://127.0.0.1:${bridgePort}/?text={text}`, method: 'GET' },
-      }
-    }
-
-    /** 起本地语音服务（端口随机），并把「语音」页的引擎指过来 */
+    /** 起本地语音服务（端口尽量固定），并把「语音」页的引擎指过来 */
     function startBridge() {
       if (bridgeServer || !breezeReady()) return
       const gen = ++bridgeGen
@@ -112,6 +99,12 @@ export default {
       // 端口尽量固定：配置里要写这个地址，重启后还能用；真被占了就往后挪一个
       let want = BRIDGE_PORT
       srv.on('error', (error) => {
+        if (gen !== bridgeGen) {
+          try {
+            srv.close()
+          } catch {}
+          return
+        }
         if (error.code === 'EADDRINUSE' && want < BRIDGE_PORT + BRIDGE_PORT_TRIES) {
           want += 1
           srv.listen(want, '127.0.0.1')
@@ -152,7 +145,7 @@ export default {
       })
     }
 
-    /** 关掉本地服务，并把引擎还原成开之前的 */
+    /** 关掉本地服务，并把引擎还原成开之前的（只还原成我们自己写的那种，别覆盖别人后改的设置） */
     function stopBridge() {
       bridgeGen++
       if (bridgeServer) {
@@ -160,14 +153,16 @@ export default {
           bridgeServer.close()
         } catch {}
         bridgeServer = null
-        bridgePort = 0
       }
       if (restoreVoice) {
+        const v = api.config().voice || {}
+        const mine = v.engine === 'http' && String((v.http || {}).urlTemplate || '').includes(`127.0.0.1:${bridgePort}/`)
         try {
-          api.setConfig({ voice: { engine: restoreVoice.engine, http: restoreVoice.http } })
+          if (mine) api.setConfig({ voice: { engine: restoreVoice.engine, http: restoreVoice.http } })
         } catch {}
         restoreVoice = null
       }
+      bridgePort = 0
     }
 
     startBridge()
@@ -255,11 +250,7 @@ export default {
         } catch {}
         const r = describeClaim(data)
         api.log.info('签到：' + r.message)
-        if (r.claimed && (api.settings() || {}).notifyCheckin !== false) {
-          const b = r.balance == null ? '' : `，余额 ${r.balance}`
-          notifyOwner('Breeze 今日已签到成功' + b)
-        }
-        return { ok: true, message: r.message, balance: r.balance }
+        return { ok: true, message: r.message, balance: r.balance, claimed: r.claimed }
       } catch (error) {
         api.log.warn('签到出错：', error.message)
         return { ok: false, message: error.message }
@@ -275,6 +266,14 @@ export default {
       }
     }
 
+    const wantNotify = () => (api.settings() || {}).notifyCheckin !== false
+
+    /** 领到分就报一句（成功、且真的是这次领到的） */
+    function notifyClaimed(balance) {
+      if (!wantNotify()) return
+      notifyOwner('Breeze 今日已签到成功' + (balance == null ? '' : `，余额 ${balance}`))
+    }
+
     const RETRY_MS = 5 * 60 * 1000
     const MAX_TRIES = 3
 
@@ -283,12 +282,13 @@ export default {
       const s = api.settings() || {}
       if (!s.checkinOn) return
       const st = readState()
-      const tried = st.day === today() ? st.tries || 0 : 0
+      const d = today()
+      const tried = st.day === d ? st.tries || 0 : 0
       const action = checkinAction({
         on: Boolean(s.checkinOn),
         hasCookie: hasLogin(),
         done: st.done,
-        day: today(),
+        day: d,
         tries: tried,
         at: checkinTime(),
         now: nowMinutes(),
@@ -297,15 +297,16 @@ export default {
       if (action === 'skip') return
       const r = await claim()
       markDone(r.ok, r.message, reason)
-      if (r.ok) return
+      if (r.ok) {
+        if (r.claimed) notifyClaimed(r.balance)
+        return
+      }
       if (tried + 1 < MAX_TRIES) {
         api.log.warn(`签到没成功（今天第 ${tried + 1} 次），5 分钟后再试：` + r.message)
         api.later(RETRY_MS, () => tick('retry'))
       } else {
         api.log.warn(`签到今天试了 ${tried + 1} 次都没成，明天再说：` + r.message)
-        if ((api.settings() || {}).notifyCheckin !== false) {
-          notifyOwner(`Breeze 今天签到没成功：${r.message}。可能登录过期了，去面板点「登录」重新登一次`)
-        }
+        if (wantNotify()) notifyOwner(`Breeze 今天签到没成功：${r.message}。可能登录过期了，去面板点「登录」重新登一次`)
       }
     }
 
@@ -346,7 +347,7 @@ export default {
     api.later(8000, () => tick('startup'))
 
     // ---------- 登录并抓 cookie：按需开一次 Chrome，抽完就关 ----------
-    // 调试端口不让用户填、也不扫 9333-9343：让 Chrome 自己挑（--remote-debugging-port=0），
+    // 调试端口不让用户填、也不扫端口段：让 Chrome 自己挑（--remote-debugging-port=0），
     // 它会把自己的端口写进配置目录的 DevToolsActivePort，我们只认这个文件。
     let debugPort = 0
 
@@ -557,26 +558,28 @@ export default {
           }
           if (!looksLoggedIn(parts)) continue
           const msg = await saveAndClaim(parts)
-          notifyOwner('Breeze ' + msg)
           api.log.info('[breeze] 自动抓取完成：' + msg)
           return
         }
-        notifyOwner('Breeze 登录窗口开了 5 分钟还没看到登录，先不等了；要是已经登好了，再点一次「登录」就会直接抓')
-      } catch (error) {
+        notifyOwner('Breeze 登录窗口开了 5 分钟还没看到登录，先不等了；要是已经登好了，再点一次「登录」就会直接抓')      } catch (error) {
         api.log.warn('[breeze] 自动抓取出错：', error.message)
       } finally {
         watching = false
       }
     }
 
-    /** 记下这次登录（只在内存里）、关掉窗口、顺手领一次 */
+    /** 记下这次登录（只在内存里）、关掉窗口、顺手领一次；通知只在这里发一次 */
     async function saveAndClaim(parts) {
       memCookie = parts.join('; ')
       await closeBrowser()
       writeState({ ...readState(), loginAt: new Date().toISOString() })
       const r = await claim()
       markDone(r.ok, r.message, 'login')
-      if (!r.ok) return '登录好了，但今天没签到成功：' + r.message
+      if (!r.ok) {
+        if (wantNotify()) notifyOwner('Breeze 登录好了，但今天没签到成功：' + r.message)
+        return '登录好了，但今天没签到成功：' + r.message
+      }
+      if (r.claimed) notifyClaimed(r.balance)
       return r.balance == null ? '今日已签到成功' : `今日已签到成功，余额 ${r.balance}`
     }
 
@@ -625,7 +628,7 @@ export default {
     api.route('/logout', async () => {
       try {
         await logout()
-        return { ok: true, message: '已经退出登录，cookie 删了；要换号就再点「登录」' }
+        return { ok: true, message: '已经退出登录，浏览器里的登录态清掉了；要换号就再点「登录」' }
       } catch (error) {
         return { ok: false, message: '退出没干净：' + error.message }
       }
@@ -637,11 +640,8 @@ export default {
       return { ok: r.ok, message: r.ok ? r.message : '没成功：' + r.message }
     })
 
-    api.route('/status', async () => {
-      const st = readState()
-      return { ok: true, hasCookie: hasLogin(), hasLogin: hasLogin(), checkin: st }
-    })
+    api.route('/status', async () => ({ ok: true, hasLogin: hasLogin(), checkin: readState() }))
 
-    return { ttsOptions, claim }
+    return { claim }
   },
 }
