@@ -116,4 +116,4 @@ curl http://127.0.0.1:6180/aurabot/api/ext/room3d/situation   # 看注入的文�
 
 ## 授权
 
-MIT。
+MIT。作者：zcx1021。
