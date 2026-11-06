@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, rmSync 
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import net from 'node:net'
+import { checkinAction, describeClaim, formatDate, looksLoggedIn, msUntil, nowMinutes } from './lib/pure.mjs'
 
 export default {
   id: 'breeze',
@@ -65,24 +66,9 @@ export default {
         api.log.warn('签到状态写不进去：', error.message)
       }
     }
-    const today = () => {
-      const d = new Date()
-      const p = (n) => String(n).padStart(2, '0')
-      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-    }
+    const today = () => formatDate(new Date())
     /** 设置里的签到时间，形如 '08:10' */
     const checkinTime = () => String((api.settings() || {}).checkinTime || '08:10').trim() || '08:10'
-    /** 'HH:MM' → [小时, 分钟] */
-    const hm = (at) => String(at || '08:10').split(':').map((x) => Number(x) || 0)
-    /** 'HH:MM' → 分钟数，用来比较早晚（'9:00' 和 '08:10' 直接比字符串会错） */
-    const toMinutes = (at) => {
-      const [h, m] = hm(at)
-      return h * 60 + m
-    }
-    const nowMinutes = () => {
-      const d = new Date()
-      return d.getHours() * 60 + d.getMinutes()
-    }
 
     /** 登录态只认模块数据夹里的 cookie.txt（自动抓的时候写进去） */
     function loginCookie() {
@@ -120,19 +106,13 @@ export default {
         try {
           data = JSON.parse(text)
         } catch {}
-        const got = data.credits_issued ?? data.credits ?? data.amount
-        let msg = '领好了'
-        if (data.claimed && got) msg = `领到 ${got} 积分`
-        else if (data.already_claimed || data.daily_claim_available === false) msg = '今天已经领过了'
-        else if (data.claimed === false && !got) msg = '这次没领到（可能已经领过）'
-        else if (data.message) msg = String(data.message).slice(0, 80)
-        const balance = typeof data.balance === 'number' ? `（余额 ${Math.round(data.balance)}）` : ''
-        api.log.info('签到：' + msg + balance)
-        if (data.claimed && (api.settings() || {}).notifyCheckin !== false) {
-          const b = typeof data.balance === 'number' ? `，余额 ${Math.round(data.balance)}` : ''
+        const r = describeClaim(data)
+        api.log.info('签到：' + r.message)
+        if (r.claimed && (api.settings() || {}).notifyCheckin !== false) {
+          const b = r.balance == null ? '' : `，余额 ${r.balance}`
           notifyOwner('Breeze 今日已签到成功' + b)
         }
-        return { ok: true, message: msg + balance, balance: typeof data.balance === 'number' ? Math.round(data.balance) : null }
+        return { ok: true, message: r.message, balance: r.balance }
       } catch (error) {
         api.log.warn('签到出错：', error.message)
         return { ok: false, message: error.message }
@@ -156,11 +136,18 @@ export default {
       const s = api.settings() || {}
       if (!s.checkinOn) return
       const st = readState()
-      if (st.done === today()) return
-      if (!loginCookie()) return
-      if (nowMinutes() < toMinutes(checkinTime())) return
       const tried = st.day === today() ? st.tries || 0 : 0
-      if (tried >= MAX_TRIES) return
+      const action = checkinAction({
+        on: Boolean(s.checkinOn),
+        hasCookie: Boolean(loginCookie()),
+        done: st.done,
+        day: today(),
+        tries: tried,
+        at: checkinTime(),
+        now: nowMinutes(),
+        maxTries: MAX_TRIES,
+      })
+      if (action === 'skip') return
       const r = await claim()
       markDone(r.ok, r.message, reason)
       if (r.ok) return
@@ -189,16 +176,6 @@ export default {
       if (reason) next.lastReason = reason
       if (ok) next.done = d
       writeState(next)
-    }
-
-    /** 距下一个签到时间还有多少毫秒 */
-    function msUntil(at) {
-      const [h, m] = hm(at)
-      const now = new Date()
-      const next = new Date(now)
-      next.setHours(h, m, 0, 0)
-      if (next <= now) next.setDate(next.getDate() + 1)
-      return next - now
     }
 
     /** 每天到点只醒一次，不轮询；改过签到时间就重排（旧的那个认 token 自己退场，不会越堆越多） */
@@ -403,12 +380,6 @@ export default {
         .filter((c) => String(c.domain || '').includes('breezeblue.ai'))
         .filter((c) => !c.expires || c.expires > now)
         .map((c) => `${c.name}=${c.value}`)
-    }
-
-    const SESSION_KEY = 'breeze_blue_session='
-
-    function looksLoggedIn(parts) {
-      return parts.some((p) => p.startsWith(SESSION_KEY) && p.length > SESSION_KEY.length + 5)
     }
 
     let watching = false
