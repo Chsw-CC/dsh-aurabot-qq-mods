@@ -28,14 +28,17 @@ const crc32 = (buf) => {
   for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8)
   return (c ^ -1) >>> 0
 }
-/** entries: [{ name, data:Buffer }] → zip Buffer（全存储法，条目带 UTF-8 名字标志） */
+/**
+ * entries: [{ name, data:Buffer, mode?:number }] → zip Buffer（全存储法，条目带 UTF-8 名字标志）
+ * mode 写进目录项的 externalAttr 高 16 位（Unix st_mode），用来造符号链接条目（0o120000）。
+ */
 function buildZip(entries) {
   const parts = []
   const centrals = []
   let offset = 0
   for (const e of entries) {
     const name = Buffer.from(String(e.name), 'utf8')
-    const data = Buffer.isBuffer(e.data) ? e.data : Buffer.from(e.data)
+    const data = Buffer.isBuffer(e.data) ? e.data : Buffer.from(e.data || Buffer.alloc(0))
     const crc = crc32(data)
     const lfh = Buffer.alloc(30)
     lfh.writeUInt32LE(0x04034b50, 0)
@@ -57,6 +60,9 @@ function buildZip(entries) {
     cdh.writeUInt32LE(data.length, 20)
     cdh.writeUInt32LE(data.length, 24)
     cdh.writeUInt16LE(name.length, 28)
+    // externalAttr（偏移 38）高 16 位 = Unix st_mode：普通文件 0o100644 / 符号链接 0o120000
+    const mode = Number.isInteger(e.mode) ? e.mode : 0o100644
+    cdh.writeUInt32LE(((mode & 0xffff) << 16) >>> 0, 38)
     cdh.writeUInt32LE(offset, 42)
     centrals.push(Buffer.concat([cdh, name]))
     offset += 30 + name.length + data.length
@@ -76,6 +82,7 @@ function makeApi({ settings = {}, hooks } = {}) {
   const events = {}
   const routes = {}
   const logs = []
+  const toolFactories = []
   const dataDir = mkdtempSync(join(tmpdir(), 'room3d-test-'))
   const api = {
     id: 'room3d',
@@ -85,7 +92,7 @@ function makeApi({ settings = {}, hooks } = {}) {
     log: { info: (m) => logs.push('info ' + m), warn: (m) => logs.push('warn ' + m), error: () => {} },
     on: (e, f) => { (events[e] ||= []).push(f); return () => {} },
     rule: () => () => {},
-    tool: () => () => {},
+    tool: (f) => { toolFactories.push(f); return () => {} },
     defineTool: (t) => t,
     route: (p, h) => { routes[p] = h; return () => {} },
     every: () => () => {},
@@ -95,7 +102,9 @@ function makeApi({ settings = {}, hooks } = {}) {
     core: { http: { body: async () => ({}), send: () => {} }, hub: {} },
     __roomTestHooks: hooks,
   }
-  return { api, events, routes, logs, dataDir }
+  /** 取注册出来的工具清单（模拟插件按会话现算的那一步） */
+  const toolsOf = (ctx = { chat: { kind: 'group' }, sessionId: 's1' }) => toolFactories.flatMap((f) => f(ctx) || [])
+  return { api, events, routes, logs, dataDir, toolsOf }
 }
 
 test('元数据一致：id/version/api 与 module.json 相同', () => {
@@ -178,4 +187,97 @@ test('page：管理密码按设置填进去，不印占位符', async () => {
   assert.equal(sent.code, 200)
   assert.ok(!sent.body.includes('__ROOM_ADMIN_PIN__'))
   assert.ok(sent.body.includes('1234'))
+})
+
+// ---------- 素材包解压的安全契约（zip-slip / 符号链接 / 明文 http） ----------
+const zipRes = (zip) => ({ ok: true, headers: { get: () => String(zip.length) }, arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength) })
+
+test('解压安全：zip-slip 路径被拒绝，且不落盘到 dataDir 之外', async () => {
+  const zip = buildZip([
+    { name: 'room3d-assets/正常.webm', data: Buffer.from('ok') },
+    { name: '../escape.webm', data: Buffer.from('evil') },
+  ])
+  const { api, routes, dataDir } = makeApi({
+    settings: { roomAssetUrl: 'https://example.com/room3d-assets.zip' },
+    hooks: { skipAutoAssets: true, fetchZip: async () => zipRes(zip) },
+  })
+  mod.default.setup(api)
+  const r = await routes['/api/room/fetch-assets']({ method: 'POST' })
+  assert.equal(r.ok, false)
+  assert.ok(String(r.message).includes('可疑路径'), `应报可疑路径，实际：${r.message}`)
+  assert.ok(!existsSync(join(dataDir, '..', 'escape.webm')), '不能写到暂存目录之外')
+  assert.ok(!existsSync(join(dataDir, 'assets', '正常.webm')), '解压失败不落位')
+})
+
+test('解压安全：符号链接条目被跳过（按 externalAttr 的 Unix 类型位判断）', async () => {
+  const zip = buildZip([
+    { name: 'room3d-assets/写代码.webm', data: Buffer.from('fake-webm') },
+    { name: 'room3d-assets/链接.webm', data: Buffer.from('/etc/passwd'), mode: 0o120777 },
+  ])
+  const { api, routes, dataDir } = makeApi({
+    settings: { roomAssetUrl: 'https://example.com/room3d-assets.zip' },
+    hooks: { skipAutoAssets: true, fetchZip: async () => zipRes(zip) },
+  })
+  mod.default.setup(api)
+  const r = await routes['/api/room/fetch-assets']({ method: 'POST' })
+  assert.equal(r.ok, true)
+  assert.equal(r.count, 1, '只落位真文件，符号链接条目不算')
+  assert.ok(existsSync(join(dataDir, 'assets', '写代码.webm')))
+  assert.ok(!existsSync(join(dataDir, 'assets', '链接.webm')))
+})
+
+test('明文 http 只放行本机回环（本地镜像可下）', async () => {
+  const zip = buildZip([{ name: 'room3d-assets/写代码.webm', data: Buffer.from('fake-webm') }])
+  const { api, routes } = makeApi({
+    settings: { roomAssetUrl: 'http://127.0.0.1:8080/room3d-assets.zip' },
+    hooks: { skipAutoAssets: true, fetchZip: async () => zipRes(zip) },
+  })
+  mod.default.setup(api)
+  const r = await routes['/api/room/fetch-assets']({ method: 'POST' })
+  assert.equal(r.ok, true)
+  assert.equal(r.count, 1)
+})
+
+test('素材已就位时手动重下仍会重下一次（force 语义），但落位结果去重不翻倍', async () => {
+  const zip = buildZip([{ name: 'room3d-assets/写代码.webm', data: Buffer.from('fake-webm') }])
+  let fetches = 0
+  const { api, routes, dataDir } = makeApi({
+    settings: { roomAssetUrl: 'https://example.com/room3d-assets.zip' },
+    hooks: { skipAutoAssets: true, fetchZip: async () => { fetches++; return zipRes(zip) } },
+  })
+  mod.default.setup(api)
+  await routes['/api/room/fetch-assets']({ method: 'POST' })
+  const second = await routes['/api/room/fetch-assets']({ method: 'POST' })
+  assert.equal(fetches, 2, '面板「重新下载」要真的重下')
+  assert.equal(second.count, 1)
+  assert.equal(readdirSync(join(dataDir, 'assets')).filter((n) => n.endsWith('.webm')).length, 1, '同名素材覆盖而非累加')
+})
+
+test('perception 关掉后 prompt 注入不出现，但两个工具照旧注册', async () => {
+  const { api, events, toolsOf } = makeApi({ settings: { perception: false }, hooks: { skipAutoAssets: true } })
+  mod.default.setup(api)
+  const out = await events.prompt[0]([{ type: 'text', text: '早' }], { chat: {}, queryText: '你在哪' })
+  assert.deepEqual(out, [{ type: 'text', text: '早' }], '关掉后原样返回，不加 token')
+  const names = toolsOf().map((t) => t.name)
+  assert.deepEqual(names, ['look_at_room', 'go_room_spot'], '关掉感知不影响工具')
+})
+
+test('工具：系统会话不给工具；go_room_spot 非主人调用被拒，主人调用真的换位置', async () => {
+  const { api, toolsOf, dataDir } = makeApi({ hooks: { skipAutoAssets: true } })
+  let owner = false
+  api.core.hub.turnSendersAllOwner = () => owner
+  mod.default.setup(api)
+  assert.deepEqual(toolsOf({ chat: { kind: 'system' }, sessionId: 's1' }), [], '系统会话不给工具')
+  const tools = Object.fromEntries(toolsOf().map((t) => [t.name, t]))
+  assert.ok(tools.look_at_room && tools.go_room_spot)
+  const denied = await tools.go_room_spot.execute({ spot: 'balcony' })
+  assert.equal(denied.ok, false)
+  assert.ok(String(denied.message).includes('只有主人'))
+  owner = true
+  const moved = await tools.go_room_spot.execute({ spot: 'balcony' })
+  assert.equal(moved.ok, true)
+  const state = JSON.parse(readFileSync(join(dataDir, 'room-state.json'), 'utf8'))
+  assert.equal(state.xiaoyu.spot, 'balcony')
+  const empty = await tools.go_room_spot.execute({ spot: '  ' })
+  assert.equal(empty.ok, false, '空 spot 不写盘')
 })

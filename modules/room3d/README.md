@@ -116,4 +116,10 @@ curl http://127.0.0.1:6180/aurabot/api/ext/room3d/situation   # 看注入的文�
 
 ## 授权
 
-MIT。作者：zcx1021。
+本模块自研代码 MIT，作者：zcx1021。
+
+`lib/vendor/` 下的 three.js r160（`three.module.js` / `OrbitControls.js` /
+`RoundedBoxGeometry.js`）是原样分发的第三方代码，同 MIT；来源、版本、文件对应关系
+与许可原文见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
+
+动作视频（.webm）不随本仓库分发，从独立素材仓按需下载。
