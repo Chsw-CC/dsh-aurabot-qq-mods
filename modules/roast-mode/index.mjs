@@ -3,7 +3,7 @@
  * 作用：主人发关键字开/关某个聊天的「毒舌模式」；开着时按设定接管消息，
  *      从语料抽一句损友式吐槽回过去（引用回复）。语料默认内置预设，
  *      可打开「读文本文件」开关改读数据目录的 corpus.txt（每行一句）。
- * 契约：扩展接口 v1（api: 1）；capabilities: filesystem（读写语料文件）。
+ * 契约：扩展接口 v1（api: 1）；capabilities: filesystem（读写语料文件）+ process（面板按钮调资源管理器打开语料文件夹）。
  * 数据：状态存 api.dataDir('state.json')，语料文件 api.dataDir('corpus.txt')。
  *      模块源码目录不写任何运行数据。
  * 风格：只做损友式调侃/优雅毒舌，不产辱骂、脏话与针对性攻击内容。
@@ -75,7 +75,7 @@ export function pickLine(lines, lastLine) {
 export default {
   id: 'roast-mode',
   name: '毒舌模式',
-  version: '1.0.0',
+  version: '1.0.1',
   api: 1,
   description: '主人发关键字开关的损友式吐槽模式，语料可改读文本文件（每行一句）',
   defaults: {
@@ -88,6 +88,7 @@ export default {
     cooldownSec: 20,
   },
   settings: SETTINGS,
+  panel: 'panel.js',
 
   setup(api) {
     const dataDir = api.dataDir()
@@ -178,6 +179,24 @@ export default {
     })
 
     api.onDispose(() => saveState())
+
+    // ── 面板接口：打开语料所在文件夹（资源管理器） ──────────
+    api.route('/corpus-info', async () => {
+      return { ok: true, path: corpusPath, dir: dataDir, exists: existsSync(corpusPath) }
+    })
+    api.route('/open-corpus-folder', async () => {
+      try {
+        // 测试钩子：api.__roastTestHooks.spawn 可注入假 spawn（对齐 __petTestHooks 模式），不打真进程
+        const spawnFn = api.__roastTestHooks?.spawn
+          || (await import('node:child_process')).spawn
+        const child = spawnFn('explorer', [dataDir], { detached: true, stdio: 'ignore' })
+        child?.unref?.()
+        return { ok: true }
+      } catch (e) {
+        api.log.warn('打开语料文件夹失败：', e?.message || e)
+        return { ok: false, message: String(e?.message || e) }
+      }
+    })
 
     // ── 导出：面板/别的模块可查状态 ───────────────────────
     return {

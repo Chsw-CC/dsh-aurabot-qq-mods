@@ -45,6 +45,7 @@ function fakeApi({ owner = true, dir = mkdtempSync(join(tmpdir(), 'roast-mode-te
     settings: () => ({ ...mod.defaults, ...settingsMap }),
     isOwner: (id) => owner && id === '10000',
     on: (ev, fn) => { (handlers[ev] ||= []).push(fn) },
+    route: (path, fn) => { (handlers.route ||= {})[path] = fn },
     onDispose: (fn) => { (handlers.dispose ||= []).push(fn) },
     reply: async (msg, text) => { replies.push({ chatId: msg.chatId, text }) },
     __test: { dataDir, handlers, replies, settingsMap },
@@ -130,6 +131,28 @@ test('useFile 开关：改读文本文件语料（每行一句）', async () => 
   api.__test.settingsMap.useFile = false
   await fire(api, msg('再说一句'))
   assert.notEqual(api.__test.replies.at(-1).text, '只此一句独家的')
+  rmSync(api.__test.dataDir, { recursive: true, force: true })
+})
+
+test('面板接口：corpus-info 报路径；open-corpus-folder 可调用', async () => {
+  const api = fakeApi()
+  const exp = mod.setup(api)
+  const routes = api.__test.handlers.route || {}
+  const info = await routes['/corpus-info']()
+  assert.equal(info.ok, true)
+  assert.equal(info.path, exp.corpusPath)
+  assert.equal(info.exists, true)
+  assert.equal(info.dir, api.__test.dataDir)
+  // 打开文件夹：注入假 spawn（不打真进程），验证调用参数
+  const spawns = []
+  const a2 = fakeApi()
+  a2.__roastTestHooks = { spawn: (cmd, args) => { spawns.push({ cmd, args }); return { unref() {} } } }
+  mod.setup(a2)
+  const r2 = await a2.__test.handlers.route['/open-corpus-folder']()
+  assert.equal(r2.ok, true)
+  assert.equal(spawns.at(-1).cmd, 'explorer')
+  assert.equal(spawns.at(-1).args[0], a2.__test.dataDir)
+  rmSync(a2.__test.dataDir, { recursive: true, force: true })
   rmSync(api.__test.dataDir, { recursive: true, force: true })
 })
 
