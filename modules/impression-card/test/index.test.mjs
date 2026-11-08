@@ -628,6 +628,19 @@ test('渲染失败且文字版也发不出去时 /卡片 不报成功', async ()
   env.cleanup()
 })
 
+test('无 sharp 时文字卡发送成功：命令不报空白，sendText 真的被调用一次', async () => {
+  const env = makeApi()
+  const exports = await plugin.setup(env.api, { renderer: NO_RENDERER })
+  const text = await env.commands.find((c) => c.name === '卡片').run('', ownerMsg())
+  assert.equal(text, '')
+  const sentTexts = env.sends.filter((item) => item.chatId === 'group:999' && typeof item.text === 'string' && item.text.length > 0).map((item) => item.text)
+  assert.ok(sentTexts.length >= 1, '文字版卡片必须真的走 sendText')
+  assert.match(sentTexts.join('\n'), /好感度：7/)
+  assert.match(sentTexts.join('\n'), /【大肥鱼的印象卡片】/)
+  assert.equal(exports.get('qq:10000').total, 7)
+  env.cleanup()
+})
+
 test('工具写笔记会清洗控制字符 / 零宽字符并封顶', async () => {
   const env = makeApi()
   const exports = await plugin.setup(env.api, { renderer: NO_RENDERER })
