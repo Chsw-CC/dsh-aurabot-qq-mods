@@ -49,12 +49,7 @@ const SETTINGS = [
   { key: 'offKeyword', label: '关闭关键字', type: 'text', hint: '发它就关', placeholder: '毒舌关闭' },
   { key: 'ownerOnly', label: '只有主人能开关', type: 'switch', hint: '开着时别人发关键字无效' },
   { key: 'useFile', label: '从文本文件读语料', type: 'switch', hint: '关=用内置预设；开=读数据目录的 corpus.txt（每行一句）' },
-  { key: 'mode', label: '接管方式', type: 'select', options: [
-    { value: 'roast', label: '抽查：按概率回毒舌，其余照常聊' },
-    { value: 'all', label: '全接管：开着时每条消息都回毒舌' },
-  ] },
-  { key: 'probability', label: '抽查概率 %', type: 'number', min: 0, max: 100, step: 5, hint: '接管方式=抽查时生效' },
-  { key: 'cooldownSec', label: '冷却秒数', type: 'number', min: 0, max: 600, step: 5, hint: '两次毒舌之间的最小间隔，防刷屏' },
+  { key: 'cooldownSec', label: '冷却秒数', type: 'number', min: 0, max: 600, step: 5, hint: '两次毒舌之间的最小间隔；开着=全接管，冷却期内消息吞掉不回也不给鱼鱼' },
 ]
 
 /** 导出给别的模块 / 测试用的纯函数 */
@@ -75,17 +70,16 @@ export function pickLine(lines, lastLine) {
 export default {
   id: 'roast-mode',
   name: '毒舌模式',
-  version: '1.0.2',
+  version: '1.0.3',
   api: 1,
-  description: '主人发关键字开关的损友式吐槽模式，语料可改读文本文件（每行一句）',
+  description: '主人发关键字开关的损友式吐槽模式：开着时整段接管该聊天，语料可改读文本文件（每行一句）',
   defaults: {
     onKeyword: '毒舌开启',
     offKeyword: '毒舌关闭',
     ownerOnly: true,
     useFile: false,
-    mode: 'roast',
     probability: 60,
-    cooldownSec: 20,
+    cooldownSec: 10,
   },
   settings: SETTINGS,
   panel: 'panel.js',
@@ -141,9 +135,9 @@ export default {
     const fireRoast = async (msg) => {
       const now = Date.now()
       const cd = Math.max(0, Number(api.settings().cooldownSec) || 0) * 1000
-      if (now - lastFireAt < cd) return false
+      if (now - lastFireAt < cd) return true // 冷却期内：吞掉不回，也不给鱼鱼（开着=全接管）
       const line = pickLine(linesNow(), lastLine)
-      if (!line) return false
+      if (!line) return true
       lastFireAt = now
       lastLine = line
       await api.reply(msg, line)
@@ -181,15 +175,8 @@ export default {
         return true
       }
 
-      // 2) 没开的聊天不管
+      // 2) 开着的聊天：整段接管，每条都归毒舌模块，绝不漏给鱼鱼
       if (!enabled.has(msg.chatId)) return false
-
-      // 3) 接管方式
-      const mode = s.mode === 'all' ? 'all' : 'roast'
-      if (mode === 'roast' && !msg.mentioned) {
-        const prob = Math.min(100, Math.max(0, Number(s.probability) || 0))
-        if (Math.random() * 100 >= prob) return false // 这次不抽查，照常聊天
-      }
       return fireRoast(msg)
     })
 

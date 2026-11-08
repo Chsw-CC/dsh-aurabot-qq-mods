@@ -88,8 +88,7 @@ test('开启/关闭关键字按聊天生效；非主人默认开不了', async (
   r = await fire(api, msg('毒舌开启'))
   assert.equal(r, true)
   assert.equal(api.__test.replies.at(-1).text.includes('已开启'), true)
-  // 开着之后（抽查模式、概率 0 也不拦「被 @」）抽一句
-  api.__test.settingsMap.probability = 0
+  // 开着之后：每条消息都接管回毒舌（开着=全接管）
   r = await fire(api, msg('来啊', { mentioned: true }))
   assert.equal(r, true)
   assert.ok(api.__test.replies.at(-1).text.length > 0)
@@ -103,25 +102,23 @@ test('开启/关闭关键字按聊天生效；非主人默认开不了', async (
   rmSync(api.__test.dataDir, { recursive: true, force: true })
 })
 
-test('全接管模式：开着时每条都回毒舌；冷却压住连发', async () => {
+test('开着=整段接管：每条都回毒舌；冷却期内吞掉不回也不给鱼鱼', async () => {
   const api = fakeApi()
-  api.__test.settingsMap.mode = 'all'
   api.__test.settingsMap.cooldownSec = 600
   mod.setup(api)
   await fire(api, msg('毒舌开启'))
   const r1 = await fire(api, msg('第一条'))
   assert.equal(r1, true)
   const count = api.__test.replies.length
-  // 冷却期内：不接管（返回 false，消息交回正常聊天流程）
+  // 冷却期内：依然接管（返回 true），但不回复——绝不漏给鱼鱼
   const r2 = await fire(api, msg('第二条'))
-  assert.equal(r2, false)
+  assert.equal(r2, true)
   assert.equal(api.__test.replies.length, count)
   rmSync(api.__test.dataDir, { recursive: true, force: true })
 })
 
 test('useFile 开关：改读文本文件语料（每行一句）', async () => {
   const api = fakeApi()
-  api.__test.settingsMap.mode = 'all'
   api.__test.settingsMap.cooldownSec = 0
   const exp = mod.setup(api)
   await fire(api, msg('毒舌开启'))
