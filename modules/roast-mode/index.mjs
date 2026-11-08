@@ -43,6 +43,13 @@ const CORPUS_TEMPLATE = [
   ...DEFAULT_LINES,
 ].join('\n') + '\n'
 
+/** 语料文件上限：超过 1MB 拒绝读入（防一个巨大的语料文件拖垮内存），回落内置预设 */
+const MAX_CORPUS_BYTES = 1024 * 1024
+/** 单行长度上限：超长行截断（防单行灌满上下文） */
+const MAX_LINE_CHARS = 500
+/** 总行数上限：超出部分丢弃（防行数爆炸） */
+const MAX_LINES = 5000
+
 /** 模块设置表单（面板自动生成） */
 const SETTINGS = [
   { key: 'onKeyword', label: '开启关键字', type: 'text', hint: '在这个聊天里发它就开毒舌模式', placeholder: '毒舌开启' },
@@ -70,7 +77,7 @@ export function pickLine(lines, lastLine) {
 export default {
   id: 'roast-mode',
   name: '毒舌模式',
-  version: '1.0.3',
+  version: '1.0.4',
   api: 1,
   description: '主人发关键字开关的损友式吐槽模式：开着时整段接管该聊天，语料可改读文本文件（每行一句）',
   defaults: {
@@ -78,7 +85,6 @@ export default {
     offKeyword: '毒舌关闭',
     ownerOnly: true,
     useFile: false,
-    probability: 60,
     cooldownSec: 10,
   },
   settings: SETTINGS,
@@ -116,9 +122,23 @@ export default {
     let fileCache = { mtime: 0, lines: [] }
     const fileLines = () => {
       try {
-        const mtime = statSync(corpusPath).mtimeMs
+        const st = statSync(corpusPath)
+        if (st.size > MAX_CORPUS_BYTES) {
+          // 超过大小上限：拒绝读入并回落内置预设（提示用户自己精简）
+          api.log.warn(`语料文件 ${(st.size / 1024 / 1024).toFixed(2)}MB 超过 1MB 上限，本次改用内置预设；请精简 corpus.txt（最多 ${MAX_LINES} 行、每行 ${MAX_LINE_CHARS} 字）`)
+          return DEFAULT_LINES
+        }
+        const mtime = st.mtimeMs
         if (mtime !== fileCache.mtime) {
-          fileCache = { mtime, lines: parseCorpus(readFileSync(corpusPath, 'utf8')) }
+          const raw = parseCorpus(readFileSync(corpusPath, 'utf8'))
+          // 行数与单行长度上限：超限截断，日志提示
+          let lines = raw
+          if (lines.length > MAX_LINES) {
+            api.log.warn(`语料 ${lines.length} 行超过 ${MAX_LINES} 行上限，超出部分丢弃`)
+            lines = lines.slice(0, MAX_LINES)
+          }
+          lines = lines.map((l) => (l.length > MAX_LINE_CHARS ? l.slice(0, MAX_LINE_CHARS) : l))
+          fileCache = { mtime, lines }
         }
         return fileCache.lines
       } catch (e) {
@@ -128,18 +148,19 @@ export default {
     }
     const linesNow = () => (api.settings().useFile ? fileLines() : DEFAULT_LINES)
 
-    // ── 冷却 / 防重复 ─────────────────────────────────────
-    let lastFireAt = 0
-    let lastLine = null
+    // ── 冷却 / 防重复（按聊天隔离：各聊天的冷却与「不重复上一句」互不影响） ──
+    const lastFireAt = new Map() // chatId -> 时间戳
+    const lastLine = new Map() // chatId -> 上一句毒舌
 
     const fireRoast = async (msg) => {
       const now = Date.now()
       const cd = Math.max(0, Number(api.settings().cooldownSec) || 0) * 1000
-      if (now - lastFireAt < cd) return true // 冷却期内：吞掉不回，也不给鱼鱼（开着=全接管）
-      const line = pickLine(linesNow(), lastLine)
+      const last = lastFireAt.get(msg.chatId) || 0
+      if (now - last < cd) return true // 冷却期内：吞掉不回，也不给鱼鱼（开着=全接管）
+      const line = pickLine(linesNow(), lastLine.get(msg.chatId) || null)
       if (!line) return true
-      lastFireAt = now
-      lastLine = line
+      lastFireAt.set(msg.chatId, now)
+      lastLine.set(msg.chatId, line)
       await api.reply(msg, line)
       return true
     }
@@ -148,7 +169,12 @@ export default {
     const squash = (t) => String(t || '').replace(/\s+/g, '') // 去掉所有空白再比，容错「毒舌 开启」
     const setChat = async (msg, on, note) => {
       if (on) enabled.add(msg.chatId)
-      else enabled.delete(msg.chatId)
+      else {
+        enabled.delete(msg.chatId)
+        // 关掉时顺手清掉该聊天的冷却/防重复记录，Map 不无限增长
+        lastFireAt.delete(msg.chatId)
+        lastLine.delete(msg.chatId)
+      }
       saveState()
       api.log.info(`毒舌模式${on ? '开启' : '关闭'} ${msg.chatId}（触发：${note}）`)
       const text = on ? '毒舌模式已开启，说话小心点哦～' : '毒舌模式已关闭，恢复温柔模式。'
@@ -218,8 +244,13 @@ export default {
       try {
         // 测试钩子：api.__roastTestHooks.spawn 可注入假 spawn（对齐 __petTestHooks 模式），不打真进程
         const spawnFn = api.__roastTestHooks?.spawn
-          || (await import('node:child_process')).spawn
-        const child = spawnFn('explorer', [dataDir], { detached: true, stdio: 'ignore' })
+        // 「explorer」是 Windows 专属：非 Windows 平台（含上游 Linux CI）直接拒绝并提示路径，除非测试注入了假 spawn
+        if (!spawnFn && process.platform !== 'win32') {
+          return { ok: false, message: '该按钮仅支持 Windows；请手动访问上面显示的语料文件夹路径。' }
+        }
+        const child = spawnFn
+          ? spawnFn('explorer', [dataDir], { detached: true, stdio: 'ignore' })
+          : (await import('node:child_process')).spawn('explorer', [dataDir], { detached: true, stdio: 'ignore' })
         child?.unref?.()
         return { ok: true }
       } catch (e) {

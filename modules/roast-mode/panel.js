@@ -29,6 +29,7 @@ return function Panel({ settings, toast }) {
       settings.useFile
         ? '已开启「从文本文件读语料」：每行一句，# 开头的行是注释，改完保存即生效。'
         : '当前用的是内置预设语料；要在面板设置里打开「从文本文件读语料」才会读上面的文件。'),
+    h('p', { className: 'ab-small ab-muted' }, '「打开语料文件夹」按钮仅支持 Windows，其他平台请手动访问上面的路径。'),
     h('div', { style: { display: 'flex', gap: '8px' } },
       h(ui.Btn, { onClick: openFolder }, '打开语料文件夹'),
       h(ui.Btn, { onClick: loadInfo }, '刷新路径')),

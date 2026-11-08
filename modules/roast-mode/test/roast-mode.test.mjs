@@ -1,6 +1,6 @@
 // 毒舌模式模块测试：不打网络、不写模块源码目录（数据进临时目录）。
 // 覆盖：语料解析（注释/空行）、抽词防重复、关键字开关（主人门禁）、
-// 接管方式（抽查概率 / 全接管）、冷却、读文本文件语料（每行一句）。
+// 全接管、冷却（按聊天隔离）、语料文件上限（1MB/500 字/5000 行）、读文本文件语料。
 // 跑法见仓库根 scripts/plugin-env.mjs：
 //   AURABOT_PLUGIN_DIR=<插件目录> node --import ./scripts/plugin-env.mjs --test "modules/roast-mode/test/*.test.mjs"
 
@@ -133,6 +133,55 @@ test('useFile 开关：改读文本文件语料（每行一句）', async () => 
   api.__test.settingsMap.useFile = false
   await fire(api, msg('再说一句'))
   assert.notEqual(api.__test.replies.at(-1).text, '只此一句独家的')
+  rmSync(api.__test.dataDir, { recursive: true, force: true })
+})
+
+test('多聊天隔离：冷却与防重复只影响当前聊天', async () => {
+  const api = fakeApi()
+  api.__test.settingsMap.cooldownSec = 600 // 长冷却：谁先毒舌，只静音谁自己
+  mod.setup(api)
+  await fire(api, msg('毒舌开启', { chatId: 'group:A' }))
+  await fire(api, msg('毒舌开启', { chatId: 'group:B' }))
+  await fire(api, msg('毒舌开启', { chatId: 'group:C' }))
+  // A 先毒舌一句（A 进入自己的冷却）；此时已回复 = 三次「已开启」确认 + A 的毒舌
+  await fire(api, msg('冲', { chatId: 'group:A' }))
+  const total = api.__test.replies.length
+  // A 冷却期内再发：吞掉不回
+  await fire(api, msg('还冲', { chatId: 'group:A' }))
+  assert.equal(api.__test.replies.length, total)
+  // B 不受 A 的冷却影响：正常回毒舌
+  await fire(api, msg('冲二', { chatId: 'group:B' }))
+  assert.equal(api.__test.replies.length, total + 1)
+  // C 也不受影响
+  await fire(api, msg('冲三', { chatId: 'group:C' }))
+  assert.equal(api.__test.replies.length, total + 2)
+  // 防重复也按聊天分开：B 冷却清零后再说，应避开 B 自己的上一句
+  const bFirst = api.__test.replies.filter((r) => r.chatId === 'group:B').at(-1).text
+  api.__test.settingsMap.cooldownSec = 0
+  await fire(api, msg('新回合', { chatId: 'group:B' }))
+  const bSecond = api.__test.replies.filter((r) => r.chatId === 'group:B').at(-1).text
+  assert.notEqual(bSecond, bFirst)
+  rmSync(api.__test.dataDir, { recursive: true, force: true })
+})
+
+test('语料文件上限：超 1MB 拒绝读入回落内置预设；超长行截断到 500 字', async () => {
+  const api = fakeApi()
+  api.__test.settingsMap.cooldownSec = 0
+  mod.setup(api)
+  await fire(api, msg('毒舌开启'))
+  const corpusFile = join(api.__test.dataDir, 'corpus.txt')
+  // 超 1MB：独占句被拒，改回内置预设
+  writeFileSync(corpusFile, ('x'.repeat(100) + '\n').repeat(11 * 1024) + '超限独占句\n', 'utf8')
+  api.__test.settingsMap.useFile = true
+  await fire(api, msg('大文件说一句'))
+  assert.notEqual(api.__test.replies.at(-1).text, '超限独占句')
+  assert.ok(api.__test.replies.at(-1).text.length > 0)
+  // 超长行：截断到 500 字以内
+  writeFileSync(corpusFile, '# 注释\n' + '长'.repeat(600) + '\n', 'utf8')
+  await fire(api, msg('长行说一句'))
+  const long = api.__test.replies.at(-1).text
+  assert.ok(long.length <= 500)
+  assert.ok(long.startsWith('长'))
   rmSync(api.__test.dataDir, { recursive: true, force: true })
 })
 
