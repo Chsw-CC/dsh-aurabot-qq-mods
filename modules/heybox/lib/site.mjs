@@ -148,7 +148,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
   let running = false
   let qrStarting = false
   let disposed = false
-  const getVerifier = () => verifier ||= createVerifier({ profileDir: dataDir('heybox', 'edge-profile'), browserPath: () => getConfig().heybox?.browserPath || '', log })
+  const getVerifier = () => verifier ||= createVerifier({ profileDir: dataDir('heybox', 'edge-profile'), browserPath: () => getConfig().heybox?.browserPath || '', log, useEgo: () => getConfig().browser?.useDshSidebar === true })
   const nowMs = () => now()
   const localToday = () => today(new Date(nowMs()))
 

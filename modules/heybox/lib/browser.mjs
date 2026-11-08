@@ -4,6 +4,7 @@ import { execFile, spawn } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { createEgoBackend, acquireEgoTarget } from './ego.mjs'
 
 const CANDIDATES = [
   process.env.EDGE_PATH, process.env.CHROME_PATH,
@@ -88,10 +89,50 @@ function windowsKillTree(pid) {
 }
 
 // 只连接本实例启动的浏览器，资料目录被占用时不接管也不删除锁。
-export function createBrowser({ profileDir, browserPath = () => '', log, spawnProcess = spawn, getPort = freePort, getBrowserJson = getJson, connect = connectCdp, wait = sleep, platform = process.platform, killTree = windowsKillTree, killGroup = (pid) => process.kill(-pid, 'SIGKILL'), stopWaitMs = 3000 } = {}) {
+export function createBrowser({ profileDir, browserPath = () => '', log, spawnProcess = spawn, getPort = freePort, getBrowserJson = getJson, connect = connectCdp, wait = sleep, platform = process.platform, killTree = windowsKillTree, killGroup = (pid) => process.kill(-pid, 'SIGKILL'), stopWaitMs = 3000, useEgo = () => false } = {}) {
   let child = null, cdp = null, attaching = null, opening = null, closing = null, generation = 0
   let exited = true, childError = null
-  const connected = () => Boolean(child && !exited && cdp && !cdp.closed)
+  const connected = () => (egoTarget ? Boolean(cdp && !cdp.closed) : Boolean(child && !exited && cdp && !cdp.closed))
+
+    // —— DSH 侧边浏览器（ego）模式：连 DSH 共享实例、认领自己的标签页；
+    // 绝不 spawn、绝不杀进程（共享实例归 DSH 管）。
+    let egoTarget = null, egoPort = 0
+    let egoBackend = null
+    const useEgoNow = () => { try { return useEgo() === true } catch (error) { return false } }
+    async function egoConnect(check, extra) {
+      if (egoTarget && cdp && !cdp.closed) return
+      if (egoTarget) { // 上一条连接断了：把自己那个标签页关掉再认领新的，别在共享实例里堆僵尸页
+        const stale = egoTarget, stalePort = egoPort
+        egoTarget = null; egoPort = 0
+        fetch(`http://127.0.0.1:${stalePort}/json/close/${stale.id}`).catch(() => {})
+      }
+      if (!egoBackend) egoBackend = createEgoBackend({ getJson, log })
+      const { port } = await egoBackend.ensure(check)
+      const target = await acquireEgoTarget(port, getBrowserJson)
+      check()
+      const c = connect(target.webSocketDebuggerUrl)
+      try {
+        await c.ready
+        check()
+        await c.send('Page.enable')
+        await c.send('Runtime.enable')
+        if (extra) await extra(c)
+        cdp = c
+        egoTarget = target
+        egoPort = port
+      } catch (error) {
+        c.close()
+        fetch(`http://127.0.0.1:${port}/json/close/${target.id}`).catch(() => {})
+        throw error
+      }
+    }
+    async function egoDisconnect() {
+      const t = egoTarget, port = egoPort
+      egoTarget = null; egoPort = 0
+      cdp?.close(); cdp = null
+      if (t && port) fetch(`http://127.0.0.1:${port}/json/close/${t.id}`).catch(() => {})
+    }
+
   const check = (started) => { if (generation !== started) throw new Error('小黑盒验证已关闭') }
   function waitExit(p) {
     if (exited) return Promise.resolve()
@@ -127,6 +168,19 @@ export function createBrowser({ profileDir, browserPath = () => '', log, spawnPr
   async function open() {
     if (closing) await closing
     if (connected()) return { ok: true }
+    if (useEgoNow()) {
+      if (opening) return opening
+      opening = Promise.resolve().then(async () => {
+        try {
+          await egoConnect(() => check(generation))
+          return { ok: true }
+        } catch (error) {
+          await egoDisconnect().catch(() => {})
+          return { ok: false, message: error.message }
+        }
+      }).finally(() => { opening = null })
+      return opening
+    }
     if (opening) return opening
     const started = generation
     opening = Promise.resolve().then(async () => {
@@ -213,6 +267,7 @@ export function createBrowser({ profileDir, browserPath = () => '', log, spawnPr
     return r.data ? 'data:image/png;base64,' + r.data : ''
   }
   async function show(visible) {
+    if (egoTarget) return // 窗口归 DSH，挪不动
     const c = need()
     const { windowId } = await c.send('Browser.getWindowForTarget')
     if (!visible) {
@@ -228,8 +283,9 @@ export function createBrowser({ profileDir, browserPath = () => '', log, spawnPr
     generation++
     const pending = opening
     closing = Promise.resolve().then(async () => {
-      attaching?.close()
       if (pending) await pending
+      if (egoTarget) { await egoDisconnect(); return } // 共享实例：只断连接，不关浏览器
+      attaching?.close()
       await stopChild()
     }).finally(() => { closing = null })
     return closing
