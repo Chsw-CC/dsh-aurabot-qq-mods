@@ -25,6 +25,7 @@ import { join, dirname, sep, basename, extname } from 'node:path'
 import { spawn as nodeSpawn } from 'node:child_process'
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
 import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
 import { deflateRawSync, inflateRawSync } from 'node:zlib'
 
 const ONLINE_TTL = 60_000        // 心跳超时：60 秒内没轮询过 /events 就算离线
@@ -35,7 +36,7 @@ const MIN_MS = 60_000            // 一分钟（碎碎念间隔/静默窗口都�
 export default {
   id: 'pet',
   name: '桌宠',
-  version: '1.0.14',
+  version: '1.0.15',
   api: 1,
   description: '把大肥鱼请到桌面上：会冒气泡、做小动作，你在干活时也陪着你。',
 
@@ -2072,6 +2073,10 @@ export default {
           .map((x) => x.trim().toLowerCase())
           .filter((x) => x && ALL_ACTIONS.has(x)),
       )
+      // 抓鼠标默认关（2026-11-07）：petClickChase / petTeaseChase 任一为 false（默认都 false）
+      // 就把 chase_cursor 塞进禁用清单，AI 动作表、反应层（点击/勾引）、聊天联动简报共用这份口径；
+      // 两个都开时不塞，恢复原有扑鼠标行为。与面板手填的禁用清单合并去重（Set 天然去重）。
+      if (!petClickChase() || !petTeaseChase()) disabledSet.add('chase_cursor')
       return {
         enabled: s.behaviorEnabled !== false,
         minMinutes,
@@ -3129,6 +3134,8 @@ export default {
       api.core.http.send(res, 200, {
         ok: true, name: 'aurabot-pet', version: api.version,
         online: online(), focus: focusOn(), scale: petScale(), releaseLand: petReleaseLand(), bootId, seq,
+        physics: petPhysics(), animRate: petAnimRate(), balanceEnabled: petShowBalance(),
+        clickChase: petClickChase(), teaseChase: petTeaseChase(), // 面板回显抓鼠标两开关（默认都关）
         carrier: s.carrier, modality: s.modality, fallbackToQQ: s.petFallbackToQQ !== false,
         pack: activePack(), playbackCount: playbacks.length,
         work: { ...workSnapshot(), label: WORK_STATE_LABEL[workSnap.state] || '' }, // 当前她在干什么（思考中/干活中/完成…）
