@@ -1,7 +1,7 @@
 {
   "id": "roast-mode",
   "name": "毒舌模式",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "主人发关键字开关的损友式吐槽模式：开着时用预设毒舌语料接管消息回怼，语料可改为读文本文件（每行一句）",
   "category": "social",
   "tags": ["毒舌", "吐槽", "互动"],
@@ -10,5 +10,5 @@
   "api": 1,
   "minPluginVersion": "1.2.0",
   "requires": [],
-  "capabilities": ["filesystem", "process"]
+  "capabilities": ["filesystem", "process", "plugin-internals"]
 }

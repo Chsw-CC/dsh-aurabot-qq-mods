@@ -36,7 +36,7 @@ function fakeApi({ owner = true, dir = mkdtempSync(join(tmpdir(), 'roast-mode-te
   const dataDir = dir
   const handlers = {}
   const replies = []
-  const saved = []
+  const sends = []
   const settingsMap = {}
   const api = {
     id: 'roast-mode',
@@ -47,8 +47,13 @@ function fakeApi({ owner = true, dir = mkdtempSync(join(tmpdir(), 'roast-mode-te
     on: (ev, fn) => { (handlers[ev] ||= []).push(fn) },
     route: (path, fn) => { (handlers.route ||= {})[path] = fn },
     onDispose: (fn) => { (handlers.dispose ||= []).push(fn) },
+    rule: (fn) => { (handlers.rules ||= []).push(fn) },
+    tool: (fn) => { (handlers.tools ||= []).push(fn) },
+    defineTool: (t) => t,
+    core: { hub: { turnSendersAllOwner: () => true } },
     reply: async (msg, text) => { replies.push({ chatId: msg.chatId, text }) },
-    __test: { dataDir, handlers, replies, settingsMap },
+    send: async (chatId, text) => { sends.push({ chatId, text }) },
+    __test: { dataDir, handlers, replies, sends, settingsMap },
   }
   return api
 }
@@ -153,6 +158,28 @@ test('面板接口：corpus-info 报路径；open-corpus-folder 可调用', asyn
   assert.equal(spawns.at(-1).cmd, 'explorer')
   assert.equal(spawns.at(-1).args[0], a2.__test.dataDir)
   rmSync(a2.__test.dataDir, { recursive: true, force: true })
+  rmSync(api.__test.dataDir, { recursive: true, force: true })
+})
+
+test('给鱼鱼的感知：有规则说明 + roast_mode_toggle 工具可拨开关', async () => {
+  const api = fakeApi()
+  mod.setup(api)
+  // 规则注入：鱼鱼的系统提示词里能看到毒舌模式
+  assert.ok((api.__test.handlers.rules || []).length >= 1)
+  // 工具：生成 → 开 → 查询 → 关 → 查询（工具路径走 send 兜底）
+  const makeTool = api.__test.handlers.tools[0]
+  const tool = makeTool({ chat: { kind: 'group', chatId: 'group:777', userId: '10000' }, sessionId: 's1' })
+  assert.equal(tool.name, 'roast_mode_toggle')
+  const rOn = await tool.execute({ action: 'on' })
+  assert.equal(rOn.ok, true)
+  const lastOut = api.__test.replies.at(-1) || api.__test.sends.at(-1)
+  assert.equal(lastOut.chatId, 'group:777')
+  const rStatusOn = await tool.execute({ action: 'status' })
+  assert.match(rStatusOn.message, /开着/)
+  const rOff = await tool.execute({ action: 'off' })
+  assert.equal(rOff.ok, true)
+  const rStatusOff = await tool.execute({ action: 'status' })
+  assert.match(rStatusOff.message, /没开/)
   rmSync(api.__test.dataDir, { recursive: true, force: true })
 })
 

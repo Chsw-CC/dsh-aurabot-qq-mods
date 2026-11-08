@@ -75,7 +75,7 @@ export function pickLine(lines, lastLine) {
 export default {
   id: 'roast-mode',
   name: '毒舌模式',
-  version: '1.0.1',
+  version: '1.0.2',
   api: 1,
   description: '主人发关键字开关的损友式吐槽模式，语料可改读文本文件（每行一句）',
   defaults: {
@@ -150,19 +150,34 @@ export default {
       return true
     }
 
+    // ── 开关核心：关键字匹配 + 工具共用 ────────────────────
+    const squash = (t) => String(t || '').replace(/\s+/g, '') // 去掉所有空白再比，容错「毒舌 开启」
+    const setChat = async (msg, on, note) => {
+      if (on) enabled.add(msg.chatId)
+      else enabled.delete(msg.chatId)
+      saveState()
+      api.log.info(`毒舌模式${on ? '开启' : '关闭'} ${msg.chatId}（触发：${note}）`)
+      const text = on ? '毒舌模式已开启，说话小心点哦～' : '毒舌模式已关闭，恢复温柔模式。'
+      try {
+        await api.reply(msg, text) // 有原消息时引用回复
+      } catch {
+        await api.send(msg.chatId, text) // 工具拨开关时没有原消息，直接发
+      }
+    }
+
     // ── 消息入口 ─────────────────────────────────────────
     api.on('message', async (msg) => {
       const s = api.settings()
-      const text = String(msg.text || '').trim()
+      const text = squash(msg.text)
 
-      // 1) 开关关键字（精确匹配）
-      if (text === s.onKeyword || text === s.offKeyword) {
+      // 1) 开关关键字：去空白后整句等于，或「包含关键字且长度不超关键字+6」容忍前后缀（如「毒舌模式开启」）
+      const onKw = squash(s.onKeyword)
+      const offKw = squash(s.offKeyword)
+      const isOn = text === onKw || (onKw && text.includes(onKw) && text.length <= onKw.length + 6)
+      const isOff = !isOn && (text === offKw || (offKw && text.includes(offKw) && text.length <= offKw.length + 6))
+      if (isOn || isOff) {
         if (s.ownerOnly && !api.isOwner(msg.userId)) return false // 别人发关键字当没看见
-        const turningOn = text === s.onKeyword
-        if (turningOn) enabled.add(msg.chatId)
-        else enabled.delete(msg.chatId)
-        saveState()
-        await api.reply(msg, turningOn ? '毒舌模式已开启，说话小心点哦～' : '毒舌模式已关闭，恢复温柔模式。')
+        await setChat(msg, isOn, '关键字')
         return true
       }
 
@@ -176,6 +191,34 @@ export default {
         if (Math.random() * 100 >= prob) return false // 这次不抽查，照常聊天
       }
       return fireRoast(msg)
+    })
+
+    // ── 给她感知：规则 + 开关工具（少爷自然语言说「开毒舌」她就能拨） ──
+    api.rule(() => '毒舌模式：主人让你开/关「毒舌模式」时，用 roast_mode_toggle 工具在当前聊天拨开关；开着时你会被模块抢答毒舌，不必自己回复。')
+
+    api.tool(({ chat, sessionId }) => {
+      if (chat.kind === 'system') return []
+      return api.defineTool({
+        name: 'roast_mode_toggle',
+        description: '在当前聊天开启/关闭/查询毒舌模式。主人要求开或关毒舌（毒舌模式）时使用。',
+        properties: {
+          action: { type: 'string', description: 'on=开启 off=关闭 status=查询', enum: ['on', 'off', 'status'] },
+        },
+        required: ['action'],
+        execute: async ({ action }) => {
+          // 只认主人：这一轮说话的人全是主人才放行（别用 turnHasOwner，H01 的教训）
+          if (!api.core.hub.turnSendersAllOwner(sessionId)) {
+            return { ok: false, message: '只有主人能开关毒舌模式。' }
+          }
+          if (action === 'status') {
+            return { ok: true, message: enabled.has(chat.chatId) ? '当前聊天毒舌模式开着。' : '当前聊天毒舌模式没开。' }
+          }
+          const on = action === 'on'
+          const fakeMsg = { chatId: chat.chatId, userId: chat.userId || '' }
+          await setChat(fakeMsg, on, '工具(roast_mode_toggle)')
+          return { ok: true, message: on ? '毒舌模式已开启。' : '毒舌模式已关闭。' }
+        },
+      })
     })
 
     api.onDispose(() => saveState())
