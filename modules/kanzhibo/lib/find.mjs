@@ -75,6 +75,10 @@ export const FIND_SRC = `(function (spec) {
   var plainText = function (el) { return norm(el.textContent || '') }
   var ancHit = null
   try { if (spec.ancestorText) ancHit = new RegExp(spec.ancestorText, spec.flags || 'u') } catch (e) { ancHit = null }
+  // 反面筛：祖先文字命中这些词就别要这个候选。用来挡「同一个词在别的面板里」的误选
+  // （1.0.3：星守护/展馆那排「加油鸭 差10个点亮 [点亮]」的按钮，和灯牌面板的「点亮（1钻）」撞名）。
+  var ancBan = null
+  try { if (spec.excludeAncestor) ancBan = new RegExp(spec.excludeAncestor, spec.flags || 'u') } catch (e) { ancBan = null }
   // parentElement 在影子树顶端会断掉，要跳到宿主继续往上找
   var parentOf = function (el) {
     var p = el.parentElement
@@ -92,6 +96,17 @@ export const FIND_SRC = `(function (spec) {
     for (var i = 0; i < 6 && cur; i++) {
       var txt = plainText(cur)
       if (txt.length > 0 && txt.length <= 600 && ancHit.test(txt)) return true
+      cur = parentOf(cur)
+    }
+    return false
+  }
+  // 反面筛只往上看 2 层（按钮 + 它那一行），别爬到面板根 —— 根上的文字会把整块面板都误杀。
+  var ancestorBanned = function (el) {
+    if (!ancBan) return false
+    var cur = parentOf(el)
+    for (var i = 0; i < 2 && cur; i++) {
+      var txt = plainText(cur)
+      if (txt.length > 0 && txt.length <= 200 && ancBan.test(txt)) return true
       cur = parentOf(cur)
     }
     return false
@@ -134,6 +149,7 @@ export const FIND_SRC = `(function (spec) {
       var target = spec.raw ? el : (ancestorClickable(el) || el)
       if (!target) continue
       if (!ancestorMatches(target)) continue
+      if (ancestorBanned(target)) continue
       var dup = false
       for (var j = 0; j < pairs.length; j++) if (pairs[j].target === target) { dup = true; break }
       if (dup) continue
@@ -292,6 +308,7 @@ export function normalizeSpec(spec) {
     },
     maxTextLen: s.maxTextLen || 24,
     ancestorText: s.ancestorText ? String(s.ancestorText) : '',
+    excludeAncestor: s.excludeAncestor ? String(s.excludeAncestor) : '',
     maxWidth: s.maxWidth || 0,
     maxHeight: s.maxHeight || 0,
     minWidth: s.minWidth || 10,
