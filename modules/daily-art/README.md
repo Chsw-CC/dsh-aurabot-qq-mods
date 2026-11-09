@@ -6,13 +6,11 @@
 
 需要原版 Aurabot 1.2.0 或更高版本和已连接的 QQ 网关。本模块无 npm 依赖。可选代理功能需要 Node.js 24.5 或以上。CI 使用上游提交 [`0a0ccb1`](https://github.com/aureth-labs/dsh-aurabot-qq/commit/0a0ccb1cc401dee00ce0faac2cffbf57d0efecda) 验证市场安装流程。
 
-上架后可在 Aurabot 面板的「模块市场」点安装。也可以从 [GitHub Release](https://github.com/Reinero/aurabot-daily-art/releases/latest) 下载 `daily-art-v3.0.0.zip` 手动安装。
-
-从 2.x 升级时，保留 Aurabot 数据卷和 `modules-data/daily-art/`。若已有宿主补丁，请在原部署先加载 v3，让模块把旧凭据迁入自身数据目录，再切换到原版宿主。先更新模块可避免旧凭据在未迁移时被原版宿主的配置接口读取。升级前保留安全的备份，旧配置和备份可能含有凭据。
+上架后可在 Aurabot 面板的「模块市场」点安装。也可以从 [v3.0.0 Release](https://github.com/Reinero/aurabot-daily-art/releases/tag/v3.0.0) 下载 `daily-art-v3.0.0.zip` 手动安装。
 
 将 ZIP 解压到 Aurabot 数据目录的 `modules/daily-art/`，确保 `index.mjs` 和 `module.json` 直接位于该目录。Windows 默认位置为 `%USERPROFILE%\.dsh\plugins-data\aurabot\modules\daily-art\`。Docker 部署时，把模块复制到 **Aurabot 容器**对应的数据卷，确保服务运行用户可读写模块目录和模块数据目录。加载后可在 Aurabot 的「系统 → 每日推图」配置。
 
-打开「系统 → 每日推图」。页面上方是共用代理设置，下方可切换 Konachan 和 Yande.re 分栏。两个图源分别保存定时、张数、白名单和筛选条件。升级时会迁移旧 `daily-art-yandere` 的设置并停用旧页面，保留发送记录。如两个旧代理地址均已配置，共用地址沿用原 Konachan 代理。
+打开「系统 → 每日推图」。页面上方是共用代理设置，下方可切换 Konachan 和 Yande.re 分栏。两个图源分别保存定时、张数、白名单和筛选条件。
 
 ## 定时推送
 
