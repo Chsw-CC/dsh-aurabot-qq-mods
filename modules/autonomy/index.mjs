@@ -14,6 +14,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { assertNoModelText, checkExec } from './lib/exec-guard.mjs';
+import { scanModuleCode } from './lib/mod-scan.mjs';
 
 import crypto from 'node:crypto';
 
@@ -47,8 +49,11 @@ function writeJson(file, data) {
   }
 }
 
-/** 问一次宿主模型（不进会话）：后台决策用 */
-async function ask(dsh, { system, text, maxTokens = 260, temperature = 0.9 }) {
+/** 决策调用的默认超时：模型卡住时不能把整轮醒着的时间耗掉 */
+const ASK_TIMEOUT_MS = 45_000;
+
+/** 问一次宿主模型（不进会话）：后台决策用。超时抛错，由上层降级处理。 */
+async function ask(dsh, { system, text, maxTokens = 260, temperature = 0.9, timeoutMs = ASK_TIMEOUT_MS }) {
   const llm = dsh.llm || (typeof dsh.get === 'function' ? dsh.get('llm') : null);
   if (!llm || typeof llm.stream !== 'function') throw new Error('宿主没有 llm 服务');
   let provider;
@@ -71,13 +76,39 @@ async function ask(dsh, { system, text, maxTokens = 260, temperature = 0.9 }) {
     },
   ];
   let out = '';
-  for await (const chunk of llm.stream({ provider, model, system, messages, maxTokens, temperature })) {
-    if (!chunk) continue;
-    if (chunk.type === 'text-delta') out += chunk.text;
-    if (chunk.type === 'finish' && chunk.reason && chunk.reason.kind === 'error') {
-      const f = chunk.reason.failure || {};
-      throw new Error('模型报错：' + (f.message || f.code || '未知'));
+  // 超时兜底，并且**真的取消底层请求**：只放一个计时器不去 abort，流会一直在后台挂着，
+  // 模型服务卡死时整轮「醒着」就永远结束不了，排程也跟着停摆。
+  // 宿主 llm.stream 的参数里有 signal（AbortSignal），用它。
+  const ac = new AbortController();
+  const timer = setTimeout(() => {
+    ac.abort(new Error('模型调用超时（' + Math.round(timeoutMs / 1000) + ' 秒）'));
+  }, timeoutMs);
+  if (typeof timer.unref === 'function') timer.unref();
+  try {
+    for await (const chunk of llm.stream({
+      provider,
+      model,
+      system,
+      messages,
+      maxTokens,
+      temperature,
+      signal: ac.signal,
+    })) {
+      if (!chunk) continue;
+      if (chunk.type === 'text-delta') out += chunk.text;
+      if (chunk.type === 'finish' && chunk.reason && chunk.reason.kind === 'error') {
+        const f = chunk.reason.failure || {};
+        throw new Error('模型报错：' + (f.message || f.code || '未知'));
+      }
     }
+  } catch (error) {
+    // abort 抛出来的名字五花八门（AbortError / 自定义 reason），统一成一句人话
+    if (ac.signal.aborted) {
+      throw new Error('模型调用超时（' + Math.round(timeoutMs / 1000) + ' 秒）');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
   const result = out.trim();
   // 空返回要显式报错，否则会被当成「她没想好」，看起来像发呆
@@ -314,7 +345,7 @@ export function parsePersonaMbti(md) {
 export default {
   id: 'autonomy',
   name: '自主生活',
-  version: '0.4.0',
+  version: '0.5.0',
   api: 1,
   description: '她自己决定这一刻做什么、下次什么时候醒；间隔按区间随机并受时段活跃度影响。不执行 shell 命令',
   panel: 'panel.js',
@@ -331,6 +362,10 @@ export default {
     playfulness: 'medium',
     // 写进提示词的偏好（原来是「多去虚拟机折腾」那段）
     moodNote: '',
+    // 决策调用的超时（秒）。模型卡住时最多等这么久就放弃这一轮
+    askTimeoutSec: 45,
+    // 允许她给自己写新模块（newmod）。默认关：这是唯一能让她间接碰代码的入口
+    allowNewMod: false,
     // 手机：锁屏密码。自主生活要玩手机时，先唤醒屏幕再自动输这个密码
     phoneLock: '',
     // 手机每天最多逛几次
@@ -338,6 +373,12 @@ export default {
   },
   settings: [
     { key: 'enabled', label: '启用自主生活', type: 'switch' },
+    {
+      key: 'allowNewMod',
+      label: '允许她给自己写新模块',
+      type: 'switch',
+      hint: '默认关闭。打开后她可以用 newmod 动作写代码并热加载——这是唯一能让她间接碰代码的入口；写出来的代码还要过静态检查（禁起进程、禁直连网络、禁动态求值、禁用插件内部对象）。',
+    },
     { key: 'minInterval', label: '最短间隔（分钟）', type: 'number' },
     { key: 'maxInterval', label: '最长间隔（分钟）', type: 'number' },
     { key: 'maxWakesPerDay', label: '每天最多醒几次', type: 'number' },
@@ -523,11 +564,20 @@ export default {
 
     const wait = (ms) => new Promise((z) => setTimeout(z, ms));
 
-    /** 跑一条 adb 命令，返回 { ok, out } */
+    /**
+     * 跑一条 adb 命令，返回 { ok, out }。
+     * 必须先过 exec-guard：白名单外的子命令、危险命令、含 shell 元字符的参数一律不跑。
+     */
     function runAdb(args) {
+      const exe = phoneAdbPath();
+      const verdict = checkExec(exe, args);
+      if (!verdict.ok) {
+        api.log.warn('adb 调用被拦下：' + verdict.reason);
+        return Promise.resolve({ ok: false, message: '被安全白名单拦下：' + verdict.reason });
+      }
       return new Promise((resolve) => {
         execFile(
-          phoneAdbPath(),
+          exe,
           args,
           { timeout: 60_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
           (error, stdout, stderr) => {
@@ -599,18 +649,23 @@ export default {
       }
       const src = String(code || '').trim();
       if (!src) return { ok: false, message: '没有代码' };
-      if (src.length > 60000) return { ok: false, message: '代码太长了（上限 60KB）' };
-      if (!/export\s+default/.test(src)) {
-        return { ok: false, message: '代码里没有 export default { ... }，模块加载不了' };
-      }
+      // 静态闸门：禁用起进程、直连网络、动态求值、插件内部对象、越界文件操作
+      const scan = scanModuleCode(src);
+      if (!scan.ok) return { ok: false, message: scan.reason };
       const base = path.join(aurabotDir, 'modules', mid);
       if (fs.existsSync(base)) return { ok: false, message: `模块 ${mid} 已经存在了，不能覆盖` };
       const file = path.join(base, 'index.mjs');
       try {
         fs.mkdirSync(base, { recursive: true });
         fs.writeFileSync(file, src, 'utf8');
+        const nodeArgs = ['--check', file];
+        const verdict = checkExec('node', nodeArgs);
+        if (!verdict.ok) {
+          fs.rmSync(base, { recursive: true, force: true });
+          return { ok: false, message: '被安全白名单拦下：' + verdict.reason };
+        }
         const bad = await new Promise((resolve) => {
-          execFile('node', ['--check', file], { timeout: 20000, windowsHide: true }, (error, stdout, stderr) => {
+          execFile('node', nodeArgs, { timeout: 20000, windowsHide: true }, (error, stdout, stderr) => {
             resolve(error ? String(stderr || error.message).slice(0, 300) : '');
           });
         });
@@ -743,15 +798,24 @@ export default {
 
         const msg = String((r && r.message) || '').trim() || '在手机上转了一圈';
 
-        // 在手机上留一份自己的记录（她的地盘她自己写）
+        // 在手机上留一份自己的记录（她的地盘她自己写）。
+        // 不用 shell 重定向：先 pull 下来在本机追加，再 push 回去——
+        // 参数里没有 | >> && 这类元字符，exec-guard 才放行。
         try {
           const stamp = new Date().toLocaleString('zh-CN', { hour12: false });
           const line = `${stamp} ${msg.slice(0, 200)}\n`;
-          const b64 = Buffer.from(line, 'utf8').toString('base64');
-          await runAdb([
-            'shell',
-            `mkdir -p /sdcard/Documents/notes && printf %s ${b64} | base64 -d >> /sdcard/Documents/notes/手机日记.txt`,
-          ]);
+          const remote = '/sdcard/Documents/notes/diary.txt';
+          const local = path.join(api.dataDir(), 'phone-diary.tmp');
+          await runAdb(['shell', 'mkdir', '-p', '/sdcard/Documents/notes']);
+          let prev = '';
+          const pulled = await runAdb(['pull', remote, local]);
+          if (pulled.ok) {
+            try {
+              prev = fs.readFileSync(local, 'utf8');
+            } catch (error) {}
+          }
+          fs.writeFileSync(local, prev + line, 'utf8');
+          await runAdb(['push', local, remote]);
         } catch (error) {
           api.log.warn('写手机日记失败：' + error.message);
         }
@@ -763,6 +827,10 @@ export default {
       }
 
       if (d.action === 'newmod') {
+        // 这是唯一能让模型间接影响代码的入口，默认不给用
+        if (!cfg().allowNewMod) {
+          return { note: '想给自己写个新模块，但这个开关关着（默认关，要在设置里打开）', extra: { ok: false } };
+        }
         const rawDetail = String(d.detail || '').trim();
         const codeFromSteps = d.steps && d.steps.length ? d.steps.join('\n') : '';
         // 代码：优先 steps，其次「长到不可能是 id」的 detail
@@ -949,6 +1017,8 @@ export default {
         maxTokens: 1600,
         temperature: 0.9,
         reasoningEffort: 'low',
+        // 模型卡住时最多等这么久，超了就放弃这一轮（按 settings.askTimeoutSec，默认 45 秒）
+        timeoutMs: Math.max(1, Number(c.askTimeoutSec) || 45) * 1000,
       };
 
       let d = null;
@@ -1231,11 +1301,18 @@ export default {
     }
 
     // 主人可以直接在 QQ 里调自主生活：/自主 开｜关｜状态｜60
+    // 插件层对 api.command 已经只放主人，这里再显式挡一道：
+    // email 里写死「只认主人」，免得将来换实现时权限悄悄放宽。
     api.command({
       name: '自主',
       aliases: ['autonomy', '自主生活'],
       desc: '看或改自主生活：/自主 开｜关｜状态｜60（数字=每天最多醒几次）',
-      run: (arg) => {
+      run: (arg, msg) => {
+        const from = String((msg && msg.userId) || '').trim()
+        if (!from || !api.isOwner(from)) {
+          api.log.warn('自主生活：非主人尝试改设置，已拒绝 userId=' + (from || '(空)'))
+          return ''
+        }
         const a = String(arg || '').trim();
         const c = cfg();
         if (!a || /^(状态|status|查|查询)$/i.test(a)) {

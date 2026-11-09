@@ -25,21 +25,23 @@ const SOURCE = readFileSync(join(HERE, '..', 'index.mjs'), 'utf8')
 /** 去掉注释再扫，免得注释里提到 ssh 就误报 */
 const CODE = SOURCE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
 
-test('外部命令执行只走白名单（adb / node --check），且参数不由模型给', () => {
-  // 这个版本撤掉了 SSH，但保留了两种本机固定调用：adb 手机操作、node --check 校验自写模块。
-  // 这里锁死：execFile 的每个调用点必须命中白名单，且不能把模型给的文本塞进去。
-  const calls = [...CODE.matchAll(/execFile\(\s*([^,]{1,80}),/g)].map((m) => m[1].trim())
-  assert.ok(calls.length > 0, '应当还有受控的 execFile 调用')
-  for (const target of calls) {
-    const ok = /^phoneAdbPath\(\)$/.test(target) || /^'node'$/.test(target) || /^"node"$/.test(target)
-    assert.ok(ok, `execFile 目标只允许 adb 或 node，实际是：${target}`)
-  }
+test('外部命令执行必须过 exec-guard 白名单', () => {
+  // 这一版撤掉了 SSH，保留两种本机固定调用：adb 手机操作、node --check 校验自写模块。
+  // 关键约束：每一处 execFile 之前都必须先调 checkExec()，且模型给的文本不能进参数。
+  const guardCalls = (CODE.match(/checkExec\(/g) || []).length
+  const execCalls = (CODE.match(/execFile\(/g) || []).length
+  assert.ok(execCalls > 0, '应当还有受控的 execFile 调用')
+  assert.ok(guardCalls >= execCalls, `每个 execFile 都要先过 checkExec（execFile ${execCalls} 处，checkExec ${guardCalls} 处）`)
+
   // 模型给的字段绝不能出现在 execFile 的参数里
   assert.equal(/execFile\([^)]*\b(detail|steps|action|why)\b/.test(CODE), false, '模型给的字段不该进 execFile')
-  // adb 调用的参数必须全是字面量，不能拼变量（锁屏密码那一处是从设置读的，单独放行）
+  // 不该把模板字符串直接塞进 execFile
   assert.equal(/execFile\([^)]*\$\{/.test(CODE), false, '不该把模板字符串塞进 execFile')
   // 绝不能出现 ssh
   assert.equal(/\bssh\b/i.test(CODE), false, '不该有 ssh')
+  // 白名单模块必须在，且被引用
+  assert.ok(/from '\.\/lib\/exec-guard\.mjs'/.test(CODE), '应当从 lib/exec-guard.mjs 引入守卫')
+  assert.ok(/assertNoModelText/.test(CODE), '应当引入 assertNoModelText')
 })
 
 test('源码里没有 SSH / 远端主机相关的实现', () => {

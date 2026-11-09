@@ -190,15 +190,59 @@ rm -rf _tmp
 
 ## 安全
 
-这个版本**不执行任何 shell 命令，也不连接任何远端主机**。边界如下：
+这个版本**不连接任何远端主机，所有外部命令都必须过白名单**（`lib/exec-guard.mjs`）。
 
-- **没有命令执行通路**：模型返回的 `detail` / `steps` 只当作「想做什么」的描述记录，不会拼进任何命令。动作表里也没有只能靠命令落地的动作。
-- **外部调用只有两处，参数写死**：`adb`（手机操作，子命令全是字面量）和 `node --check`（校验她自己写的模块语法）。都不接受模型给的文本。
-- **默认关闭**：`enabled` 默认 `false`，装上不会自己动，要在面板里或 `/自主 开` 手动打开。
-- **失败即降级**：模型报错、超时、返回解析不了的内容，都只会让她这一轮歇着，不会抛异常、不会重试成风暴。
-- **密码不进日志**：手机锁屏密码是 `password` 类型设置，不会被写进日志或活动流水。
+### 命令白名单
 
-回归测试见 [`test/security.test.mjs`](test/security.test.mjs)：它会扫描源码确认没有 `ssh`、没有命令执行入口被加回来、`execFile` 只命中白名单、默认是关的。
+只有两组调用，规则写在 `lib/exec-guard.mjs`，测试逐条钉死：
+
+| 可执行文件 | 允许的形态 | 用途 |
+|---|---|---|
+| `adb` | `devices` / `start-server` / `shell dumpsys` / `shell input` / `shell settings` / `shell am` / `shell pm` / `shell screencap` / `shell ls\|cat\|mkdir\|printf\|base64\|date` / `push` / `pull` | 手机状态查询与操作 |
+| `node` | `--check <文件>` | 校验她自写模块的语法 |
+
+白名单**之外的一切都拒绝**：`shell su`、`shell sh`、`install`、`uninstall`、`root`、`remount`、`forward`、以及任何别的可执行文件（bash / sh / powershell / python / curl / ssh…）。
+
+### 危险命令清单
+
+即使将来白名单放宽，命中下面这类模式也一律拒绝（`DANGEROUS`，27 条）：
+
+- 破坏性：`rm -rf`、`mkfs`、`dd of=/dev/*`、`shred`、`wipefs`、`> /dev/sd*`
+- 关机/杀进程：`shutdown`、`reboot`、`halt`、`poweroff`、`kill -9 -1`
+- 提权/改账户：`sudo`、`su`、`useradd`、`passwd`、`chmod 777 /`、`chmod +s`
+- 远端执行：`curl … | sh`、`wget … | bash`、`eval`、`nc -e`、`/dev/tcp/`
+- 系统配置：`iptables`、`sysctl`、`insmod`、`crontab -r`
+- 远端连接：`ssh`、`scp`、`sftp`（这个版本本就不该出现，兜底一层）
+
+### 另外几条边界
+
+- **不走 shell**：只传「可执行文件 + 参数数组」，参数里出现 `;&|\`$(){}<>` 或换行一律拒绝，所以拼接在结构上就无效。
+- **模型文本永不进参数**：`detail` / `steps` / `action` 只当「想做什么」的描述记录，有 `assertNoModelText()` 兜着，进了参数当场抛错。
+- **默认关闭**：`enabled` 默认 `false`，装上不会自己动。
+- **只认主人**：`/自主` 显式校验 `api.isOwner(userId)`，非主人拿到空回复且日志留痕。
+- **超时真取消**：决策调用默认 45 秒超时（`askTimeoutSec` 可调），超时用 `AbortController` **中止底层流**，不是只停止等待。
+- **失败即降级**：模型报错、超时、返回解析不了的内容，都只让这一轮歇着，不抛异常、不重试成风暴。
+- **密码不进日志**：手机锁屏密码是 `password` 类型，日志和活动流水里都不会出现。
+
+### 她给自己写模块（newmod）
+
+这是本模块里唯一能让模型**间接影响代码**的入口，所以两道闸：
+
+1. **默认关闭**：`allowNewMod` 默认 `false`，不打开她根本不会写文件
+2. **静态闸门**（`lib/mod-scan.mjs`）：打开之后写出来的代码还要过扫描——
+   禁起子进程、禁直连网络（含 `fetch`）、禁 `eval`/`new Function`、禁用 `api.core`/`api.lib`/`api.dsh`、
+   禁删除/改权限/改属主、禁写系统路径、禁路径穿越
+
+这不是沙箱，是降低误伤的门槛；真正的边界是「默认不给它写」。
+
+### 回归测试
+
+| 文件 | 盯什么 |
+|---|---|
+| [`test/exec-guard.test.mjs`](test/exec-guard.test.mjs) | 白名单放行/拒绝逐条、27 条危险命令、shell 元字符、模型文本进参数 |
+| [`test/trigger.test.mjs`](test/trigger.test.mjs) | 默认关闭、只认主人、超时真取消、失败降级、密码不进日志 |
+| [`test/security.test.mjs`](test/security.test.mjs) | 源码无 `ssh`、每个 `execFile` 前都有 `checkExec`、决策解析防御 |
+| [`test/mod-scan.test.mjs`](test/mod-scan.test.mjs) | newmod 默认关闭、危险代码逐个拒绝 |
 
 ## 许可
 
