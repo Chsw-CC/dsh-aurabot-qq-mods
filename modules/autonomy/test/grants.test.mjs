@@ -44,9 +44,17 @@ function makeApi(over = {}) {
   return { api, dir, getSettings: () => settings, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
-test('module.json 声明为空：什么都没要', () => {
+test('module.json 如实声明静态能力，运行时不预设任何权限', () => {
   const m = JSON.parse(readFileSync(join(HERE, '..', 'module.json'), 'utf8'))
-  assert.deepEqual(m.capabilities, [], 'capabilities 必须是空数组')
+  // capabilities 是「最坏情况下代码会用到什么」，必须无遗漏地列出来（仓库 check 会对着源码比对）。
+  // 真正决定「能不能用」的是 grants——默认全关，主人在面板里逐项打开。
+  assert.ok(Array.isArray(m.capabilities), 'capabilities 要是数组')
+  for (const need of ['filesystem', 'process', 'network', 'plugin-config', 'plugin-internals']) {
+    assert.ok(m.capabilities.includes(need), `代码用到 ${need}，声明里必须有`)
+  }
+  assert.equal(m.capabilities.includes('dynamic-code'), false, '不该声明用不到的能力')
+  // 运行时零权限
+  assert.deepEqual(autonomy.defaults.grants, { model: false, phone: false })
 })
 
 test('默认授权全空', () => {
