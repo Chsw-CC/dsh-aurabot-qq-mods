@@ -568,8 +568,18 @@ export default {
      * 跑一条 adb 命令，返回 { ok, out }。
      * 必须先过 exec-guard：白名单外的子命令、危险命令、含 shell 元字符的参数一律不跑。
      */
-    function runAdb(args) {
+    function runAdb(args, modelText) {
       const exe = phoneAdbPath();
+      // 防御性断言：模型给的文本不该出现在任何命令参数里。
+      // 现在的调用参数全是字面量，但把这条钉在入口处，将来谁想拼 detail 进来会当场炸。
+      if (modelText) {
+        try {
+          assertNoModelText(args, modelText);
+        } catch (error) {
+          api.log.warn('adb 调用被拦下：' + error.message);
+          return Promise.resolve({ ok: false, message: '被安全断言拦下：' + error.message });
+        }
+      }
       const verdict = checkExec(exe, args);
       if (!verdict.ok) {
         api.log.warn('adb 调用被拦下：' + verdict.reason);
@@ -806,16 +816,17 @@ export default {
           const line = `${stamp} ${msg.slice(0, 200)}\n`;
           const remote = '/sdcard/Documents/notes/diary.txt';
           const local = path.join(api.dataDir(), 'phone-diary.tmp');
-          await runAdb(['shell', 'mkdir', '-p', '/sdcard/Documents/notes']);
+          const fromModel = { detail: d.detail, why: d.why, action: d.action };
+          await runAdb(['shell', 'mkdir', '-p', '/sdcard/Documents/notes'], fromModel);
           let prev = '';
-          const pulled = await runAdb(['pull', remote, local]);
+          const pulled = await runAdb(['pull', remote, local], fromModel);
           if (pulled.ok) {
             try {
               prev = fs.readFileSync(local, 'utf8');
             } catch (error) {}
           }
           fs.writeFileSync(local, prev + line, 'utf8');
-          await runAdb(['push', local, remote]);
+          await runAdb(['push', local, remote], fromModel);
         } catch (error) {
           api.log.warn('写手机日记失败：' + error.message);
         }

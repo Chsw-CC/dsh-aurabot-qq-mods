@@ -172,3 +172,11 @@ test('白名单是精确前缀，不是模糊包含', () => {
   // 只写 'shell' 不给子命令 → 拒（dumpsys/input 等都要成对出现）
   assert.equal(checkExec(ADB, ['shell']).ok, false)
 })
+
+test('runAdb 的防御断言：模型文本进了参数就拒绝执行', () => {
+  // index.mjs 里 runAdb(args, modelText) 会先调 assertNoModelText。
+  // 这里直接验证断言本身的行为，保证那条路径是活的。
+  const args = ['shell', 'input', 'text', 'hello']
+  assert.equal(assertNoModelText(args, { detail: '画一张猫' }), true)
+  assert.throws(() => assertNoModelText(args, { detail: 'hello' }), /模型给的字段/)
+})
