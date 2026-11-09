@@ -674,6 +674,43 @@ console.log('\n=== 12.5 1.0.2 灯牌放弃标记绑房间（换直播间/换主�
   ok('/selfcheck 能看到 badgeGiveUpRoom', /badgeGiveUpRoom,\r?\n/.test(src))
 }
 
+console.log('\n=== 12.6 1.0.3 认得「送1个基础灯牌」，并挡掉星守护那排同名「点亮」===')
+{
+  const src = readFileSync(new URL('../index.mjs', import.meta.url), 'utf8')
+  const find = readFileSync(new URL('../lib/find.mjs', import.meta.url), 'utf8')
+  const arrText = (src.match(/const BADGE_CONFIRM_TEXTS = (\[[\s\S]*?\n    \])/) || [])[1]
+  const TEXTS = arrText ? new Function('return ' + arrText)() : []
+  const pick = (text) => TEXTS.find((t) => { try { return new RegExp(t, 'u').test(text) } catch { return false } })
+  ok('抖音现在的按钮文案「送1个基础灯牌」有对应规则', Boolean(pick('送1个基础灯牌')), pick('送1个基础灯牌') || '没有')
+  ok('「送1个灯牌」也认', Boolean(pick('送1个灯牌')))
+  ok('「送灯牌 / 点亮（1钻）/ 赠送」这些老文案都还在', ['送灯牌', '点亮（1钻）', '赠送'].every((t) => Boolean(pick(t))))
+  ok('优先顺序：先试「送1个基础灯牌」，再退化到裸「点亮」',
+    TEXTS.indexOf(pick('送1个基础灯牌')) < TEXTS.indexOf('^点亮$'), 'idx ' + TEXTS.indexOf(pick('送1个基础灯牌')) + ' < ' + TEXTS.indexOf('^点亮$'))
+  ok('扫描用的合并正则也包含新文案', /送1个基础灯牌/.test((src.match(/const BADGE_CONFIRM_SCAN = [\s\S]{0,400}/) || [''])[0]))
+  ok('spec 反面筛挡掉星守护/展馆那排「差N个点亮 / 点亮送N个」',
+    /excludeAncestor: '差\\\\s\*\\\\d\+\\\\s\*个|点亮送/.test(src) && /excludeAncestor:/.test(src))
+
+  // lib 那边得真的支持 excludeAncestor（否则 spec 写了也白写）
+  ok('find.mjs 认识 excludeAncestor（normalizeSpec 里带出来）', /excludeAncestor: s\.excludeAncestor \? String\(s\.excludeAncestor\) : ''/.test(find))
+  ok('FIND_SRC 里编译并应用了反面筛', /var ancBan = null/.test(find) && /if \(ancestorBanned\(target\)\) continue/.test(find))
+  ok('反面筛只看上两层（爬到面板根会误杀整块面板）',
+    /var ancestorBanned = function \(el\) \{[\s\S]{0,260}i < 2 && cur/.test(find))
+
+  // 真·行为：同一条「点亮」在多行里重复时仍然拒绝（宁可不动），不因为加了反面筛就放行
+  const dup = collapseNested([
+    { text: '点亮', area: 480, rect: { left: 0, top: 0, width: 24, height: 20 } },
+    { text: '点亮', area: 480, rect: { left: 0, top: 40, width: 24, height: 20 } },
+    { text: '点亮', area: 480, rect: { left: 0, top: 80, width: 24, height: 20 } },
+  ])
+  const u = pickUnique(dup)
+  ok('多行同名「点亮」仍然判不唯一（不瞎点）', u.ok === false && /分不清|同时找到/.test(u.reason))
+  const one = pickUnique(collapseNested([
+    { text: '送1个基础灯牌', area: 1656, rect: { left: 1658, top: 632, width: 92, height: 18 } },
+    { text: '送1个基础灯牌', area: 2736, rect: { left: 1658, top: 632, width: 152, height: 18 } },
+  ]))
+  ok('嵌套的同一颗按钮折叠成 1 个（内层 x-text + 外层 x-view）', one.ok === true && one.cand.text === '送1个基础灯牌')
+}
+
 if (LIVE) {
   console.log('\n=== 13. 真起一次浏览器（LIVE=1）===')
   const live = boot({ settings: { enabled: true, schedule: false, target: 'https://example.com/' }, cfg: { douyin: { enabled: true } } })
