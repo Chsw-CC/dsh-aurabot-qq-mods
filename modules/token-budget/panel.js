@@ -33,8 +33,6 @@ return function TokenBudgetPanel({ settings, save, toast }) {
     return () => clearInterval(id)
   }, [])
 
-  const put = async (patch) => { try { await save(patch) } catch (e) { toast('保存失败：' + e.message) } }
-
   const STATE_TEXT = { ok: ['正常', '#7a9e6f'], soft: ['软熔：非主人聊天在用便宜模型', '#b98a2f'], hard: ['硬熔：非必回的消息先不接', '#b05a4a'] }
   const stateInfo = STATE_TEXT[st?.state] || STATE_TEXT.ok
 
@@ -87,8 +85,5 @@ return function TokenBudgetPanel({ settings, save, toast }) {
       st.chats.length
         ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 } }, st.chats.map(card))
         : h('div', { className: 'ab-small ab-muted' }, '还没有会话数据——她收到 / 回出消息后这里就会长出来。'))
-      : h('div', { className: 'ab-small ab-muted' }, '读账本中…'),
-    ui.Row ? null : null,
-    h(ui.Row, { label: '启用预算管家', hint: '总开关：关掉后不记账、不裁剪、不熔断' },
-      h(ui.Switch, { on: settings.enabled !== false, onChange: (v) => put({ enabled: v }) })))
+      : h('div', { className: 'ab-small ab-muted' }, '读账本中…'))
 }
