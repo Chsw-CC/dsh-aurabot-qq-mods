@@ -1,5 +1,8 @@
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { downloadKonachanImage, konachanCredentials, PermanentImageError, ratingSelection, selectKonachan } from './lib/konachan.mjs'
+import { confirmGroupImages, definitelyFailed, isSendTimeout } from './lib/qq-delivery.mjs'
+import { defaultImageCacheDir } from './lib/image-cache.mjs'
+import { imageKeys, openImageDelivery } from './lib/image-delivery.mjs'
 import { registerSearch } from './lib/search.mjs'
 import { openVault, registerAdmin } from './lib/admin.mjs'
 import { booruSources, konachanProxy } from './lib/transport.mjs'
@@ -9,6 +12,7 @@ const defaultTimes = '09:00\n17:00'
 const defaultCount = 5
 const maxCount = 10
 const retryMs = 5 * 60_000
+const deliveryFiles = { konachan: 'delivery.json', yandere: 'delivery-yandere.json' }
 
 function clock(now) {
   const parts = Object.fromEntries(time.formatToParts(now).map(({ type, value }) => [type, value]))
@@ -75,8 +79,8 @@ function writeState(file, state) {
   renameSync(temp, file)
 }
 
-export function startDailyArt(api, { now = Date.now, select = selectKonachan, download = downloadKonachanImage, source = 'konachan' } = {}) {
-  const file = api.dataDir(source === 'konachan' ? 'delivery.json' : 'delivery-yandere.json')
+export function startDailyArt(api, { now = Date.now, select = selectKonachan, download = downloadKonachanImage, source = 'konachan', cacheDir, imageDelivery } = {}) {
+  const file = api.dataDir(deliveryFiles[source])
   const readProxy = konachanProxy
   const title = source === 'konachan' ? '每日推图' : `${booruSources[source].name} 推图`
   const shutdown = new AbortController()
@@ -84,6 +88,12 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
   let running = false
   let lastDay = ''
   let lastScheduleError = ''
+
+  function excluded(used, recipients) {
+    const keys = new Set(used)
+    if (imageDelivery) for (const key of imageDelivery.known(...recipients)) keys.add(key)
+    return keys
+  }
 
   function canSend(day) {
     const cfg = api.config()
@@ -102,15 +112,15 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
     const rating = slot.rating ?? 's'
     if (!slotIsCurrent(day, label, proxyUrl, rating)) return
     const signal = AbortSignal.any([shutdown.signal, AbortSignal.timeout(20_000)])
-    const downloads = await Promise.allSettled(slot.images.map(async ({ url }) => {
-      const bytes = await download(url, { source, proxyUrl, signal, log: api.log, operation: 'scheduled' })
-      return { type: 'image', data: { file: `base64://${bytes.toString('base64')}` } }
+    const downloads = await Promise.allSettled(slot.images.map(async ({ key, url, md5 }) => {
+      const bytes = await download(url, { source, proxyUrl, signal, log: api.log, operation: 'scheduled', cacheDir })
+      return { keys: imageKeys(key, md5, bytes), segment: { type: 'image', data: { file: `base64://${bytes.toString('base64')}` } } }
     }))
     const broken = downloads.flatMap((result, i) => result.status === 'rejected' && result.reason instanceof PermanentImageError ? [i] : [])
     if (broken.length && slotIsCurrent(day, label, proxyUrl, rating)) {
       const settings = api.settings()
       const before = readState(file, day)
-      const replacement = await select(new Set(before.used), broken.length, {
+      const replacement = await select(excluded(before.used, Object.keys(slot.recipients)), broken.length, {
         source, signal: shutdown.signal, filters: slot.filters ?? pushFilters(settings, source), credentials: konachanCredentials(settings),
         proxyUrl, log: api.log, operation: 'scheduled-repair',
       })
@@ -128,7 +138,7 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
     }
     const failed = downloads.find(result => result.status === 'rejected')
     if (failed) throw failed.reason
-    const segments = downloads.map(result => result.value)
+    const images = downloads.map(result => result.value)
     for (const chatId of Object.keys(slot.recipients)) {
       if (!slotIsCurrent(day, label, proxyUrl, rating)) return
       if (!targets(api.settings()).has(chatId)) continue
@@ -136,23 +146,37 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
       const recipient = state.slots[slotKey]?.recipients[chatId]
       if (recipient !== 'pending') continue
 
-      // 先落盘。进程若在网关回执前中断，保留 sending，避免重启后发第二遍。
-      state.slots[slotKey].recipients[chatId] = 'sending'
-      writeState(file, state)
+      const claim = imageDelivery?.reserve(chatId, images)
+      const segments = (claim?.items ?? images).map(image => image.segment)
+      state.slots[slotKey].recipients[chatId] = segments.length ? 'sending' : 'skipped'
+      try { writeState(file, state) } catch (error) { claim?.release(); throw error }
+      if (!segments.length) continue
+
       let status = 'pending'
+      const startedAt = Date.now()
+      let cancelled = false
       try {
         const result = await api.core.hub.sendSegments(chatId, segments, `[${title} ${day} ${label}]`, {
           throwOnError: true,
           timeoutMs: 60_000,
-          isCurrent: () => slotIsCurrent(day, label, proxyUrl, rating) && targets(api.settings()).has(chatId),
+          isCurrent: () => {
+            cancelled = !slotIsCurrent(day, label, proxyUrl, rating) || !targets(api.settings()).has(chatId)
+            return !cancelled
+          },
         })
         if (result?.message_id != null) status = 'sent'
         else if (result != null) status = 'uncertain'
+        else if (cancelled) claim?.release()
+        else if (claim) status = 'uncertain'
       } catch (error) {
-        const definitelyFailed = !error.uncertain && !/超时|timeout|timed?\s*out/i.test(error.message) &&
-          (error.transport || error.data?.status === 'failed' || Number(error.data?.retcode || 0) !== 0)
-        if (!definitelyFailed) status = 'uncertain'
-        api.log.warn(`${label} → ${chatId}：${error.message}${status === 'uncertain' ? '（结果不明，跳过重发）' : '（稍后重试）'}`)
+        const timedOut = isSendTimeout(error)
+        const receipt = timedOut ? await confirmGroupImages(api, chatId, segments, startedAt, shutdown.signal) : null
+        if (receipt) status = 'sent'
+        else {
+          if (definitelyFailed(error)) claim?.release()
+          else status = 'uncertain'
+          api.log.warn(`${label} → ${chatId}：${error.message}${status === 'uncertain' ? '（结果不明，跳过重发）' : '（稍后重试）'}`)
+        }
       }
 
       // 等回执时可能热重载或跨日，合并进最新记录，不能覆盖另一轮的进度。
@@ -161,7 +185,7 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
         current.slots[slotKey].recipients[chatId] = status
         writeState(file, current)
       }
-      if (status === 'sent') api.log.info(`${label} → ${chatId}：已推送 ${slot.images.length} 张图片`)
+      if (status === 'sent') api.log.info(`${label} → ${chatId}：已推送 ${segments.length} 张图片`)
     }
   }
 
@@ -201,7 +225,7 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
           if (!slot) {
             const credentials = konachanCredentials(settings)
             const { count } = pushSchedule(settings)
-            const images = await select(new Set(state.used), count, { source, signal: shutdown.signal, filters, credentials, proxyUrl, log: api.log, operation: 'scheduled' })
+            const images = await select(excluded(state.used, eligible), count, { source, signal: shutdown.signal, filters, credentials, proxyUrl, log: api.log, operation: 'scheduled' })
             if (!slotIsCurrent(day, label, proxyUrl)) continue
             const latest = api.settings()
             const latestCredentials = konachanCredentials(latest)
@@ -293,13 +317,19 @@ export function migrateYandereSettings(cfg) {
 export default {
   id: 'daily-art',
   name: '每日推图 · 逛图站',
-  version: '3.1.0',
+  version: '3.2.0',
   api: 1,
   panel: 'panel.js',
   description: '在同一页管理 Konachan 和 Yande.re 定时推图及 QQ 按需找图。',
-  defaults: { ...scheduleDefaults, konachanUsername: '', allowPrivateWhitelistSearch: false },
+  defaults: { ...scheduleDefaults, konachanUsername: '', allowPrivateWhitelistSearch: false, cacheImages: false, imageCacheDir: '' },
   setup(api) {
     const vault = openVault(api)
+    const imageDelivery = openImageDelivery(api.dataDir('image-delivery.json'), Object.values(deliveryFiles).map(file => api.dataDir(file)))
+    const defaultCacheDir = defaultImageCacheDir(api)
+    const cacheDir = () => {
+      const settings = vault.settings()
+      return settings.cacheImages === true ? String(settings.imageCacheDir ?? '').trim() || defaultCacheDir : ''
+    }
     function migrate() {
       const current = api.config()
       const next = vault.migrate(migrateYandereSettings(current))
@@ -308,14 +338,14 @@ export default {
     migrate()
     api.on('config', migrate)
     const runtime = { ...api, settings: vault.settings }
-    startDailyArt(runtime)
+    startDailyArt(runtime, { cacheDir, imageDelivery })
     startDailyArt({ ...api, settings: () => {
       const settings = vault.settings()
       return { ...scheduleDefaults, ...settings.yandere, konachanProxyUrl: settings.konachanProxyUrl }
-    } }, { source: 'yandere' })
+    } }, { source: 'yandere', cacheDir, imageDelivery })
     registerAdmin(api, vault)
-    registerSearch(runtime)
-    api.route('/settings-schema', () => ({ ok: true, proxyField, searchAccessField, accountFields, scheduleFields, scheduleDefaults, ...vault.status(),
+    registerSearch(runtime, { cacheDir, imageDelivery })
+    api.route('/settings-schema', () => ({ ok: true, proxyField, searchAccessField, accountFields, scheduleFields, scheduleDefaults, defaultCacheDir, ...vault.status(),
       ratings: Object.fromEntries(Object.entries(booruSources).map(([id, site]) => [id, site.ratings.map(value => ({ value, label: ratingLabels[value] }))])),
     }))
   },

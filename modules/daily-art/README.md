@@ -12,6 +12,12 @@
 
 加载模块后，打开「平台 → 每日推图 · 逛图站」。页面上方是共用代理设置，下方可切换 Konachan 和 Yande.re 分栏。两个图源分别保存定时、张数、白名单和筛选条件。
 
+## 图片缓存
+
+在「平台 → 每日推图 · 逛图站 → 图片缓存」开启「缓存图片」并保存设置。开关默认关闭。开启后，Konachan 和 Yande.re 的定时推送、按需找图都会保存成功下载的图片。同一图源的相同图片只保留一份。
+
+缓存目录接受 Aurabot 运行环境中的绝对路径。留空时，若有 Docker 共享目录 `/workspace/AuraBotDoc`，图片会保存到其下的 `daily-art-images`。其他环境默认保存在模块数据目录的 `daily-art-images`。
+
 ## 定时推送
 
 在「平台 → 每日推图 · 逛图站」填写群聊、私聊推送白名单，打开「开启定时推送」并保存。模块加载后默认关闭。
@@ -57,7 +63,11 @@ Konachan 日常请求 `konachan.net` 的 `/post.json`、`/tag.json` 和候选图
 批次和已使用的来源 ID 存在 Aurabot 数据目录的 `modules-data/daily-art/delivery.json`，重启后保留。移除记录会使历史图片重新进入候选。
 Yande.re 使用单独的 `modules-data/daily-art/delivery-yandere.json`，API 请求访问 `yande.re`，图片可能从 `files.yande.re` 下载。日志用 `[Yande.re]` 标记。
 
+定时推送和按需找图共享按 QQ 会话保存的发送记录。作品 ID 或图片指纹相同的图片会跳过。首次加载会导入现存推送批次中已发出或发送结果待确认的记录。发送回执超时时，图片保留在去重记录中，避免下一次请求重复发送。
+
 ## 在 QQ 里按需找图
+
+直接发 `yande找图` 或 `konachan找图`，会随机发送一张当前会话尚未收到的 Safe 图片，并附上一条筛选示例。
 
 1. 在 Aurabot 已允许聊天的 QQ 会话里，用「konachan找图」开头。例如「**konachan找图** 初音未来的横图，按评分排序」。模块会在同一轮查找并发图，再附上分数、分辨率、站点标签和作品链接。没指定数量时发 1 张。
 2. 想先选图时，在请求里加「先列候选」，再在同一会话发「konachan找图 发第 2 张」。
@@ -78,6 +88,12 @@ Yande.re 使用单独的 `modules-data/daily-art/delivery-yandere.json`，API �
 - `yande找图 rating:q 初音未来的横图` 只搜索 Questionable 作品。
 - `yande找图 rating:s,q 初音未来的横图` 搜索 Safe 或 Questionable 作品，合在一起排序，张数上限按整条请求计算。
 - `yande找图 rating:s,q 发第 2 张` 从先前列出的候选中选图。选图时使用同一图源和分级组合，组合顺序可以调换。
+- `yande找图 鸣潮 rating:e,q 最近一周` 用站点标签 `wuthering_waves` 查过去 7 天发布的 Explicit 或 Questionable 作品。分级可写在主题前后，主人说「不限 rating」或「无限制」也按 `e,q` 查询。
+
+省略评分条件时不限作品分数。写「30 分以上」会筛选评分至少 30 的作品。
+只写筛选条件也可以找图。例如 `yande找图 最近一个月 rating:e 分数30以上` 会找过去 30 天发布、评分至少 30 的 Explicit 作品。
+
+图片下载遇到连接重置时最多重试两次。QQ 群发回执超时后，模块会查近期群历史。查到对应图片就记为已送达，查不到时保留待确认状态，避免重复发送。
 
 ## 许可
 

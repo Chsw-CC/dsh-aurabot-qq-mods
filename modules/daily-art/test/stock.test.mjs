@@ -40,7 +40,7 @@ test('stock host installs, groups the panel, claims raw requests and protects cr
     assert.ok(entry)
     process.env.AURABOT_REGISTRY_URL = registry
     t.mock.method(globalThis, 'fetch', (url, options) => {
-      if (url === registry) return Promise.resolve(Response.json({ schema: 1, assetsBase, modules }))
+      if (url === registry) return Promise.resolve(Response.json({ schema: 1, assetsBase, modules: [entry] }))
       if (url === assetsBase + entry.path) return Promise.resolve(new Response(readFileSync(join(market, entry.file))))
       return fetchActual(url, options)
     })
@@ -65,6 +65,7 @@ test('stock host installs, groups the panel, claims raw requests and protects cr
   const configFile = join(dir, 'config.json')
   const config = restarting ? JSON.parse(readFileSync(configFile, 'utf8')) : { enabled: true, dryRun: false, setupDone: true, ownerQQ: owner, botQQ: bot,
     allow: { private: [], groups: [] }, gateway: 'onebot', model: { provider: 'fake', model: 'fake-1' },
+    modules: { 'group-admin': { enabled: false } },
     ext: { 'daily-art': { enabled: false, pushTimes: '00:00', pushCount: 1, privateWhitelist: owner, pushRating: ['s'], konachanApiKey: 'legacy-fixture' } },
   }
   config.snowluma = { autoStart: false, wsUrl: onebot.wsUrl, httpUrl: onebot.httpUrl, wsToken: onebot.token, httpToken: onebot.token }
@@ -109,6 +110,9 @@ test('stock host installs, groups the panel, claims raw requests and protects cr
   const groupOf = runInNewContext(client.slice(start, end) + '\nnavGroupOf')
   assert.equal(groupOf({ id: `ext:${module.id}`, ext: module.id, label: module.name }).id, 'platform')
   assert.ok(module.panel && !module.routes.some(route => route.endsWith('/pair')))
+  assert.equal(module.defaults.cacheImages, false)
+  const schema = (await fake.call('/ext/daily-art/settings-schema')).json()
+  assert.match(schema.defaultCacheDir, /daily-art-images$/)
   assert.equal((await post('/credentials', {}, '203.0.113.7')).ok, false)
   assert.equal(instance.getConfig().ext['daily-art'].konachanApiKey, undefined)
   const vault = join(dir, 'modules-data', 'daily-art', 'credentials.json')
@@ -124,7 +128,7 @@ test('stock host installs, groups the panel, claims raw requests and protects cr
     const record = JSON.parse(readFileSync(join(dir, 'modules-data', 'daily-art', 'delivery.json'), 'utf8'))
     assert.equal(record.slots['0'].rating, 's')
     assert.equal(record.slots['0'].recipients[`private:${owner}`], 'sent')
-  } else await until(() => sent().some(segment => segment.data.text?.includes('补充角色')))
+  } else await until(() => sent().some(segment => segment.data.text?.includes('补充想找的主题')))
   assert.equal(fake.turns.length, 0)
   if (persistent) return
   fake.dispose()

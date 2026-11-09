@@ -1,15 +1,77 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:http'
 import { test } from 'node:test'
 import { migrateYandereSettings, startDailyArt } from '../index.mjs'
-import { PermanentImageError, probeKonachan, selectKonachan } from '../lib/konachan.mjs'
+import { downloadKonachanImage, PermanentImageError, probeKonachan, selectKonachan } from '../lib/konachan.mjs'
 import { requestKonachan } from '../lib/transport.mjs'
 
 const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number)
 const supportsProxy = nodeMajor > 24 || (nodeMajor === 24 && nodeMinor >= 5)
+
+test('completed downloads are archived only when enabled and identical images share a file', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'daily-art-cache-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const dir = join(root, 'images')
+  const bytes = Buffer.from([1, 2, 3])
+  let enabled = false
+  const options = {
+    source: 'yandere',
+    cacheDir: () => enabled ? dir : '',
+    fetchImage: async () => new Response(bytes, { headers: { 'content-type': 'image/png' } }),
+  }
+  const url = 'https://files.yande.re/sample/1.jpg'
+  assert.deepEqual(await downloadKonachanImage(url, options), bytes)
+  assert.equal(existsSync(dir), false)
+
+  enabled = true
+  await Promise.all(['scheduled', 'on-demand'].map(operation => downloadKonachanImage(url, { ...options, operation })))
+  const files = readdirSync(dir)
+  assert.equal(files.length, 1)
+  assert.match(files[0], /^yandere-[a-f0-9]{64}\.png$/)
+  assert.deepEqual(readFileSync(join(dir, files[0])), bytes)
+
+  const occupied = join(root, 'occupied')
+  writeFileSync(occupied, 'existing data')
+  const warnings = []
+  assert.deepEqual(await downloadKonachanImage(url, {
+    ...options, cacheDir: () => occupied, log: { warn: value => warnings.push(value) },
+  }), bytes)
+  assert.match(warnings[0], /图片缓存保存失败/)
+  assert.equal(readFileSync(occupied, 'utf8'), 'existing data')
+})
+
+test('image downloads retry resets before headers and during the body, with a fixed retry limit', async () => {
+  const url = 'https://files.yande.re/sample/1.jpg'
+  const reset = () => Object.assign(new Error('socket reset'), { code: 'ECONNRESET' })
+  const headers = { 'content-type': 'image/jpeg' }
+  const warnings = []
+  let calls = 0
+  const data = await downloadKonachanImage(url, {
+    source: 'yandere', log: { warn: line => warnings.push(line) },
+    fetchImage: async () => {
+      calls++
+      if (calls === 1) throw reset()
+      if (calls === 2) return new Response(new ReadableStream({ start: controller => controller.error(reset()) }), { headers })
+      return new Response(new Uint8Array([1, 2, 3]), { headers })
+    },
+  })
+  assert.deepEqual(data, Buffer.from([1, 2, 3]))
+  assert.equal(calls, 3)
+  assert.equal(warnings.filter(line => line.includes('retry-connection-reset')).length, 2)
+
+  calls = 0
+  await assert.rejects(downloadKonachanImage(url, { source: 'yandere', fetchImage: async () => { calls++; throw reset() } }), /下载图片失败/)
+  assert.equal(calls, 3)
+  calls = 0
+  await assert.rejects(downloadKonachanImage(url, {
+    source: 'yandere', fetchImage: async () => { calls++; return new Response(null, { status: 404 }) },
+  }), PermanentImageError)
+  assert.equal(calls, 1)
+})
 
 test('Konachan selection skips low scores, repeated IDs, and off-site images', async () => {
   const post = (id, score = 31, sample_url = `/sample/${id}.jpg`) => ({ id, score, sample_url, rating: 's' })
@@ -279,4 +341,35 @@ test('a permanently unavailable image is replaced without resending to completed
   await startDailyArt(api, deps)()
   assert.deepEqual(sends.map(x => x.id), ['private:12345', 'private:23456', 'private:23456'])
   assert.match(Buffer.from(sends.at(-1).segments[0].data.file.slice(9), 'base64').toString(), /\/3\.jpg$/)
+})
+
+test('scheduled group timeout is reconciled in delivery state and not resent on restart', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'aurabot-daily-art-group-receipt-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const file = join(dir, 'delivery.json')
+  const settings = { enabled: true, pushTimes: '09:00', pushCount: 1, groupWhitelist: '12345,23456' }
+  const image = Buffer.from('scheduled image')
+  const hash = createHash('md5').update(image).digest('hex')
+  const sends = []
+  const api = {
+    config: () => ({ enabled: true, botQQ: '11111' }), settings: () => settings, dataDir: () => file,
+    later() {}, every() {}, onDispose() {}, log: { info() {}, warn() {} },
+    onebot: async (_action, { group_id }) => ({
+      messages: group_id === 12345 ? [{
+        user_id: 11111, group_id, time: Math.floor(Date.now() / 1000), message_id: 5,
+        message: [{ type: 'image', data: { file: hash + '.jpg' } }],
+      }] : [],
+    }),
+    core: { hub: { sendSegments: async id => { sends.push(id); throw Error('send_group_msg 失败：Timeout') } } },
+  }
+  const deps = {
+    now: () => Date.parse('2026-11-09T09:01:00+08:00'),
+    select: async () => [{ key: 'konachan:1', url: 'https://konachan.net/1.jpg' }],
+    download: async () => image,
+  }
+  await startDailyArt(api, deps)()
+  const state = JSON.parse(readFileSync(file, 'utf8'))
+  assert.deepEqual(state.slots['9'].recipients, { 'group:12345': 'sent', 'group:23456': 'uncertain' })
+  await startDailyArt(api, deps)()
+  assert.deepEqual(sends, ['group:12345', 'group:23456'])
 })
