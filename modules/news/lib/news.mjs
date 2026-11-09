@@ -75,7 +75,7 @@ const PRIVATE_ADDR = [
   /^0\./, /^127\./, /^10\./, /^172\.(?:1[6-9]|2\d|3[01])\./, /^192\.168\./,
   /^169\.254\./, /^::1$/i, /^f[cd][0-9a-f]{2}:/i, /^fe[89ab][0-9a-f]:/i,
 ]
-async function assertPublicTarget(url) {
+export async function assertPublicTarget(url) {
   const host = url.hostname.replace(/^\[|\]$/g, '')
   if (!host) throw new Error('新闻地址没有主机名')
   if (/^(localhost|.*\.localhost)$/i.test(host)) throw new Error('新闻地址不能指向本机')
