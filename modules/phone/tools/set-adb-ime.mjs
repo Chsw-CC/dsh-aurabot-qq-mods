@@ -1,15 +1,15 @@
 // tools/set-adb-ime.mjs —— 把手机的默认输入法设成 ADB Keyboard（或切回原输入法）
 //
 // 为什么必须这么做：
-//   她打中文是走 ADB Keyboard 的 base64 广播，而 Android 每次 `ime set` 都会重建输入连接，
+//   模型打中文是走 ADB Keyboard 的 base64 广播，而 Android 每次 `ime set` 都会重建输入连接，
 //   输入框随即失焦，广播于是被静默丢弃（Broadcast completed: result=0 照样返回成功）。
 //   同时软键盘弹出/收起会让输入框上下漂移，刚 dump 的坐标下一秒就失效。
 //   把 ADB Keyboard 设成**常驻默认输入法**就一劳永逸：它没有软键盘 UI，
 //   界面位置永远不顶、也不用来回切换，坐标和焦点都稳。
 //
 // 用法：
-//   node tools/set-adb-ime.mjs            # 切到 ADB Keyboard（她打字用）
-//   node tools/set-adb-ime.mjs restore    # 切回百度输入法（主人自己用手机打字时）
+//   node tools/set-adb-ime.mjs            # 切到 ADB Keyboard（模型打字用）
+//   node tools/set-adb-ime.mjs restore    # 切回百度输入法（用户自己用手机打字时）
 //   node tools/set-adb-ime.mjs status     # 只看当前是哪个
 
 import { execFileSync } from 'node:child_process'

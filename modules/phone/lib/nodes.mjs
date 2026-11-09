@@ -57,7 +57,7 @@ function gridPos(b, sw, sh) {
  * 输入框占位词：有些 App 的输入框根本不是 EditText，而是一个不可点击、不可聚焦的 TextView
  * （实测 DeepSeek 的「发消息或按住说话」：class=android.widget.TextView、clickable=false、
  *  focusable=false、也没有 editable）。这类节点会被「只留可交互节点」的过滤直接丢掉，
- * 模型在清单里看不见输入框，只能凭坐标瞎猜，打了字也进不去——「她不会用 DeepSeek」就是这个原因。
+ * 模型在清单里看不见输入框，只能凭坐标瞎猜，打了字也进不去——「模型不会用 DeepSeek」就是这个原因。
  * 所以：文本命中这些占位词、本身又不可点的节点，也当「输入框」收进来（标 placeholder）。
  */
 const INPUT_HINT = /发消息|按住说话|说点什么|写点什么|输入|搜索|搜一搜|添加评论|写评论|回复|有什么可以帮/
@@ -101,7 +101,7 @@ export function parseNodes(xml, { maxNodes = 80 } = {}) {
     const txt = attr(tag, 'text')
     const placeholder = !editable && !clickable && Boolean(txt) && INPUT_HINT.test(txt)
     // 不可点但有实质文字的节点（回答正文、文章段落、商品标题…）不进操作清单，
-    // 但要收进「页面文字」——不然她读到的界面里根本没有回答内容，
+    // 但要收进「页面文字」——不然模型读到的界面里根本没有回答内容，
     // 只会觉得「它没回答我」然后一遍遍重新提问（实测 DeepSeek 反复问同一句话就是这个原因）。
     if (!clickable && !scrollable && !editable && !placeholder) {
       const clean = String(txt || '').replace(/\s+/g, ' ').trim()
@@ -160,9 +160,9 @@ export function parseNodes(xml, { maxNodes = 80 } = {}) {
     ].filter(Boolean).join('/')
     return `[${nd.n}]${kind}"${label}" ${pos}${feats ? ' ' + feats : ''}`
   })
-  // 「页面文字」：把屏幕上读得到但不能点的内容也给她看（最多 12 段、总共 1200 字）。
-  // 少了这一段，她在 DeepSeek 里看不见回答、在知乎看不见正文、在淘宝看不见商品标题，
-  // 只能靠猜，于是「读不到回答 → 再问一遍」。加上之后她才真的能「读」界面。
+  // 「页面文字」：把屏幕上读得到但不能点的内容也给模型看（最多 12 段、总共 1200 字）。
+  // 少了这一段，模型在 DeepSeek 里看不见回答、在知乎看不见正文、在淘宝看不见商品标题，
+  // 只能靠猜，于是「读不到回答 → 再问一遍」。加上之后模型才真的能「读」界面。
   let extra = ''
   if (readTexts.length) {
     const picked = []

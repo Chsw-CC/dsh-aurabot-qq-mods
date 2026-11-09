@@ -13,8 +13,8 @@ import { parseNodes, nodeCenter } from './nodes.mjs'
 
 /**
  * 站外目标包：普通点击后被带到这些应用，基本就是点了广告（下载页、商城、应用市场）。
- * 测到这种情况就 back 回原应用——她本来是在逛内容，不该莫名其妙跑到商店里。
- * 她自己主动 launch 的这些包不算（那是真想去）。
+ * 测到这种情况就 back 回原应用——模型本来是在逛内容，不该莫名其妙跑到商店里。
+ * 模型自己主动 launch 的这些包不算（那是真想去）。
  */
 const AD_TARGETS = new Set([
   'com.honor.browser',
@@ -27,7 +27,7 @@ const AD_TARGETS = new Set([
 ])
 
 /**
- * 系统弹层包：不是她主动打开的东西，但会突然抢到前台——
+ * 系统弹层包：不是模型主动打开的东西，但会突然抢到前台——
  * 误触荣耀搜索、权限授权对话框、安装器提示。
  * 以前这些一律按「前台包不在白名单」整轮中止（71 步跑完发现前台是 com.hihonor.search，白跑）。
  * 现在先在这类界面上找按钮点掉，找不到就 back；连续多次甩不掉才放弃，并如实说是被弹层卡住的。
@@ -36,9 +36,9 @@ const AD_TARGETS = new Set([
  */
 const DISTRACTOR = {
   // 注意：com.hihonor.search（荣耀搜索）和 com.android.systemui（通知栏/状态栏）**故意不在这里**。
-  // 主人 2026-11-08 说「允许她使用系统弹层」——荣耀搜索是桌面下滑就能拉出来的正常界面，
-  // 她完全可能自己打开、自己退出。把它当"甩不掉的弹层"处理，back 三次没用就整轮中止，
-  // 等于把她正常在用的东西判成故障（实测「高德看世界」就是这么挂的）。
+  // 用户 2026-11-08 说「允许模型使用系统弹层」——荣耀搜索是桌面下滑就能拉出来的正常界面，
+  // 模型完全可能自己打开、自己退出。把它当"甩不掉的弹层"处理，back 三次没用就整轮中止，
+  // 等于把模型正常在用的东西判成故障（实测「高德看世界」就是这么挂的）。
   // 这里只留**必须点掉才过得去**的系统对话框：权限授权、安装确认、系统管理器的确认框。
   'com.android.permissioncontroller': {
     buttons: ['仅在使用中允许', '使用时允许', '允许', '始终允许', '允许所有', '确定', '同意', '好'],
@@ -207,7 +207,7 @@ async function applyAction(adb, safety, pkg, act, nodeList) {
   if (!nodeText) nodeText = String(act.text || '')
 
   const verdict = await safety.gate({ pkg, nodeText, kind, blind })
-  if (verdict === 'NEED_CONFIRM') return { done: true, confirm: true, note: '等待主人批准写操作，回合暂停（phone confirm 查看）' }
+  if (verdict === 'NEED_CONFIRM') return { done: true, confirm: true, note: '等待用户批准写操作，回合暂停（phone confirm 查看）' }
   if (verdict === 'REJECT') {
     // 拒绝原因来自 safety.lastReject（白名单/包级禁令各写各的），让模型知道怎么绕
     const why = safety.lastReject || `该动作被安全策略拒绝（${nodeText || kind}）`
@@ -430,7 +430,7 @@ export async function runWorkspace({ flowKey = 'adhoc', prompt = '', packages = 
   const sentTexts = new Set() // 本轮已经发出去的文字（防同一句话反复发）
   let lastInputText = '' // 刚打进输入框、还没发送的文字
   let repeatedAsks = 0 // 反复重发同一句话的次数
-  let savedOnce = false // 日历里已经点过「完成」保存过一次（防止她再建一条去"确认"）
+  let savedOnce = false // 日历里已经点过「完成」保存过一次（防止模型再建一条去"确认"）
   let visionBroken = false // 截图兜底被模型拒绝/报错后置位：本回合内不再重复试截图
   let lastBadReason = '' // 最近一次取不到节点时的真实失败原因（中止时如实汇报）
   let ok = false
@@ -486,11 +486,11 @@ export async function runWorkspace({ flowKey = 'adhoc', prompt = '', packages = 
         '界面里能读到的文字都给你了（【页面文字】那一段）。回答、正文、标题这类内容不在节点清单里，但你能读到它们——所以要判断「有没有结果」看那一段，不要只看按钮。',
         // 头一次打开 App 的隐私政策页：不点它永远进不去，会被误判成"打不开"
         '第一次打开一个 App 常常先出现「隐私政策 / 用户协议 / 欢迎页」，底部有「同意」或「同意并继续」：**直接点它就能进去**，这不是系统设置，属于正常流程。一屏没有按钮就横滑看下一屏，或者找「跳过」。',
-        // 反复被去重逻辑掐掉的教训：她连着划屏、连着返回都会被判成卡住
+        // 反复被去重逻辑掐掉的教训：模型连着划屏、连着返回都会被判成卡住
         '连着划几屏、连着按几次返回都是正常的，不算卡住——只要界面内容在变就继续做。真正该停的信号是「同一个地方点了几次、界面一个字都没变」。',
         // 禁区别去
         '被禁掉的应用别去打开（小红书、设置、淘宝）。不小心打开会被系统拦下来并浪费一步，直接换别的应用。',
-        // 卡住时的求助通道：主人明确说过「不会的可以去问 DeepSeek」
+        // 卡住时的求助通道：用户明确说过「不会的可以去问 DeepSeek」
         '真卡住了——连续两三个动作都没让界面变、或者这个 App 完全不知道该点哪儿——可以 launch com.deepseek.chat，把问题问具体（比如「荣耀日历怎么新建日程」「相册怎么查看原图」），看完回答后 back 回原来的应用继续。问完记得回来，别在 DeepSeek 里聊起来。',
         isShot
           ? 'tap/double_tap/long_press/clear/drag 起点的 xy 填目标在截图里的像素坐标（截图与屏幕同分辨率，原点左上）；看不清或不确定就不要猜坐标，用 finish 并在 summary 说明原因。'
@@ -509,7 +509,7 @@ export async function runWorkspace({ flowKey = 'adhoc', prompt = '', packages = 
       try { pkg = await adb.currentPackage() } catch { /* 读不到包名不致命 */ }
       if (pkg) visited.add(pkg)
       // 广告把人带走了：上一步只是普通点击，前台却换成了浏览器 / 应用市场 / 商城。
-      // 那不是她想去的地方（她本来在逛内容），back 回来继续原来的活儿。
+      // 那不是模型想去的地方（模型本来在逛内容），back 回来继续原来的活儿。
       if (pkg && AD_TARGETS.has(pkg) && ['tap', 'double_tap', 'long_press'].includes(prevKind)) {
         adJumps++
         try { await adb.pressKey('back') } catch { /* back 不掉就下一轮再说 */ }
@@ -556,16 +556,16 @@ export async function runWorkspace({ flowKey = 'adhoc', prompt = '', packages = 
           }
         }
       } else if (pkg) offlineSteps = 0
-      // 日历收尾：她点过「完成」、界面又回到了列表页（能看到右上角「新建日程」浮动按钮），
-      // 说明这条日程确实存进去了。这时候直接结束，不要让她再去"确认"——
-      // 月视图里事件只是一个色块、看不见标题，她永远确认不了，只会反复建出同名的日程。
+      // 日历收尾：模型点过「完成」、界面又回到了列表页（能看到右上角「新建日程」浮动按钮），
+      // 说明这条日程确实存进去了。这时候直接结束，不要让模型再去"确认"——
+      // 月视图里事件只是一个色块、看不见标题，模型永远确认不了，只会反复建出同名的日程。
       if (savedOnce && pkg === 'com.hihonor.calendar' && /新建日程/.test(String(parsed.brief || ''))) {
         ok = true
         summary = '日程已保存（点过右上角「完成」，已回到日历列表）。月视图里事件只显示色块，想细看就点顶部「日程」视图。'
         break
       }
       // 不要求对话区立刻渲染出来——DeepSeek 回答要几秒才出现，等它出现黄花菜都凉了，
-      // 她早就以为没发出去又打第二遍（实测就是这样问了两遍）。
+      // 模型早就以为没发出去又打第二遍（实测就是这样问了两遍）。
       if (lastInputText) {
         const needle = lastInputText.slice(0, 8)
         const inBox = (parsed.list || []).some(
@@ -576,7 +576,7 @@ export async function runWorkspace({ flowKey = 'adhoc', prompt = '', packages = 
           lastInputText = ''
         }
       }
-      // 系统弹层抢前台：不是她主动打开的，别按「不在白名单」整轮中止。
+      // 系统弹层抢前台：不是模型主动打开的，别按「不在白名单」整轮中止。
       // 先在这层界面上找按钮点掉（权限弹窗必须选一个），找不到就 back；连续甩不掉才放弃。
       if (pkg && DISTRACTOR[pkg]) {
         distractorHits++
@@ -616,7 +616,7 @@ export async function runWorkspace({ flowKey = 'adhoc', prompt = '', packages = 
           badSteps++
           if (fb.reason) lastBadReason = fb.reason // 记住最后一次真实失败原因，中止时如实汇报
           if (badSteps >= 3) { summary = lastBadReason || '连续三次取不到界面节点，回合中止'; break }
-          // 一审 #19-5：取不到节点时不再替主人按 back（可能误退当前应用/挂断电话），只等界面加载后重试
+          // 一审 #19-5：取不到节点时不再替用户按 back（可能误退当前应用/挂断电话），只等界面加载后重试
           await sleep(600)
           continue
         }
@@ -689,10 +689,10 @@ export async function runWorkspace({ flowKey = 'adhoc', prompt = '', packages = 
       if (ctx.signal?.aborted) { summary = '会话超时被强制释放，回合中止'; break }
       await safety.checkRate() // 限速：模块内循环与动作器共用同一套滑动窗口（复审第 5 条）
       // 「同一句话反复发」拦截：发出去了输入框就清空、又变回「发消息或按住说话」的占位，
-      // 她看不到自己的问题，就以为没发出去，于是再打一遍、再发一遍……一轮能问五六遍同一件事。
-      // 这里记住"已经发过的文字"，同一句话再想发就直接拦下来，并告诉她该往下翻看回答。
+      // 模型看不到自己的问题，就以为没发出去，于是再打一遍、再发一遍……一轮能问五六遍同一件事。
+      // 这里记住"已经发过的文字"，同一句话再想发就直接拦下来，并告诉模型该往下翻看回答。
       // 「同一句话反复发」拦截：**只对提问/聊天类应用生效**。
-      // 这是给 DeepSeek 那种「发完输入框清空、她以为没发出去又重发」的场景准备的。
+      // 这是给 DeepSeek 那种「发完输入框清空、模型以为没发出去又重发」的场景准备的。
       // 千万别全局启用——日历/笔记/搜索里「两次输入同样文字」是完全正常的
       // （实测建日程：第一次成功保存，第二次再想写「买菜」被这条拦下，任务直接卡死）。
       const ASK_APPS = ['com.deepseek.chat', 'com.tencent.mobileqq']
@@ -711,7 +711,7 @@ export async function runWorkspace({ flowKey = 'adhoc', prompt = '', packages = 
           break
         }
       } else if (wantKey && sentTexts.size >= 2) {
-        // 已经发过两条了还想继续发：基本可以断定她没在读回答，而是在刷问题
+        // 已经发过两条了还想继续发：基本可以断定模型没在读回答，而是在刷问题
         summary = `这一轮已经问了 ${sentTexts.size} 个问题，还继续打新的问题，判定为在刷问题而不是读回答，回合中止`
         await safety.log(act.action, summary).catch(() => {})
         break
@@ -721,9 +721,9 @@ export async function runWorkspace({ flowKey = 'adhoc', prompt = '', packages = 
         /新建日程|新建事件/.test(String(nodeLabel(act, parsed.list))) &&
         savedOnce
       ) {
-        // 日历专属保护：她已经点过「完成」保存过一次，还去点「新建日程」——基本就是想"再建一条确认刚才那条在不在"。
+        // 日历专属保护：模型已经点过「完成」保存过一次，还去点「新建日程」——基本就是想"再建一条确认刚才那条在不在"。
         // 结果就是反复建出同名日程（实测连建了三条「买菜」），而且月视图只显示色块不显示标题，
-        // 她永远确认不了，于是无限循环。这里直接拦住并告诉她去哪儿看。
+        // 模型永远确认不了，于是无限循环。这里直接拦住并告诉模型去哪儿看。
         result = {
           done: false,
           note: '你已经保存过一次了，别再新建：月视图只显示一个色块、看不到标题，所以你"看不到买菜"是正常的。要确认就去点顶部「日程」视图，那里会列出事件标题。',
@@ -738,13 +738,13 @@ export async function runWorkspace({ flowKey = 'adhoc', prompt = '', packages = 
           await sleep(250)
         }
         result = await applyAction(adb, safety, pkg, act, parsed.list)
-        // 日历里点过「完成」= 这一条已经存进去了，记下来防止她"再建一条确认一下"
+        // 日历里点过「完成」= 这一条已经存进去了，记下来防止模型"再建一条确认一下"
         if (pkg === 'com.hihonor.calendar' && act.action === 'tap' && /完成|保存/.test(String(nodeLabel(act, parsed.list)))) {
           savedOnce = true
         }
         if (act.action === 'input' && act.text && !/没写进去/.test(result.note || '')) {
           lastInputText = String(act.text).trim().slice(0, 12)
-          // 日志里带上实际输入的内容：只记「已执行 input」看不出她到底打了什么，
+          // 日志里带上实际输入的内容：只记「已执行 input」看不出模型到底打了什么，
           // 排查「反复问同一句话」时完全抓瞎（这次就吃了这个亏）
           result = { ...result, note: `${result.note} 内容「${String(act.text).slice(0, 30)}」` }
         }
