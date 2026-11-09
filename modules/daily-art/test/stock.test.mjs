@@ -40,7 +40,7 @@ test('stock host installs, groups the panel, claims raw requests and protects cr
     assert.ok(entry)
     process.env.AURABOT_REGISTRY_URL = registry
     t.mock.method(globalThis, 'fetch', (url, options) => {
-      if (url === registry) return Promise.resolve(Response.json({ schema: 1, assetsBase, modules }))
+      if (url === registry) return Promise.resolve(Response.json({ schema: 1, assetsBase, modules: [entry] }))
       if (url === assetsBase + entry.path) return Promise.resolve(new Response(readFileSync(join(market, entry.file))))
       return fetchActual(url, options)
     })
@@ -65,6 +65,7 @@ test('stock host installs, groups the panel, claims raw requests and protects cr
   const configFile = join(dir, 'config.json')
   const config = restarting ? JSON.parse(readFileSync(configFile, 'utf8')) : { enabled: true, dryRun: false, setupDone: true, ownerQQ: owner, botQQ: bot,
     allow: { private: [], groups: [] }, gateway: 'onebot', model: { provider: 'fake', model: 'fake-1' },
+    modules: { 'group-admin': { enabled: false } },
     ext: { 'daily-art': { enabled: false, pushTimes: '00:00', pushCount: 1, privateWhitelist: owner, pushRating: ['s'], konachanApiKey: 'legacy-fixture' } },
   }
   config.snowluma = { autoStart: false, wsUrl: onebot.wsUrl, httpUrl: onebot.httpUrl, wsToken: onebot.token, httpToken: onebot.token }
