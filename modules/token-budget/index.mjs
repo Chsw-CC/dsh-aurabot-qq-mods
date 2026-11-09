@@ -24,12 +24,13 @@ const DEFAULTS = {
   overheadFactor: 1.3, // 隐形消耗放大系数：system 轮 / 工具调用不经过记账，靠它补偿
   fallbackModel: '', // 软熔后非主人聊天换用的模型，写 provider/model，如 deepseek/deepseek-chat；留空不降级
   protectOwner: true,
+  baseTokensPerTurn: 0, // 每轮请求的基础开销估算（人格 + 规则 + 会话历史 + 工具定义）。0 = 不计；照宿主面板「本轮用量」的均值填
 }
 
 export default {
   id: 'token-budget',
   name: '预算管家',
-  version: '1.1.0',
+  version: '1.2.0',
   api: 1,
   description: '省 token：注入内容预算封顶、本地向量只带最相关的 16 条记忆、估算记账、日超预算自动熔断',
   category: 'manage',
@@ -49,6 +50,7 @@ export default {
     { key: 'overheadFactor', label: '隐形消耗放大系数（1 = 不补偿）', type: 'number', min: 1, max: 5, step: 0.1 },
     { key: 'fallbackModel', label: '软熔后用的便宜模型（provider/model，留空不降级）', type: 'text' },
     { key: 'protectOwner', label: '主人私聊不受熔断影响', type: 'switch' },
+    { key: 'baseTokensPerTurn', label: '每轮基础开销估算（token，照宿主「本轮用量」均值填；0 = 不计）', type: 'number', min: 0, max: 200000, step: 500 },
   ],
 
   setup(api) {
@@ -152,7 +154,7 @@ export default {
     api.on('activity', ({ kind, chatId, text } = {}) => {
       if (!s().enabled) return
       if (!chatId || String(chatId).startsWith('system:')) return
-      const t = estTokens(text)
+      const t = estTokens(text) + (kind === 'in' ? (Number(s().baseTokensPerTurn) || 0) : 0) // 每轮请求的基础开销（人格/历史等）摊到进向
       const k = kind === 'out' ? 'out' : 'in'
       ledger.add(k, t)
       ledger.addChat(chatId, k, t)
@@ -192,18 +194,49 @@ export default {
       },
     })
 
-    // 面板接口：今日用量 + 熔断状态 + 近 7 天曲线 + 按会话聚合（卡片数据，近 7 天 top 12）
-    api.route('/status', async () => {
+    // 单价（元/百万 token）：每次现读设置，面板改完立刻生效
+    const pin = () => Math.max(0, Number(s().priceIn) || 0)
+    const pout = () => Math.max(0, Number(s().priceOut) || 0)
+
+    function realUsageByChat(rep) {
+      const out = {}
+      for (const e of rep?.current?.byChat || []) if (e?.key) out[e.key] = e
+      return out
+    }
+
+    // 面板接口：今日用量 + 熔断状态 + 近 7 天曲线 + 按会话聚合（卡片数据，近 7 天 top 12）。
+    // 卡片的「消耗」优先用宿主 /usage 的真实用量（人格/历史/缓存全算在内，和宿主「本轮用量」一个口径）；
+    // 宿主没记到（老版本 / 记不上 chat 的调用）才退回我们按消息文字的估算，并打上 estimate 标记。
+    api.route('/status', async (req) => {
       const day = ledger.today()
       const yuan = ledger.spentYuan()
       const limit = Math.max(0.01, Number(s().dailyBudgetYuan) || 15)
-      const pin = Math.max(0, Number(s().priceIn) || 0)
-      const pout = Math.max(0, Number(s().priceOut) || 0)
-      const chats = ledger.chatsByDay(7).slice(0, 12).map((c) => ({
-        ...c,
-        yuan: +(((c.inTok * pin + c.outTok * pout) / 1_000_000)).toFixed(3),
-        savedYuan: +((c.saved * pin) / 1_000_000).toFixed(3), // 省下的都是输入 token
-      }))
+      const ours = new Map(ledger.chatsByDay(7).map((c) => [c.chatId, c]))
+      // 回环调宿主自己的 /usage（同进程同端口，req 头里带真实的 host:port）；2.5 秒超时，拿不到就算了
+      let rep = null
+      try {
+        const host = req?.headers?.host || ''
+        if (host) rep = await (await fetch(`http://${host}/usage?range=7`, { signal: AbortSignal.timeout(2500) })).json()
+      } catch {}
+      const real = realUsageByChat(rep)
+      const ids = new Set([...Object.keys(real), ...ours.keys()])
+      const chats = [...ids].map((id) => {
+        const r = real[id]
+        const o = ours.get(id) || { inTok: 0, outTok: 0, saved: 0, turns: 0 }
+        const tokens = r ? r.totalTokens : o.inTok + o.outTok
+        const cost = r ? (Number(r.cost) || 0) : +(((o.inTok * pin() + o.outTok * pout()) / 1_000_000)).toFixed(3)
+        return {
+          chatId: id,
+          runs: r?.runs ?? o.turns,
+          tokens,
+          cost: +Number(cost).toFixed(3),
+          cached: Math.round(r?.cachedTokens ?? 0),
+          cacheHitRate: r ? Math.round((Number(r.cacheHitRate) || 0) * 100) : null,
+          estimate: !r,
+          saved: o.saved,
+          savedYuan: +((o.saved * pin) / 1_000_000).toFixed(3), // 省下的都是注入的输入 token
+        }
+      }).sort((a, b) => b.tokens - a.tokens).slice(0, 12)
       return {
         ok: true,
         enabled: Boolean(s().enabled),
@@ -211,6 +244,7 @@ export default {
         today: { inTok: Math.round(day.day.inTok), outTok: Math.round(day.day.outTok), yuan: +yuan.toFixed(3), limit, pct: Math.round((yuan / limit) * 100) },
         recent: ledger.recent(7),
         chats,
+        debug: { realChats: Object.keys(real).length },
       }
     })
 

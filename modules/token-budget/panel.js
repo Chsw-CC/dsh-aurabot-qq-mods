@@ -44,19 +44,19 @@ return function TokenBudgetPanel({ settings, save, toast }) {
     note ? h('div', { className: 'ab-small ab-muted' }, note) : null)
 
   const card = (c) => {
-    const total = c.inTok + c.outTok
-    const savedPct = total > 0 ? Math.min(100, Math.round((c.saved / (total + c.saved)) * 100)) : 0
+    const savedPct = c.saved > 0 ? Math.min(100, Math.round((c.saved / (c.tokens + c.saved)) * 100)) : 0
+    const cachedNote = c.cacheHitRate != null ? '缓存命中 ' + c.cacheHitRate + '%' : (c.estimate ? '估算口径' : '')
     return h('div', {
       key: c.chatId,
       style: { background: cardColor(c.chatId), borderRadius: 10, padding: '10px 12px', minWidth: 200 },
     },
       h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' } },
         h('div', { style: { fontWeight: 600 } }, chatLabel(c.chatId)),
-        h('div', { className: 'ab-small ab-muted' }, c.turns + ' 轮')),
+        h('div', { className: 'ab-small ab-muted' }, (c.runs || 0) + ' 轮')),
       h('div', { className: 'ab-flex', style: { gap: 14, margin: '6px 0' } },
-        box('消耗', fmtTok(c.inTok + c.outTok) + ' tok', '≈ ' + c.yuan + ' 元'),
+        box('消耗', fmtTok(c.tokens) + ' tok', '≈ ' + c.cost + ' 元'),
         box('节省', fmtTok(c.saved) + ' tok', '≈ ' + c.savedYuan + ' 元'),
-        box('省下占比', savedPct + '%', '省的是注入 token')),
+        box('省下占比', savedPct + '%', cachedNote)),
       // 一条「消耗 vs 节省」双色条
       h('div', { style: { height: 6, borderRadius: 99, background: '#3a3a3a', overflow: 'hidden' } },
         h('div', {

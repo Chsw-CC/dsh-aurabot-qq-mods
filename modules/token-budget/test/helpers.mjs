@@ -29,6 +29,7 @@ export function makeApi (opts = {}) {
     isOwner: (id) => String(id) === OWNER,
     use: (id) => (opts.mods && opts.mods[id]) || null,
     has: (id) => Boolean(opts.mods && opts.mods[id]),
+    lib: (p) => (opts.lib && opts.lib[p]) || null,
     on: (name, fn) => { if (!hooks.has(name)) hooks.set(name, []); hooks.get(name).push(fn); return () => {} },
     every: (ms, fn, name) => { timers.push({ ms, fn, name }); return () => {} },
     command: (c) => { commands.set(c.name, c); for (const a of c.aliases || []) commands.set(a, c); return () => {} },
@@ -49,10 +50,10 @@ export function makeApi (opts = {}) {
     return v
   }
 
-  const call = async (path, body) => {
+  const call = async (path, body, headers) => {
     const fn = routes.get(path)
     if (!fn) throw new Error('没有这个路由：' + path)
-    return await fn({ __body: body })
+    return await fn({ __body: body, headers: headers || {} })
   }
   const runCommand = async (arg) => commands.get('预算').run(arg)
 

@@ -146,11 +146,11 @@ test('ledger：按会话分桶记账、chatsByDay 聚合排序', () => {
 
 test('模块元信息：id、版本、面板、设置项类型', () => {
   assert.equal(plugin.id, 'token-budget')
-  assert.equal(plugin.version, '1.1.0')
+  assert.equal(plugin.version, '1.2.0')
   assert.equal(plugin.api, 1)
   assert.equal(plugin.panel, 'panel.js')
   const keys = plugin.settings.map((s) => s.key)
-  assert.deepEqual(keys, ['enabled', 'memoryTopK', 'promptBudgetTokens', 'dailyBudgetYuan', 'priceIn', 'priceOut', 'softFusePct', 'overheadFactor', 'fallbackModel', 'protectOwner'])
+  assert.deepEqual(keys, ['enabled', 'memoryTopK', 'promptBudgetTokens', 'dailyBudgetYuan', 'priceIn', 'priceOut', 'softFusePct', 'overheadFactor', 'fallbackModel', 'protectOwner', 'baseTokensPerTurn'])
   for (const key of ['enabled', 'protectOwner']) assert.equal(plugin.settings.find((s) => s.key === key).type, 'switch', key + ' 应是 switch')
 })
 
@@ -275,9 +275,30 @@ test('/status：面板数据形状', async (t) => {
   assert.equal(typeof st.today.yuan, 'number')
   assert.equal(st.recent.length, 7)
   assert.ok(Array.isArray(st.chats), 'chats 卡片数据要在')
-  // 有过消息的会话应出现在 chats 里（前面 prompt/记忆测试同账本跑过一轮）
+  // 没有真实用量账本时退回估算口径
   const withSaved = st.chats.find((c) => c.saved > 0)
-  if (withSaved) { assert.ok(withSaved.savedYuan >= 0, '节省折算字段在') }
+  if (withSaved) { assert.ok(withSaved.savedYuan >= 0, '节省折算字段在'); assert.equal(withSaved.estimate, true) }
+})
+
+test('/status：有插件真实用量账本时，消耗换成真实口径', async (t) => {
+  // 模块回环调宿主 /usage：把全局 fetch 短路到假应答，验证合并逻辑（不打真网络）
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    assert.ok(String(url).includes('/usage?range=7'), '该去要宿主用量：' + url)
+    return { json: async () => ({ current: { byChat: [{ key: `private:${OWNER}`, runs: 3, totalTokens: 94271, cost: 0.5, cachedTokens: 93000, cacheHitRate: 0.98 }] } }) }
+  }
+  const env = makeApi({ mods: { memory: { list: () => [{ text: '主人喜欢猫' }] } } })
+  try {
+    const st = await env.call('/status', null, { host: '127.0.0.1:51440' })
+    const c = st.chats.find((x) => x.chatId === `private:${OWNER}`)
+    assert.ok(c, '真实账本里的会话要出现在卡片里')
+    assert.equal(c.tokens, 94271, '消耗 = 真实请求 token（人格/历史/缓存全算）')
+    assert.equal(c.cost, 0.5)
+    assert.equal(c.estimate, false)
+    assert.equal(c.runs, 3)
+    assert.equal(c.cacheHitRate, 98)
+    assert.equal(st.debug.realChats, 1)
+  } finally { globalThis.fetch = realFetch }
 })
 
 test('总开关：关掉后记账不跑、prompt 原样放行', async (t) => {
