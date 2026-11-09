@@ -29,7 +29,7 @@ const MIME = {
 export default {
   id: 'room3d',
   name: '房间',
-  version: '1.0.1',
+  version: '1.0.2',
   api: 1,
   description: '给她一个自己的 3D 房间：屋里空着，只有她一个人（大肥鱼），家具自己摆；她看得见自己在哪。',
   panel: 'panel.js',
