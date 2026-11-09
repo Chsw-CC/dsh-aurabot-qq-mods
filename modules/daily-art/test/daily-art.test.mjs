@@ -8,6 +8,9 @@ import { migrateYandereSettings, startDailyArt } from '../index.mjs'
 import { PermanentImageError, probeKonachan, selectKonachan } from '../lib/konachan.mjs'
 import { requestKonachan } from '../lib/transport.mjs'
 
+const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number)
+const supportsProxy = nodeMajor > 24 || (nodeMajor === 24 && nodeMinor >= 5)
+
 test('Konachan selection skips low scores, repeated IDs, and off-site images', async () => {
   const post = (id, score = 31, sample_url = `/sample/${id}.jpg`) => ({ id, score, sample_url, rating: 's' })
   const pages = [[post(1), post(2, 30), post(3), post(3), post(4, 50, 'https://elsewhere.example/4.jpg')], [post(5)]]
@@ -43,7 +46,7 @@ test('connection diagnostics retain Cloudflare evidence and omit sensitive reque
   const lines = []
   const log = { warn: value => lines.push(value), info: value => lines.push(value) }
   await probeKonachan({ username: 'private-account-name', apiKey: 'private-test-key' }, {
-    proxyUrl: 'http://user:private-proxy-secret@proxy.example:8080', log, operation: 'connection-test', trace: true,
+    proxyUrl: supportsProxy ? 'http://user:private-proxy-secret@proxy.example:8080' : '', log, operation: 'connection-test', trace: true,
     fetchPosts: async url => url.hostname === 'konachan.net' ? Response.json([]) : new Response('private-response-body', {
       status: 403,
       headers: { 'cf-mitigated': 'challenge', 'cf-ray': '1234aabbccddeeff-NRT', 'content-type': 'text/html; charset=utf-8', 'set-cookie': 'private-cookie' },
@@ -53,13 +56,13 @@ test('connection diagnostics retain Cloudflare evidence and omit sensitive reque
   assert.equal(challenge.outcome, 'cloudflare-challenge')
   assert.equal(challenge.status, 403)
   assert.equal(challenge.cfRay, '1234aabbccddeeff-NRT')
-  assert.equal(challenge.network, 'proxy')
+  assert.equal(challenge.network, supportsProxy ? 'proxy' : 'direct')
   assert.equal(challenge.auth, 'api-key')
   assert.doesNotMatch(lines.join('\n'), /private-|proxy\.example|api_key=/)
 })
 
 test('rejected Konachan credentials fall back once and the remaining pages use the same proxy', async () => {
-  const proxyUrl = 'http://proxy.example:8080'
+  const proxyUrl = supportsProxy ? 'http://proxy.example:8080' : ''
   const credentials = { username: 'test-account', apiKey: 'expired-key' }
   const calls = []
   const images = await selectKonachan(new Set(), 1, { proxyUrl, credentials, fetchPosts: async (url, request) => {
@@ -77,8 +80,7 @@ test('rejected Konachan credentials fall back once and the remaining pages use t
 })
 
 test('configured proxy receives CONNECT and a refused tunnel fails the request', async t => {
-  const [major, minor] = process.versions.node.split('.').map(Number)
-  if (major < 24 || (major === 24 && minor < 5)) {
+  if (!supportsProxy) {
     await assert.rejects(requestKonachan('https://konachan.net/post.json', { proxyUrl: 'http://127.0.0.1:1' }), /需要 Node\.js 24\.5/)
     return
   }
@@ -111,12 +113,13 @@ test('scheduled selection applies the configured filters and rejects unsupported
 })
 
 test('Yande.re selection isolates IDs and credentials and accepts its image CDN', async () => {
+  const proxyUrl = supportsProxy ? 'http://yande-proxy.example:8080' : ''
   const posts = await selectKonachan(new Set(['konachan:42']), 1, {
-    source: 'yandere', proxyUrl: 'http://yande-proxy.example:8080', credentials: { username: 'kona', apiKey: 'other-site-key' },
+    source: 'yandere', proxyUrl, credentials: { username: 'kona', apiKey: 'other-site-key' },
     fetchPosts: async (url, request) => {
       assert.equal(url.origin, 'https://yande.re')
       assert.equal(url.searchParams.has('api_key'), false)
-      assert.equal(request.proxyUrl, 'http://yande-proxy.example:8080')
+      assert.equal(request.proxyUrl, proxyUrl)
       return Response.json([
         { id: 40, rating: 'q', score: 99, sample_url: 'https://files.yande.re/sample/40.jpg' },
         { id: 41, rating: 's', score: 99, sample_url: 'https://konachan.net/sample/41.jpg' },
