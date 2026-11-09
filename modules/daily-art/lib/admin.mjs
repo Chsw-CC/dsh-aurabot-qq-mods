@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { isOwner } from './permissions.mjs'
+import { isIP } from 'node:net'
 import { probeKonachan } from './konachan.mjs'
 import { validateKonachanProxy } from './transport.mjs'
 
@@ -37,11 +37,26 @@ export function openVault(api) {
     status: () => Object.fromEntries(keys.map(key => [`${key}Set`, Boolean(values[key])])) }
 }
 
-function sameOrigin(req) {
-  const { origin, host } = req.headers || {}
-  const site = req.headers?.['sec-fetch-site']
-  if (site && site !== 'same-origin' && site !== 'none') return false
-  try { return !origin || new URL(origin).host === host } catch { return false }
+const normalizeAddress = value => String(value || '').trim().toLowerCase().replace(/^::ffff:/, '').replace(/^\[|\]$/g, '')
+const isLoopback = address => address === '::1' || (isIP(address) === 4 && address.startsWith('127.'))
+
+function panelRequestAllowed(req, security = {}) {
+  const { origin, host, 'sec-fetch-site': site, 'x-forwarded-for': forwarded } = req.headers || {}
+  if (site && site !== 'same-origin') return false
+  let panel
+  try { panel = new URL(origin) } catch { return false }
+  if (!['http:', 'https:'].includes(panel.protocol) || panel.host !== host) return false
+  const hostname = normalizeAddress(panel.hostname)
+  const localHost = hostname === 'localhost' || isLoopback(hostname)
+  if (!localHost && hostname !== normalizeAddress(security.publicHostname)) return false
+  const peer = normalizeAddress(req.socket?.remoteAddress || req.connection?.remoteAddress)
+  if (!isLoopback(peer)) return false
+
+  // Extension routes do not inherit Aurabot's admin gate. Only trust a configured local proxy.
+  const trusted = String(security.trustedProxy || '').split(',').map(normalizeAddress).includes(peer)
+  if (!trusted) return localHost && !forwarded
+  const client = normalizeAddress(String(forwarded || '').split(',').at(-1))
+  return isIP(client) !== 0 && (security.panelRemoteAccess === true || (localHost && isLoopback(client)))
 }
 
 async function readBody(req) {
@@ -61,46 +76,19 @@ async function readBody(req) {
 
 export function registerAdmin(api, vault, { probe = probeKonachan } = {}) {
   const shutdown = new AbortController()
-  let pair, session, busy = false, lastPair = -Infinity
-  let owner = String(api.config().ownerQQ)
+  let busy = false
   const failure = message => ({ ok: false, message })
-  const valid = (entry, token) => !shutdown.signal.aborted && entry && typeof token === 'string' &&
-    entry.token === token && entry.expires > Date.now() && entry.owner === String(api.config().ownerQQ)
-  api.onDispose(() => { shutdown.abort(); pair = session = undefined })
-  api.on('config', () => {
-    const next = String(api.config().ownerQQ)
-    if (owner === next) return
-    owner = next
-    pair = session = undefined
-    lastPair = -Infinity
-  })
-  api.on('message', async msg => {
-    if (msg.text?.trim() !== '每日推图配对' || msg.kind !== 'private' || !isOwner(api.config(), msg)) return false
-    if (api.config().dryRun || Date.now() - lastPair < 5000) return true
-    lastPair = Date.now()
-    const issued = { token: randomBytes(24).toString('hex'), expires: Date.now() + 120_000, owner: String(msg.userId) }
-    pair = issued
-    try {
-      const receipt = await api.sendSegments(msg.chatId, [{ type: 'text', data: { text: `每日推图配对码（2 分钟内有效）：${issued.token}` } }], '每日推图主人配对')
-      if (receipt?.message_id == null && pair === issued) pair = undefined
-    } catch { if (pair === issued) pair = undefined }
-    return true
-  })
+  api.onDispose(() => shutdown.abort())
 
   const route = (path, run) => api.route(path, async req => {
-    if (shutdown.signal.aborted || req.method !== 'POST' || !sameOrigin(req) || !/^application\/json\b/i.test(req.headers?.['content-type'] || '')) return failure('请求不允许')
+    if (shutdown.signal.aborted || req.method !== 'POST' || !/^application\/json\b/i.test(req.headers?.['content-type'] || '')) return failure('请求不允许')
+    if (!panelRequestAllowed(req, api.config().security)) return failure('请从本机面板或已配置的可信面板反代访问')
     let input
     try { input = await readBody(req) } catch { return failure('请提交不超过 4 KiB 的 JSON 对象') }
+    if (shutdown.signal.aborted) return failure('模块已重新加载，请重试')
     return run(input)
   })
-  route('/pair', input => {
-    if (!valid(pair, input.code)) return failure('配对码无效或已过期')
-    session = { token: randomBytes(32).toString('hex'), expires: Date.now() + 900_000, owner: pair.owner }
-    pair = undefined
-    return { ok: true, token: session.token }
-  })
   route('/credentials', input => {
-    if (!valid(session, input.token)) return failure('请先进行主人配对')
     const patch = {}
     for (const key of keys) {
       const value = input[key]
@@ -115,7 +103,6 @@ export function registerAdmin(api, vault, { probe = probeKonachan } = {}) {
     return { ok: true, ...vault.status() }
   })
   route('/connection-test', async input => {
-    if (!valid(session, input.token)) return failure('请先进行主人配对')
     if (!['konachan', 'yandere'].includes(input.source)) return failure('未知图源')
     if (busy) return failure('正在检测，请稍后再试')
     const { konachanProxyUrl: proxyUrl, konachanApiKey: apiKey, konachanUsername: username } = vault.settings()
@@ -125,7 +112,7 @@ export function registerAdmin(api, vault, { probe = probeKonachan } = {}) {
       const results = await probe(input.source === 'konachan' ? { apiKey, username } : {}, {
         source: input.source, proxyUrl, signal: shutdown.signal, checkImage: true, log: api.log, operation: 'connection-test', trace: true,
       })
-      return valid(session, input.token) ? { ok: true, proxyConfigured: Boolean(proxyUrl), results } : failure('管理会话已过期')
+      return shutdown.signal.aborted ? failure('模块已重新加载，请重试') : { ok: true, proxyConfigured: Boolean(proxyUrl), results }
     } catch { return failure('连接检测失败') }
     finally { busy = false }
   })

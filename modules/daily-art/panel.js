@@ -31,8 +31,6 @@ return function DailyArtPanel({ draftSettings, setSettings }) {
   const [source, setSource] = React.useState('konachan')
   const [busy, setBusy] = React.useState(false)
   const [result, setResult] = React.useState(null)
-  const [token, setToken] = React.useState('')
-  const [code, setCode] = React.useState('')
   const [credentials, setCredentials] = React.useState({})
   const [notice, setNotice] = React.useState('')
 
@@ -53,21 +51,19 @@ return function DailyArtPanel({ draftSettings, setSettings }) {
     setNotice('')
     try {
       const response = await call(path, body)
-      if (!response.ok) {
-        setNotice(response.message || '操作失败')
-        if (response.message === '请先进行主人配对' || response.message === '管理会话已过期') setToken('')
-      } else done(response)
+      if (response.ok) done(response)
+      else setNotice(response.message || '操作失败')
     } catch { setNotice('无法连接 Aurabot') }
     finally { setBusy(false) }
   }
 
   async function test() {
     setResult(null)
-    await admin('/connection-test', { token, source }, setResult)
+    await admin('/connection-test', { source }, setResult)
   }
 
   function saveCredentials() {
-    return admin('/credentials', { token, ...credentials }, response => {
+    return admin('/credentials', credentials, response => {
       setSchema(previous => ({ ...previous, konachanApiKeySet: response.konachanApiKeySet, konachanProxyUrlSet: response.konachanProxyUrlSet }))
       setCredentials({})
       setNotice('凭据已保存')
@@ -86,15 +82,11 @@ return function DailyArtPanel({ draftSettings, setSettings }) {
     : field)
 
   return h(React.Fragment, null,
-    h(Card, { title: '主人配对与凭据', desc: '使用主人 QQ 私聊发送「每日推图配对」，把收到的配对码填在这里。连接检测与凭据修改需要配对。' },
-      !token ? h(React.Fragment, null,
-        h(Row, { label: '配对码' }, h('input', { type: 'password', className: 'ab-input', autoComplete: 'off', value: code, onChange: e => setCode(e.target.value) })),
-        h(Btn, { disabled: busy || !code.trim(), onClick: () => admin('/pair', { code: code.trim() }, response => { setToken(response.token); setCode(''); setNotice('已配对，15 分钟内有效') }) }, '配对'))
-        : h(React.Fragment, null,
-          ...[schema.proxyField, ...schema.accountFields.filter(field => field.type === 'password')].map(field => row(field, { ...schema, ...credentials }, value => setCredential(field.key, value))),
-          h(Btn, { small: true, onClick: () => setCredential('konachanProxyUrl', '') }, '标记清除代理'),
-          h(Btn, { small: true, onClick: () => setCredential('konachanApiKey', '') }, '标记清除密钥'),
-          h(Btn, { disabled: busy || !Object.keys(credentials).length, onClick: saveCredentials }, '保存凭据')),
+    h(Card, { title: '图源凭据', desc: '在面板管理 Konachan API Key 和两个图源共用的代理地址。' },
+      ...[schema.proxyField, ...schema.accountFields.filter(field => field.type === 'password')].map(field => row(field, { ...schema, ...credentials }, value => setCredential(field.key, value))),
+      h(Btn, { small: true, onClick: () => setCredential('konachanProxyUrl', '') }, '标记清除代理'),
+      h(Btn, { small: true, onClick: () => setCredential('konachanApiKey', '') }, '标记清除密钥'),
+      h(Btn, { disabled: busy || !Object.keys(credentials).length, onClick: saveCredentials }, '保存凭据'),
       notice ? h('div', { role: 'status' }, notice) : null),
     h(Card, { title: '按需找图权限' },
       row(schema.searchAccessField, draftSettings, value => setShared(schema.searchAccessField.key, value))),
@@ -102,7 +94,7 @@ return function DailyArtPanel({ draftSettings, setSettings }) {
       h(Seg, { value: source, options: sources, disabled: busy, onChange: value => { setSource(value); setResult(null) } }),
       ...fields.map(field => row(field, values, value => setSourceField(field.key, value))),
       ...(isKonachan ? schema.accountFields.filter(field => field.type !== 'password').map(field => row(field, draftSettings, value => setShared(field.key, value))) : []),
-      h(Btn, { small: true, disabled: busy || !token || Boolean(Object.keys(credentials).length), onClick: test }, busy ? '检测中…' : '检测连接'),
+      h(Btn, { small: true, disabled: busy || Boolean(Object.keys(credentials).length), onClick: test }, busy ? '检测中…' : '检测连接'),
       result && (result.ok
         ? h('div', { className: 'ab-small' }, h('div', null, `${result.proxyConfigured ? '使用代理' : '直连'} · ${result.authenticatedRequest ? '优先尝试输入的密钥' : '公开接口'}`),
           ...result.results.map(item => h('div', { key: item.host }, `${item.host} · ${item.message}`,

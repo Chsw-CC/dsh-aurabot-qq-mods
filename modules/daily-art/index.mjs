@@ -292,8 +292,8 @@ export function migrateYandereSettings(cfg) {
 
 export default {
   id: 'daily-art',
-  name: '每日推图',
-  version: '3.0.0',
+  name: '每日推图 · 逛图站',
+  version: '3.1.0',
   api: 1,
   panel: 'panel.js',
   description: '在同一页管理 Konachan 和 Yande.re 定时推图及 QQ 按需找图。',
