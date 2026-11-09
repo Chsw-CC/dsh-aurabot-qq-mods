@@ -5,7 +5,7 @@ on:
   push:
     # 模块拆分分支（upstream/<module>）在 fork 上 push 时也跑一遍，
     # 这样开 PR 前就能拿到 check/pack 结果。
-    branches: [main, 'upstream/**']
+    branches: [main, 'upstream/**', 'feat/**']
   workflow_dispatch:
 
 permissions:
