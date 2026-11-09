@@ -238,11 +238,15 @@ export default {
           savedYuan: +((o.saved * pin()) / 1_000_000).toFixed(3), // 省下的都是注入的输入 token
         }
       }).sort((a, b) => b.tokens - a.tokens).slice(0, 12)
+      // 顶部「今日消耗」同样优先真实口径（宿主 ranges.today = 全部调用的真实总量，含人格/历史/后台会话）
+      const rt = rep?.ranges?.today
+      const todayReal = rt ? { tokens: Number(rt.totalTokens) || 0, cost: +(Number(rt.cost) || 0).toFixed(3), runs: Number(rt.runs) || 0 } : null
       return {
         ok: true,
         enabled: Boolean(s().enabled),
         state: ledger.state(),
         today: { inTok: Math.round(day.day.inTok), outTok: Math.round(day.day.outTok), yuan: +yuan.toFixed(3), limit, pct: Math.round((yuan / limit) * 100) },
+        todayReal,
         recent: ledger.recent(7),
         chats,
         debug: { realChats: Object.keys(real).length, loopErr },
