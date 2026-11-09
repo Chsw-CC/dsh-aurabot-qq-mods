@@ -12,7 +12,8 @@
  *   6. 密码类设置不会被写进日志
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -112,7 +113,7 @@ test('模型调用失败时降级，不把异常抛出去', async () => {
     },
     config: () => ({}),
     settings: () => ({ ...autonomy.defaults, enabled: true }),
-    dataDir: () => join(HERE, '.tmp-data'),
+    dataDir: () => mkdtempSync(join(tmpdir(), 'autonomy-sec-')),
     log: { info: (...a) => logs.push(a.join(' ')), warn: (...a) => logs.push(a.join(' ')), error: (...a) => logs.push(a.join(' ')) },
     later: () => {},
     every: () => {},
