@@ -110,7 +110,68 @@ return function Panel({ settings, save, toast }) {
   const P_LEVELS = ['low', 'medium', 'high']
   const pIdx = Math.max(0, P_LEVELS.indexOf((settings && settings.playfulness) || 'medium'))
 
+  // ---------- 权限：默认什么都没有，一项一项开 ----------
+  const RISK_COLOR = { 高: '#e060a8', 中: '#e0a020', 低: '#2e9e44' }
+  const grants = (state && Array.isArray(state.grants)) ? state.grants : []
+  const grantedCount = grants.filter((g) => g.granted).length
+  const setGrant = (id, on) => {
+    const cur = (settings && settings.grants) || {}
+    save({ grants: { ...cur, [id]: !!on } })
+  }
+
+  const grantCard = h(ui.Card, { title: '权限（默认一项都没给）' },
+    h('div', { className: 'ab-note ab-small', style: { marginBottom: 10 } },
+      grantedCount === 0
+        ? '现在什么都没授权。她只能发呆、想事情、歇着——不会调模型、也碰不到手机。要用哪一项，在下面单独打开。'
+        : `已经开了 ${grantedCount} / ${grants.length} 项。没用到的保持关闭最安全。`,
+    ),
+    grants.length
+      ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+          grants.map((g, i) => {
+            const on = !!(settings && settings.grants && settings.grants[g.id])
+            return h('div', {
+              key: g.id,
+              style: {
+                padding: '10px 12px',
+                borderRadius: 10,
+                border: '1px solid ' + (on ? 'rgba(46,158,68,.35)' : 'rgba(127,127,127,.18)'),
+                background: on ? 'rgba(46,158,68,.06)' : 'transparent',
+              },
+            },
+              h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 } },
+                h('span', { className: 'ab-muted ab-small', style: { minWidth: 18 } }, `${i + 1}.`),
+                h('span', { style: { fontWeight: 600, fontSize: 13, flex: 1 } }, g.title),
+                h('span', {
+                  style: {
+                    fontSize: 11,
+                    padding: '1px 7px',
+                    borderRadius: 999,
+                    color: RISK_COLOR[g.risk] || '#888',
+                    background: (RISK_COLOR[g.risk] || '#888') + '22',
+                    whiteSpace: 'nowrap',
+                  },
+                }, '风险 ' + g.risk),
+                h('label', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' } },
+                  h('input', {
+                    type: 'checkbox',
+                    checked: on,
+                    onChange: (e) => setGrant(g.id, e.target.checked),
+                  }),
+                  on ? '已授权' : '未授权',
+                ),
+              ),
+              h('div', { className: 'ab-small', style: { lineHeight: 1.6, color: 'rgba(127,127,127,.9)' } }, g.detail),
+              h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } },
+                '对应声明：' + g.capability,
+              ),
+            )
+          }),
+        )
+      : h(ui.Empty, null, '读取中…'),
+  )
+
   return h('div', null,
+    grantCard,
     h(ui.Card, { title: '调节奏（改完立即生效）' },
       h('div', { style: { display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' } },
         numField('最短(分)', 'minInterval'),

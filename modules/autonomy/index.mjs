@@ -16,6 +16,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { assertNoModelText, checkExec } from './lib/exec-guard.mjs';
 import { scanModuleCode } from './lib/mod-scan.mjs';
+import { grantRows, isGranted, requireGrant } from './lib/grants.mjs';
 
 import crypto from 'node:crypto';
 
@@ -345,7 +346,7 @@ export function parsePersonaMbti(md) {
 export default {
   id: 'autonomy',
   name: '自主生活',
-  version: '0.5.0',
+  version: '0.6.0',
   api: 1,
   description: '她自己决定这一刻做什么、下次什么时候醒；间隔按区间随机并受时段活跃度影响。不执行 shell 命令',
   panel: 'panel.js',
@@ -366,6 +367,8 @@ export default {
     askTimeoutSec: 45,
     // 允许她给自己写新模块（newmod）。默认关：这是唯一能让她间接碰代码的入口
     allowNewMod: false,
+    // 能力授权：默认一项都没给，要在面板里一步一步打开
+    grants: { model: false, phone: false },
     // 手机：锁屏密码。自主生活要玩手机时，先唤醒屏幕再自动输这个密码
     phoneLock: '',
     // 手机每天最多逛几次
@@ -569,6 +572,10 @@ export default {
      * 必须先过 exec-guard：白名单外的子命令、危险命令、含 shell 元字符的参数一律不跑。
      */
     function runAdb(args, modelText) {
+      // 默认没给手机权限：没授权就当这条命令不存在
+      if (!isGranted(api.settings(), 'phone')) {
+        return Promise.resolve({ ok: false, message: '手机权限还没授权（面板 → 自主生活 → 权限）' });
+      }
       const exe = phoneAdbPath();
       // 防御性断言：模型给的文本不该出现在任何命令参数里。
       // 现在的调用参数全是字面量，但把这条钉在入口处，将来谁想拼 detail 进来会当场炸。
@@ -896,6 +903,10 @@ export default {
     async function wake() {
       const c = cfg();
       if (!c.enabled) return { ok: false, message: '没开' };
+      // 决策要问模型；没授权就到此为止，别去碰宿主
+      if (!isGranted(api.settings(), 'model')) {
+        return { ok: false, message: '「调用模型做决策」还没授权（面板 → 自主生活 → 权限）' };
+      }
 
       const s = load();
       const hour = new Date().getHours();
@@ -1300,6 +1311,8 @@ export default {
         const m = api.use('mood');
         if (m && typeof m.label === 'function') mood = m.label();
       } catch (error) {}
+      // 授权状态给面板渲染用：每一项有没有开
+      const grants = grantRows(c)
       return {
         ...s,
         config: c,
@@ -1308,6 +1321,8 @@ export default {
         used: `${s.wakes}/${c.maxWakesPerDay}`,
         nextWakeIn: s.nextWakeAt ? Math.max(0, Math.round((s.nextWakeAt - Date.now()) / 60_000)) : null,
         rateNow: rateForHour(parseActivityTable(c.activityTable), new Date().getHours()),
+        grants,
+        grantsReady: grants.every((g) => g.granted),
       };
     }
 

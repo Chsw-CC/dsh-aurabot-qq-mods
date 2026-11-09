@@ -157,6 +157,9 @@ rm -rf _tmp
 | 键 | 说明 | 默认 |
 |---|---|---|
 | `enabled` | 总开关 | `false`（装上不自己动，要手动打开） |
+| `grants` | 能力授权：`model`（调模型决策）、`phone`（操作手机） | 全 `false` |
+| `allowNewMod` | 允许她给自己写新模块 | `false` |
+| `askTimeoutSec` | 决策调用超时（秒） | `45` |
 | `minInterval` / `maxInterval` | 两次醒来的间隔区间（分钟） | `20` / `90` |
 | `maxWakesPerDay` | 每天最多醒几次 | `40` |
 | `awakeFrom` / `awakeTo` | 活跃时段（小时，写 `24` 表示到半夜） | `7` / `24` |
@@ -190,7 +193,24 @@ rm -rf _tmp
 
 ## 安全
 
-这个版本**不连接任何远端主机，所有外部命令都必须过白名单**（`lib/exec-guard.mjs`）。
+这个版本**默认一项能力都没有**：`module.json` 的 `capabilities` 是空数组，代码里也没有任何默认可用的外部能力。
+
+### 逐项授权（默认全关）
+
+装上之后她**什么都不能干**，只能发呆、想事情、歇着。要用哪一项，在主人在面板 →「权限」里一项一项手动打开：
+
+| 授权项 | 对应声明 | 打开后能做什么 | 风险 |
+|---|---|---|---|
+| 调用模型做决策 | `plugin-internals` | 每轮问她「现在想做什么」——不开这项她不会做任何决定 | 中 |
+| 操作连着的那台手机 | `process` | 通过 adb 查电量/锁屏、模拟点击、写手机日记 | 高 |
+
+没授权时：`wake()` 直接返回「还没授权」，**根本不会去碰宿主模型**；`runAdb()` 直接返回失败，**一条 adb 命令都不会执行**。
+
+`capabilities` 写空、`grants` 默认全 `false`、代码里处处先查 `isGranted()`——三处对齐，不会出现「声明说不用、代码偷偷用」。
+
+### 命令白名单
+
+不连接任何远端主机。所有外部命令都必须过白名单闸门（`lib/exec-guard.mjs`）。
 
 ### 命令白名单
 
@@ -243,6 +263,7 @@ rm -rf _tmp
 | [`test/trigger.test.mjs`](test/trigger.test.mjs) | 默认关闭、只认主人、超时真取消、失败降级、密码不进日志 |
 | [`test/security.test.mjs`](test/security.test.mjs) | 源码无 `ssh`、每个 `execFile` 前都有 `checkExec`、决策解析防御 |
 | [`test/mod-scan.test.mjs`](test/mod-scan.test.mjs) | newmod 默认关闭、危险代码逐个拒绝 |
+| [`test/grants.test.mjs`](test/grants.test.mjs) | capabilities 为空、默认全关、没授权不碰模型/不跑 adb |
 
 ## 许可
 

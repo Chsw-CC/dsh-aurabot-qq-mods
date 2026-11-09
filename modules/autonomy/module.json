@@ -1,8 +1,8 @@
 {
   "id": "autonomy",
   "name": "自主生活",
-  "version": "0.5.0",
-  "description": "让她自己决定这一刻做什么、下次什么时候醒：间隔随机并受时段活跃度影响，醒来可以看视频、写日记、画画、玩手机，做完留下记录。所有外部命令过白名单，不连远端主机。",
+  "version": "0.6.0",
+  "description": "让她自己决定这一刻做什么、下次什么时候醒。默认没有任何能力：调模型、操作手机都要在主人在面板里逐项授权后才可用。",
   "category": "desktop",
   "tags": [
     "自主",
@@ -14,12 +14,6 @@
   "api": 1,
   "minPluginVersion": "1.2.0",
   "requires": [],
-  "capabilities": [
-    "filesystem",
-    "process",
-    "network",
-    "plugin-config",
-    "plugin-internals"
-  ],
+  "capabilities": [],
   "homepage": "https://github.com/asyncxt/aurabot-mod-autonomy"
 }

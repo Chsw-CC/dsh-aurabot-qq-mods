@@ -128,7 +128,7 @@ test('超时降级：模型 hang 住时真取消、不抛、及时返回', async
     get: (name) => (name === 'agentDefaultModel' ? { currentSelection: () => ({ provider: 'p', model: 'm' }) } : null),
   }
   // 超时压到 1 秒、重试压到 2 次，整轮几秒内必须结束
-  const c = makeApi({ owner: '3205277184', settings: { enabled: true, askTimeoutSec: 1 }, dsh: hang })
+  const c = makeApi({ owner: '3205277184', settings: { enabled: true, askTimeoutSec: 1, grants: { model: true, phone: false } }, dsh: hang })
   try {
     const out = autonomy.setup(c.api)
     const started = Date.now()
@@ -162,7 +162,7 @@ test('模型直接抛错时降级，不污染状态文件', async () => {
     },
     get: (name) => (name === 'agentDefaultModel' ? { currentSelection: () => ({ provider: 'p', model: 'm' }) } : null),
   }
-  const c = makeApi({ owner: '3205277184', settings: { enabled: true }, dsh: boom })
+  const c = makeApi({ owner: '3205277184', settings: { enabled: true, grants: { model: true, phone: false } }, dsh: boom })
   try {
     const out = autonomy.setup(c.api)
     const r = await out.wake({ manual: true }).catch((e) => ({ threw: String(e && e.message) }))
