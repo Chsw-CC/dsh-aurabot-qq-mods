@@ -1,4 +1,4 @@
-// tools/set-adb-ime.mjs —— 把手机的默认输入法设成 ADB Keyboard（或切回原输入法）
+// lib/set-adb-ime.mjs —— 把手机的默认输入法设成 ADB Keyboard（或切回原输入法）
 //
 // 为什么必须这么做：
 //   模型打中文是走 ADB Keyboard 的 base64 广播，而 Android 每次 `ime set` 都会重建输入连接，
@@ -8,9 +8,9 @@
 //   界面位置永远不顶、也不用来回切换，坐标和焦点都稳。
 //
 // 用法：
-//   node tools/set-adb-ime.mjs            # 切到 ADB Keyboard（模型打字用）
-//   node tools/set-adb-ime.mjs restore    # 切回百度输入法（用户自己用手机打字时）
-//   node tools/set-adb-ime.mjs status     # 只看当前是哪个
+//   node lib/set-adb-ime.mjs            # 切到 ADB Keyboard（模型打字用）
+//   node lib/set-adb-ime.mjs restore    # 切回百度输入法（用户自己用手机打字时）
+//   node lib/set-adb-ime.mjs status     # 只看当前是哪个
 
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -18,7 +18,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-// 本文件在 <modules>/phone/tools/ 下；adb 在 <modules-data>/phone/platform-tools/
+// 本文件在 <modules>/phone/lib/ 下；adb 在 <modules-data>/phone/platform-tools/
 // 注意 modules 与 modules-data 是**同级**的两个目录，不是父子关系（上面多爬一层就对了）
 const PHONE_DATA = join(HERE, '..', '..', '..', 'modules-data', 'phone')
 const ADB = join(PHONE_DATA, 'platform-tools', 'adb.exe')
