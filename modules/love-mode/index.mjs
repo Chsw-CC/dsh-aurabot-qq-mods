@@ -186,7 +186,7 @@ export default {
         maxTokens: 500,
         temperature: 1
       })
-      const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('军师链超时')), 20000))
+      const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('军师链超时')), 20000).unref?.())
       const raw = await Promise.race([askPromise, timeout])
       const m = String(raw || '').match(/\{[\s\S]*\}/)
       const data = m ? JSON.parse(m[0]) : null
