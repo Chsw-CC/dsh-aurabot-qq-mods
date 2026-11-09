@@ -9,6 +9,17 @@ const chatLabel = (id) => {
   return m[1] === 'group' ? '群 ' + m[2] : '私聊 ' + m[2]
 }
 
+// 以会话 id 为种子取一个稳定的随机纯色（柔和高饱和度，保证深浅文字都可读）。
+// 种子固定 → 同一会话每次刷新同色，不闪；不同会话颜色打散。
+const CHAT_HUES = [210, 160, 30, 275, 340, 95, 190, 20, 250, 130]
+const cardColor = (id) => {
+  let h = 0
+  for (const ch of String(id || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0
+  const hue = CHAT_HUES[h % CHAT_HUES.length]
+  const jitter = (h >>> 8) % 12
+  return `hsl(${hue + jitter}, 55%, 88%)`
+}
+
 return function TokenBudgetPanel({ settings, save, toast }) {
   const [st, setSt] = useState(null)
 
@@ -37,7 +48,7 @@ return function TokenBudgetPanel({ settings, save, toast }) {
     const savedPct = total > 0 ? Math.min(100, Math.round((c.saved / (total + c.saved)) * 100)) : 0
     return h('div', {
       key: c.chatId,
-      style: { border: '1px solid var(--ab-border, #333)', borderRadius: 10, padding: '10px 12px', minWidth: 240, flex: '1 1 240px' },
+      style: { background: cardColor(c.chatId), borderRadius: 10, padding: '10px 12px', minWidth: 200 },
     },
       h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' } },
         h('div', { style: { fontWeight: 600 } }, chatLabel(c.chatId)),
@@ -74,7 +85,7 @@ return function TokenBudgetPanel({ settings, save, toast }) {
       h('div', { className: 'ab-small ab-muted', style: { marginBottom: 6 } },
         '每个会话的消耗与节省（近 7 天；绿色 = 这轮省下的注入占比）'),
       st.chats.length
-        ? h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 10 } }, st.chats.map(card))
+        ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 } }, st.chats.map(card))
         : h('div', { className: 'ab-small ab-muted' }, '还没有会话数据——她收到 / 回出消息后这里就会长出来。'))
       : h('div', { className: 'ab-small ab-muted' }, '读账本中…'),
     ui.Row ? null : null,
