@@ -18,7 +18,11 @@ import { PAGE_TEXT_SRC, taskProgressFromText, badgeHintsFromText, plus100FromTex
 // 1.0.0 → 2026-11-10：修 CDP 假端口撞车、弹幕冷却不抗重载、弹幕成功判据只有一级；
 //   新增 开播主动提醒、/看直播 换、挂机日报、弹幕记录（state + 自检）、面板弹幕卡
 //   （当前直播间 / 冷却显示）、/say 面板接口只认本机主人。
-const VERSION = '1.0.0'
+// 1.0.1 → 2026-11-09：修 /selfcheck 里的 ReferenceError: url is not defined
+//   （roomId 那行读了一个不存在的变量，整个接口连带自检单都返回错误）。
+// 1.0.2 → 2026-11-09：灯牌的「今天已放弃自动」标签原来只按天记，换了直播间/主播还在，
+//   整晚静默跳过（看着就是「送灯牌没启动」）。现在标记绑房间号，进到别的房间自动作废。
+const VERSION = '1.0.2'
 
 // 点完之后等证据的时间（ms）。放在这里，失败文案里的秒数也从它算，避免又写死一个 12。
 const EVIDENCE_WAIT_MS = 20_000
@@ -45,6 +49,17 @@ const liveRoomId = (u) => {
   const m = /^https?:\/\/(?:live\.douyin\.com|(?:www|m)\.douyin\.com\/(?:[a-z-]+\/)*live)\/(\d+)/i.exec(s)
   return m ? m[1] : ''
 }
+
+/** 房间的唯一标识：能取出房间号就用房间号，取不到退回整条地址。 */
+const roomKeyOf = (u) => liveRoomId(u) || String(u || '')
+
+/**
+ * 1.0.2：灯牌「今天已放弃自动」的标记要不要继续生效。
+ * 原来它只按天记账 —— 晚上换了个直播间/换了个主播，标记还在，整晚都静默跳过
+ * （表现就是「送灯牌没启动」）。所以给标记绑上房间号：房间变了就当它过期。
+ */
+const giveUpRoomsDiffer = (giveUpDay, giveUpRoom, today, curRoom) =>
+  Boolean(giveUpDay && today && giveUpRoom && curRoom) && giveUpDay === today && giveUpRoom !== curRoom
 
 /** 这个地址看起来是「直播间」，而不是主播主页 / 别的页面。 */
 const isLiveUrl = (u) => LIVE_RE.test(String(u || ''))
@@ -237,6 +252,8 @@ export default {
     let badgeRejectDay = String(loadState().badgeRejectDay || '')
     let badgeRejectStreak = Number(loadState().badgeRejectStreak || 0)
     let badgeGiveUpDay = String(loadState().badgeGiveUpDay || '')
+    // 1.0.2：放弃时在哪个房间（房间号）。只有还在同一个房间，当天的放弃标记才继续拦。
+    let badgeGiveUpRoom = String(loadState().badgeGiveUpRoom || '')
 
     const note = (text, level = 'info') => {
       lastNote = new Date().toLocaleTimeString() + ' ' + text
@@ -476,8 +493,8 @@ export default {
       return true
     }
 
-    /** 灯牌连续失败 3 次：当天降级成提醒（一天只提一次）。 */
-    async function badgeReject(why) {
+    /** 灯牌连续失败 3 次：当天、这个直播间降级成提醒（一天只提一次）。 */
+    async function badgeReject(why, room = '') {
       const today = dayKey()
       if (badgeRejectDay !== today) { badgeRejectDay = today; badgeRejectStreak = 0 }
       badgeRejectStreak++
@@ -485,7 +502,9 @@ export default {
       note('灯牌这轮没成：' + why, 'warn')
       if (badgeRejectStreak >= 3 && badgeGiveUpDay !== today) {
         badgeGiveUpDay = today
-        saveState({ badgeGiveUpDay: today })
+        // 1.0.2：记下是在哪个房间放弃的 —— 换房间后标记自动作废，不用手动重开。
+        badgeGiveUpRoom = String(room || badgeGiveUpRoom || roomKeyOf(badgeUrl))
+        saveState({ badgeGiveUpDay: today, badgeGiveUpRoom })
         await tellOwner('灯牌连着 3 次没点上（' + why + '）。今天先不自动试了，你顺手点一下？想让我再试就发 /看直播 灯牌')
       }
     }
@@ -2033,6 +2052,18 @@ export default {
           // 2026-11-04：今天这个直播间已经确认送出过就别再判一遍了。
           // （之前每 2 分钟都打一条「今天已经送出了」，日志被刷满。）
           // 2026-11-06：连着挂 3 次 → 当天降级成提醒；有动作在等确认就别抢。
+          // 1.0.2 修：放弃标记原来只按天记 —— 晚上换个直播间/换个主播，标记还在，整晚静默跳过，
+          //   看起来就是「送灯牌没启动」（2026-11-09 实测：凌晨在旧房间挂了 5 次，21 点换房后一直没动）。
+          //   现在标记绑房间：进到别的房间就作废，连续失败计数一起清零，让新房间重新试一次。
+          const curRoom = roomKeyOf(url)
+          const giveUpRoom = String(badgeGiveUpRoom || roomKeyOf(badgeUrl))
+          if (giveUpRoomsDiffer(badgeGiveUpDay, giveUpRoom, today, curRoom)) {
+            badgeGiveUpDay = ''
+            badgeGiveUpRoom = ''
+            badgeRejectStreak = 0
+            saveState({ badgeGiveUpDay: '', badgeGiveUpRoom: '', badgeRejectStreak: 0 })
+            note('灯牌：换到别的直播间了（' + curRoom + '，上次放弃是在 ' + giveUpRoom + '），清掉今天的放弃标记，重新试一次', 'info')
+          }
           if (badgeDay === today && badgeUrl === url) {
             // 已经办完，静默跳过
           } else if (badgeGiveUpDay === today) {
@@ -2053,7 +2084,7 @@ export default {
               r2 = await doBadge()
               if (r2.pending) note('灯牌：' + r2.message, 'info')
               else if (r2.ok) note('灯牌：' + r2.message, 'info')
-              else await badgeReject(r2.message || '没点成')
+              else await badgeReject(r2.message || '没点成', curRoom)
               await sleep(1500)
               // 2026-11-08 修：原来这里又用 badgeSent() 覆盖结论，而它只认「今日任务」那一行；
               //   commitBadge 认的是「今日任务 / 飘屏 / 余额」三者之一，于是会出现
@@ -2473,8 +2504,11 @@ export default {
         }
         if (cmd === '灯牌') {
           if (!cdp) return '直播间浏览器没开，先发 /看直播 进'
+          // 手动重开就把放弃标记（含房间号）和连续失败计数一起清掉，从干净状态试一次。
           badgeGiveUpDay = ''
-          saveState({ badgeGiveUpDay: '' })
+          badgeGiveUpRoom = ''
+          badgeRejectStreak = 0
+          saveState({ badgeGiveUpDay: '', badgeGiveUpRoom: '', badgeRejectStreak: 0 })
           const r = await doBadge()
           return r.pending ? r.message : (r.ok ? r.message : '没点成：' + r.message)
         }
@@ -2828,6 +2862,9 @@ export default {
 
     api.route('/selfcheck', async () => {
       const s = api.settings()
+      // 2026-11-09 修：下面对象里的 url 只是键名，不是变量；roomId 那行原来直接用了 url，
+      // 于是整个 /selfcheck 抛 ReferenceError: url is not defined。先把当前地址取到局部变量。
+      const curUrl = cdp ? await currentUrl() : ''
       return {
         ok: true,
         browser: findBrowser(api.settings().browserPath),
@@ -2836,7 +2873,7 @@ export default {
         profileExists: existsSync(profileDir()),
         connected: Boolean(cdp),
         port,
-        url: cdp ? await currentUrl() : '',
+        url: curUrl,
         enabled: Boolean(s.enabled),
         target: s.target || '',
         inWindow: inWindow(),
@@ -2848,12 +2885,13 @@ export default {
         giftByDm: Boolean(s.giftByDm),
         semiAuto: Boolean(s.semiAuto),
         badgeGiveUpDay,
+        badgeGiveUpRoom,
         pending: gate.state(),
         viewport,
         // P2：残留浏览器端口（面板「运行状态」卡用它提示「模块没连但浏览器还挂着」）
         leftoverPort: cdp ? 0 : await livePort(),
         // P1：当前直播间（自检文本 + 面板弹幕卡共用）
-        roomId: cdp ? liveRoomId(url) : '',
+        roomId: cdp ? liveRoomId(curUrl) : '',
         // F4：今天的弹幕记录
         sayToday: sayLog.day === dayKey() ? sayLog.items.slice(-10) : [],
         today: dayKey(),
@@ -2881,7 +2919,7 @@ export default {
       tick,
       selfCheck,
       status: () => ({ enabled: api.settings().enabled, target: api.settings().target, connected: Boolean(cdp) }),
-      _debug: { inWindow, dayKey, findBrowser, sayState: () => ({ lastSayAt, gapMs: SAY_GAP_MS, maxChars: SAY_MAX_CHARS }) },
+      _debug: { inWindow, dayKey, findBrowser, roomKeyOf, giveUpRoomsDiffer, sayState: () => ({ lastSayAt, gapMs: SAY_GAP_MS, maxChars: SAY_MAX_CHARS }) },
     }
   },
 }
