@@ -298,6 +298,8 @@ test('/status：有插件真实用量账本时，消耗换成真实口径', asyn
     assert.equal(c.runs, 3)
     assert.equal(c.cacheHitRate, 98)
     assert.equal(st.debug.realChats, 1)
+    const withSaved = st.chats.find((x) => x.saved > 0)
+    if (withSaved) assert.ok(Number.isFinite(withSaved.savedYuan), '节省折算必须是有限数字')
   } finally { globalThis.fetch = realFetch }
 })
 

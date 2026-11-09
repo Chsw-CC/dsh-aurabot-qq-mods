@@ -214,10 +214,11 @@ export default {
       const ours = new Map(ledger.chatsByDay(7).map((c) => [c.chatId, c]))
       // 回环调宿主自己的 /usage（同进程同端口，req 头里带真实的 host:port）；2.5 秒超时，拿不到就算了
       let rep = null
+      let loopErr = ''
       try {
         const host = req?.headers?.host || ''
-        if (host) rep = await (await fetch(`http://${host}/usage?range=7`, { signal: AbortSignal.timeout(2500) })).json()
-      } catch {}
+        if (host) rep = await (await fetch(`http://${host}/aurabot/api/usage?range=7`, { signal: AbortSignal.timeout(2500) })).json()
+      } catch (e) { loopErr = String(e?.message || e).slice(0, 120) }
       const real = realUsageByChat(rep)
       const ids = new Set([...Object.keys(real), ...ours.keys()])
       const chats = [...ids].map((id) => {
@@ -234,7 +235,7 @@ export default {
           cacheHitRate: r ? Math.round((Number(r.cacheHitRate) || 0) * 100) : null,
           estimate: !r,
           saved: o.saved,
-          savedYuan: +((o.saved * pin) / 1_000_000).toFixed(3), // 省下的都是注入的输入 token
+          savedYuan: +((o.saved * pin()) / 1_000_000).toFixed(3), // 省下的都是注入的输入 token
         }
       }).sort((a, b) => b.tokens - a.tokens).slice(0, 12)
       return {
@@ -244,7 +245,7 @@ export default {
         today: { inTok: Math.round(day.day.inTok), outTok: Math.round(day.day.outTok), yuan: +yuan.toFixed(3), limit, pct: Math.round((yuan / limit) * 100) },
         recent: ledger.recent(7),
         chats,
-        debug: { realChats: Object.keys(real).length },
+        debug: { realChats: Object.keys(real).length, loopErr },
       }
     })
 
