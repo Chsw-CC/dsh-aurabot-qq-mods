@@ -2010,8 +2010,8 @@ test('1.0.14：defaults 与 /config 下发甩抛物理与互动开关；坏值�
   assert.equal(mod.defaults.petClickChase, false)
   assert.equal(mod.defaults.petTeaseChase, false)
   // 版本三处同步：module.json 与 index.mjs 一起升
-  assert.equal(mod.version, '1.0.14')
-  assert.equal(JSON.parse(readFileSync(join(MODULE_DIR, 'module.json'), 'utf8')).version, '1.0.14')
+  assert.equal(mod.version, '1.0.15')
+  assert.equal(JSON.parse(readFileSync(join(MODULE_DIR, 'module.json'), 'utf8')).version, '1.0.15')
 
   const cfg = await env.call('/config')
   assert.equal(cfg.status, 200)
