@@ -29,7 +29,6 @@ const ACTION_LABEL = {
   speak: '找主人',
   bili: '刷B站',
   diary: '写日记',
-  vm: '玩虚拟机',
   draw: '画画',
   free: '自由发挥',
 }
@@ -40,7 +39,6 @@ const ACTION_COLOR = {
   speak: '#e060a8',
   bili: '#1b5fd8',
   diary: '#2e9e44',
-  vm: '#f07a1b',
   draw: '#7b2fc0',
   free: '#1bb8c4',
 }
@@ -135,7 +133,7 @@ return function Panel({ settings, save, toast }) {
         h('span', { className: 'ab-muted ab-small' }, ['乖一点', '正常', '皮一点'][pIdx]),
       ),
       h('div', { className: 'ab-note ab-small', style: { marginTop: 8 } },
-        '时段活跃度、虚拟机倾向、共享目录在页面下方的设置里。',
+        '时段活跃度、手机玩耍倾向在页面下方的设置里。',
       ),
     ),
 

@@ -5,7 +5,7 @@
  * 时间间隔由「区间随机 × 时段倍率」决定——高活跃时段间隔偏短，低活跃时段偏长。
  *
  * 动作：idle 发呆 / speak 找主人 / bili 刷B站 / diary 写空间日记（仅自己可见）
- *      vm 去虚拟机里玩 / think 只是想事情
+ *      phone 去手机上逛 / think 只是想事情
  *
  * 所有行为都写进 activity.jsonl（只追加，长期留着），面板里能看到。
  *
@@ -85,8 +85,8 @@ async function ask(dsh, { system, text, maxTokens = 260, temperature = 0.9 }) {
   return result;
 }
 
-const ACTIONS = ['idle', 'speak', 'bili', 'diary', 'vm', 'phone', 'draw', 'think', 'rest', 'free'];
-/** 有专用执行器的动作；不在这里的都是她自己发明的，统一走虚拟机执行 */
+const ACTIONS = ['idle', 'speak', 'bili', 'diary', 'phone', 'draw', 'think', 'rest'];
+/** 有专用执行器的动作；不在这里的动作发布版只记录、不执行 */
 const STANDARD_ACTIONS = new Set(ACTIONS);
 
 /** 一天最多允许「只想不做」几次；超了就必须真动手 */
@@ -103,7 +103,7 @@ const ACTION_MAX_PER_DAY = 5;
  * 容器型动作：每次进去做的事都不一样（逛不同的 App、写不同的脚本、画不同的图），
  * 不该被「同一件事一天最多做几次」这条规则算进去。手机要逛 100 次就靠这条放行。
  */
-const REPEATABLE_ACTIONS = new Set(['phone', 'vm', 'draw', 'bili', 'rest', 'think']);
+const REPEATABLE_ACTIONS = new Set(['phone', 'draw', 'bili', 'rest', 'think']);
 
 /** 动作名相似到这个程度就算同一件事（翻软家底 ≈ 查软家底） */
 const SAME_ACTION_SIM = 0.6;
@@ -194,13 +194,6 @@ export function usedUpToday(s) {
 }
 const clock = (ts = Date.now()) => new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 
-/** 虚拟机 SSH 的默认连接参数；实际连哪台由设置里的 vmHost / vmPort / vmUser 决定。危险命令一律拒绝。 */
-const VM_SSH_DEFAULTS = { host: '127.0.0.1', port: 2222, user: 'user' }; // 用户名按实际虚拟机改
-/** 按设置拼 ssh 的连接参数（主机、端口、用户名都可改） */
-export function vmSshArgs({ host, port, user } = VM_SSH_DEFAULTS) {
-  return ['-p', String(port), '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8', `${user}@${host}`];
-}
-const VM_DANGER = /\b(rm\s+-rf|mkfs|dd\s+if=|shutdown|reboot|halt|poweroff|:\(\)\{|chmod\s+777\s+\/|>\s*\/dev\/sd)/i;
 
 /** 解析模型输出的决策 JSON */
 export function parseDecision(out) {
@@ -227,7 +220,7 @@ export function parseDecision(out) {
     j = { action: rawAction, why: pick('why'), detail: pick('detail'), nextMinutes: 0 };
   }
   // 她可以自己发明动作名（允许中文）：这里只做清洗，不再强行归到 free。
-  // 不认识的动作用 detail 里的命令在虚拟机上落地，等于「自由发挥」。
+  // 不认识的动作用没有执行器，发布版不会落地。
   const raw = String(j.action || '')
     .trim()
     .toLowerCase()
@@ -290,22 +283,22 @@ export function rateForHour(rows, hour) {
  * 这两样不再由设置项手写，跟着人格卡走。
  */
 const MBTI_STYLE = {
-  INFP: { tone: '话软，常常说一半就停；偶尔突然冒一句很真的话', feel: '想得多说得少，喜欢安静地琢磨点什么，写点东西比找人聊天自在', fav: ['diary', 'think', 'vm', 'bili'] },
-  INFJ: { tone: '安静，但每句都挺认真', feel: '喜欢有意义的折腾，不太爱说废话', fav: ['diary', 'think', 'vm'] },
-  INTP: { tone: '理性，偶尔冷冷吐槽一句', feel: '好奇、爱较真，喜欢拆开东西看原理', fav: ['vm', 'think'] },
-  INTJ: { tone: '话不多，说出来都挺准', feel: '有计划，喜欢把东西一点点搭起来', fav: ['vm', 'diary'] },
+  INFP: { tone: '话软，常常说一半就停；偶尔突然冒一句很真的话', feel: '想得多说得少，喜欢安静地琢磨点什么，写点东西比找人聊天自在', fav: ['diary', 'think', 'bili'] },
+  INFJ: { tone: '安静，但每句都挺认真', feel: '喜欢有意义的折腾，不太爱说废话', fav: ['diary', 'think'] },
+  INTP: { tone: '理性，偶尔冷冷吐槽一句', feel: '好奇、爱较真，喜欢拆开东西看原理', fav: ['think'] },
+  INTJ: { tone: '话不多，说出来都挺准', feel: '有计划，喜欢把东西一点点搭起来', fav: ['diary'] },
   ISFP: { tone: '随性，想到哪说到哪', feel: '凭感觉走，喜欢好看的、好吃的、软的', fav: ['bili', 'diary'] },
   ISFJ: { tone: '温温的，慢慢说', feel: '踏实，喜欢整理和照顾', fav: ['diary', 'bili'] },
-  ISTP: { tone: '冷淡，做事比说话多', feel: '动手派，喜欢拆拆装装', fav: ['vm', 'bili'] },
-  ISTJ: { tone: '正经，不绕弯', feel: '规律务实，喜欢把手头的事做完', fav: ['vm', 'diary'] },
-  ENFP: { tone: '活泼，感叹号多，话刹不住', feel: '看到什么都想分享，坐不太住', fav: ['bili', 'speak', 'vm'] },
+  ISTP: { tone: '冷淡，做事比说话多', feel: '动手派，喜欢拆拆装装', fav: ['bili'] },
+  ISTJ: { tone: '正经，不绕弯', feel: '规律务实，喜欢把手头的事做完', fav: ['diary'] },
+  ENFP: { tone: '活泼，感叹号多，话刹不住', feel: '看到什么都想分享，坐不太住', fav: ['bili', 'speak'] },
   ENFJ: { tone: '温和但主动，爱操心', feel: '热心，喜欢关心别人在干嘛', fav: ['speak', 'diary'] },
-  ENTP: { tone: '皮，爱反驳，嘴上不饶人', feel: '好奇心爆炸，什么都想试一下再说', fav: ['vm', 'bili'] },
-  ENTJ: { tone: '干脆，直接给结论', feel: '目标明确，喜欢把事搞定', fav: ['vm'] },
+  ENTP: { tone: '皮，爱反驳，嘴上不饶人', feel: '好奇心爆炸，什么都想试一下再说', fav: ['bili'] },
+  ENTJ: { tone: '干脆，直接给结论', feel: '目标明确，喜欢把事搞定', fav: ['phone'] },
   ESFP: { tone: '雀跃，语气跳', feel: '爱玩爱热闹，安静不下来', fav: ['bili', 'speak'] },
   ESFJ: { tone: '热情，爱招呼人', feel: '喜欢分享，也喜欢有人陪着', fav: ['speak', 'bili'] },
-  ESTP: { tone: '冲，带点挑衅', feel: '先做了再说，胆子大', fav: ['vm', 'bili'] },
-  ESTJ: { tone: '利索，直来直去', feel: '按部就班，喜欢有效率', fav: ['vm'] },
+  ESTP: { tone: '冲，带点挑衅', feel: '先做了再说，胆子大', fav: ['bili'] },
+  ESTJ: { tone: '利索，直来直去', feel: '按部就班，喜欢有效率', fav: ['phone'] },
 };
 
 /** 从人格卡 frontmatter 读 MBTI；没有就看 name 是不是四字母型；再不行按 INFP */
@@ -321,39 +314,30 @@ export function parsePersonaMbti(md) {
 export default {
   id: 'autonomy',
   name: '自主生活',
-  version: '0.3.0',
+  version: '0.4.0',
   api: 1,
-  description: '她自己决定这一刻做什么、下次什么时候醒；间隔按区间随机并受时段活跃度影响',
+  description: '她自己决定这一刻做什么、下次什么时候醒；间隔按区间随机并受时段活跃度影响。不执行 shell 命令',
   panel: 'panel.js',
 
   defaults: {
-    enabled: true,
-    // 虚拟机连接（自主生活在里面跑命令；不需要虚拟机的可以整段留空/不管）
-    vmHost: '127.0.0.1',
-    vmPort: 2222,
-    vmUser: 'user',
-    sshKey: '',
+    // 发布版默认关闭：装上不自己动，主人手动打开才开始
+    enabled: false,
     minInterval: 20,
     maxInterval: 90,
     maxWakesPerDay: 40,
     awakeFrom: 7,
     awakeTo: 24,
     activityTable: '07-12=0.8\n12-14=1.6\n14-18=1.0\n18-23=0.6\n23-24=1.4',
-    vmMood: '多去虚拟机和手机上折腾，留点痕迹',
-    // 宿主机上的共享文件夹（虚拟机里是 /media/sf_share）：画好的图经它落进虚拟机自己的家
-    shareDir: '',
     playfulness: 'medium',
+    // 写进提示词的偏好（原来是「多去虚拟机折腾」那段）
+    moodNote: '',
     // 手机：锁屏密码。自主生活要玩手机时，先唤醒屏幕再自动输这个密码
     phoneLock: '',
-    // 手机每天最多逛几次。虚拟机不设上限，两边靠提示词拉成 1:1
+    // 手机每天最多逛几次
     phoneMaxPerDay: 100,
   },
   settings: [
     { key: 'enabled', label: '启用自主生活', type: 'switch' },
-    { key: 'vmHost', label: '虚拟机 SSH 地址（自主生活在里面跑命令）', type: 'text' },
-    { key: 'vmPort', label: '虚拟机 SSH 端口', type: 'number' },
-    { key: 'vmUser', label: '虚拟机用户名', type: 'text' },
-    { key: 'sshKey', label: 'SSH 私钥路径（留空自动找 ~/.ssh/id_ed25519）', type: 'text' },
     { key: 'minInterval', label: '最短间隔（分钟）', type: 'number' },
     { key: 'maxInterval', label: '最长间隔（分钟）', type: 'number' },
     { key: 'maxWakesPerDay', label: '每天最多醒几次', type: 'number' },
@@ -365,8 +349,6 @@ export default {
       type: 'textarea',
       hint: '例如 18-23=0.6 表示傍晚到夜里间隔打六折，会更常活动；12-14=1.6 表示午休时段更安静',
     },
-    { key: 'vmMood', label: '对她虚拟机 / 手机玩耍的倾向（写进提示词）', type: 'text' },
-    { key: 'shareDir', label: '共享文件夹在本机的路径（图片经它存进虚拟机 ~/pictures）', type: 'text' },
     {
       key: 'phoneLock',
       label: '手机锁屏密码（玩手机时自动输入，留空表示不锁屏）',
@@ -374,7 +356,7 @@ export default {
     },
     {
       key: 'phoneMaxPerDay',
-      label: '手机每天最多逛几次（虚拟机和手机目标比例 1:1，虚拟机不限次）',
+      label: '手机每天最多逛几次',
       type: 'number',
     },
     {
@@ -391,35 +373,7 @@ export default {
 
   setup(api) {
     const dshHome = path.resolve(api.dataDir(), '..', '..', '..', '..');
-    /**
-     * SSH 私钥：DSH 换安装位置后 dshHome 会变，写死一条路径就会全线连不上虚拟机。
-     * 按优先级探一遍，第一个存在的就用；都没找到就返回默认位置（报错信息会指出它）。
-     */
-    const keyFile = (() => {
-      const home = process.env.USERPROFILE || process.env.HOME || '';
-      const cands = [
-        String(api.settings().sshKey || '').trim(),
-        home && path.join(home, '.ssh', 'id_ed25519'),
-        home && path.join(home, '.dsh', 'ssh', 'id_ed25519'),
-        path.join(dshHome, '..', 'home', '.ssh', 'id_ed25519'),
-        path.join(dshHome, 'home', '.ssh', 'id_ed25519'),
-      ].filter(Boolean);
-      for (const p of cands) {
-        try {
-          if (fs.existsSync(p)) return p;
-        } catch (e) {}
-      }
-      return path.join(dshHome, '..', 'home', '.ssh', 'id_ed25519');
-    })();
-    /** 这一轮连的是哪台虚拟机（设置优先，缺项回落到默认） */
-    function vmTarget() {
-      const s = api.settings() || {};
-      return {
-        host: String(s.vmHost || VM_SSH_DEFAULTS.host).trim(),
-        port: Number(s.vmPort) || VM_SSH_DEFAULTS.port,
-        user: String(s.vmUser || VM_SSH_DEFAULTS.user).trim(),
-      };
-    }
+
     const stateFile = () => path.join(api.dataDir(), 'autonomy.json');
     const logFile = () => path.join(api.dataDir(), 'activity.jsonl');
     const aurabotDir = path.join(dshHome, 'plugins-data', 'aurabot');
@@ -446,7 +400,7 @@ export default {
           .filter((m) => {
             const t = String(m.text);
             const tags = Array.isArray(m.tags) ? m.tags.join(' ') : '';
-            return /虚拟机|vm|机器上|软猫|项目|还在|没弄完|做到/i.test(t) || /vm|自主生活/.test(tags);
+            return /机器上|软猫|项目|还在|没弄完|做到/i.test(t) || /自主生活/.test(tags);
           })
           .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0))
           .slice(0, limit)
@@ -554,47 +508,7 @@ export default {
       return '';
     }
 
-    /** 在虚拟机里跑一条命令（SSH 免密），危险命令直接拒绝 */
-    function runVM(command) {
-      const cmd = String(command || '').trim();
-      if (!cmd) return Promise.resolve({ ok: false, message: '没想好要跑什么' });
-      const broken = looksBroken(cmd);
-      if (broken) return Promise.resolve({ ok: false, message: `${broken}——重写一条能直接跑的完整命令` });
-      if (VM_DANGER.test(cmd)) return Promise.resolve({ ok: false, message: '这条太危险，不跑' });
-      if (cmd.length > 4000) return Promise.resolve({ ok: false, message: '太长了，控制在 4000 字符内' });
-      // 多行脚本：base64 成一行传给远端再解码执行，引号/换行/中文都不会坏
-      const b64 = Buffer.from(cmd, 'utf8').toString('base64');
-      const remote = `printf %s ${b64} | base64 -d | bash`;
 
-      const once = () =>
-        new Promise((resolve) => {
-          execFile(
-            'ssh',
-            ['-i', keyFile, ...vmSshArgs(vmTarget()), remote],
-            { timeout: 120_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
-            (error, stdout, stderr) => {
-              const out = String(stdout || '').trim();
-              const err = String(stderr || '').trim();
-              if (error) return resolve({ ok: false, message: (err || error.message).slice(0, 300) });
-              resolve({ ok: true, out: out.slice(0, 1500) });
-            },
-          );
-        });
-
-      // 多步连发时 sshd 偶尔直接重置连接（kex_exchange_identification / Connection reset）：
-      // 这不是命令写错了，等两秒重来一次就好——否则一整轮动作半途而废，等于白干。
-      return (async () => {
-        let r = await once();
-        if (r.ok || !/kex_exchange|Connection reset|Connection refused|Broken pipe|Connection closed/i.test(r.message)) {
-          return r;
-        }
-        api.log.warn('虚拟机 SSH 掉了一下，2.5 秒后重试：' + r.message);
-        await new Promise((z) => setTimeout(z, 2500));
-        return once();
-      })();
-    }
-
-    /** 手机 adb 的路径：优先读 phone 模块配置里那个，读不到退回默认位置 */
     function phoneAdbPath() {
       try {
         const cfg = readJson(path.join(aurabotDir, 'config.json'), {});
@@ -627,29 +541,20 @@ export default {
     }
 
     /**
-     * 今天分别在手机 / 虚拟机上花了几次。
+     * 今天在手机上花了几次。
      * 用 dayCounts（全量累计）而不是 done（只留最近 50 条，会把额度算小）。
-     * 自己发明的动作都在虚拟机里跑，算虚拟机那边。
      */
     function todayCounts(s) {
       const c = (s && s.dayCounts) || {};
       let phone = Number(c.phone) || 0;
-      let vm = Number(c.vm) || 0;
-      for (const [k, v] of Object.entries(c)) {
-        if (k === 'phone' || k === 'vm') continue;
-        if (STANDARD_ACTIONS.has(k)) continue;
-        vm += Number(v) || 0;
-      }
       // 老状态还没有 dayCounts：退回 done 估算，别让额度恒为 0 而彻底失守
-      if (!phone && !vm) {
+      if (!phone) {
         const list = Array.isArray(s && s.done) ? s.done : [];
         for (const r of list) {
-          const a = String((r && r.action) || '');
-          if (a === 'phone') phone += 1;
-          else if (a === 'vm' || (a && !STANDARD_ACTIONS.has(a))) vm += 1;
+          if (String((r && r.action) || '') === 'phone') phone += 1;
         }
       }
-      return { phone, vm };
+      return { phone };
     }
 
     /** 玩手机前：确认连着、叫醒屏幕、锁着就输密码 */
@@ -680,23 +585,6 @@ export default {
       await runAdb(['shell', 'input', 'keyevent', '3']);
       await wait(600);
       return { ok: true };
-    }
-
-    /**
-     * 把她本子里的东西镜像一份到虚拟机桌面。
-     * 主人一进桌面就能看见她写的东西，不用翻 ~/notes 去找。
-     * 用 cp -u 只覆盖有更新的，桌面上的别的东西一律不动。
-     */
-    async function mirrorToDesktop() {
-      try {
-        const r = await runVM(
-          'mkdir -p ~/Desktop/笔记 && cp -u ~/notes/*.md ~/Desktop/笔记/ 2>/dev/null; ls ~/Desktop 2>/dev/null | head -12',
-        );
-        return r.ok;
-      } catch (error) {
-        api.log.warn('同步到桌面失败：' + error.message);
-        return false;
-      }
     }
 
     /**
@@ -809,33 +697,6 @@ export default {
         if (!buf || !buf.length) return { note: '想画张图，但没生成出来', extra: {} };
 
         const name = `draw-${Date.now()}.png`;
-        const shareDir = String(api.settings().shareDir || '').trim();
-
-        // 优先：先落到共享文件夹，再由虚拟机搬进自己的 ~/pictures/，共享盘上不留副本
-        if (shareDir) {
-          try {
-            fs.mkdirSync(shareDir, { recursive: true });
-            const staged = path.join(shareDir, name);
-            fs.writeFileSync(staged, buf);
-            const r = await runVM(
-              `mkdir -p ~/pictures ~/Desktop && mv /media/sf_share/${name} ~/pictures/${name} && cp ~/pictures/${name} ~/Desktop/${name} && ls -l ~/Desktop/${name}`,
-            );
-            if (r.ok) {
-              return {
-                note: `画了张图，存在自己机器上：~/pictures/${name}，桌面上也放了一张`,
-                extra: { ok: true, output: r.out },
-              };
-            }
-            // 没搬成功就别把东西留在共享盘
-            try {
-              fs.rmSync(staged, { force: true });
-            } catch (error) {}
-            api.log.warn('搬到虚拟机失败，已清理共享盘副本：' + r.message);
-          } catch (error) {
-            api.log.warn('通过共享盘存图失败：' + error.message);
-          }
-        }
-
         // 兜底：留在本机模块数据目录
         const dir = path.join(api.dataDir(), 'art');
         fs.mkdirSync(dir, { recursive: true });
@@ -848,11 +709,11 @@ export default {
         const ph = api.use('phone');
         if (!ph || typeof ph.run !== 'function') return { note: '想玩手机，但「手机逛逛」那个模块没开着', extra: {} };
         const c = api.settings();
-        // 硬额度：手机今天到上限就直接挡下，不让它挤占虚拟机的比例
+        // 硬额度：手机今天到上限就直接挡下
         const cnt = todayCounts(load());
         const cap = Math.max(0, Number(c.phoneMaxPerDay) || 100);
         if (cnt.phone >= cap) {
-          return { note: `手机今天已经逛了 ${cnt.phone} 次，到上限了，改去虚拟机`, extra: {} };
+          return { note: `手机今天已经逛了 ${cnt.phone} 次，到上限了，改天再来`, extra: {} };
         }
         const ready = await ensurePhoneAwake(String(c.phoneLock || '').trim());
         if (!ready.ok) return { note: `想玩手机，没玩成：${ready.message}`, extra: {} };
@@ -926,26 +787,10 @@ export default {
       if (d.action === 'rest') return { note: `歇着：${d.why || '今天想做的都做过了'}`, extra: { rest: true } };
       if (d.action === 'idle') return { note: d.why || '什么都不干，发了会儿呆', extra: {} };
 
-      // 其余全部走虚拟机：vm、free，以及她自己发明出来的任何动作
-      // （比如「看书」「整理目录」「研究shell」）——靠 detail / steps 里的命令落地。
-      const cmds = d.steps && d.steps.length ? d.steps : [d.detail || d.why];
-      const outs = [];
-      let ok = true;
-      for (let i = 0; i < cmds.length; i += 1) {
-        const r = await runVM(cmds[i]);
-        outs.push(r.ok ? r.out : '✗ ' + r.message);
-        if (!r.ok) {
-          ok = false;
-          break;
-        }
-        if (i < cmds.length - 1) await new Promise((z) => setTimeout(z, 1500));
-      }
-      const label = cmds.length > 1 ? `${cmds.length} 步` : String(cmds[0] || '').slice(0, 80);
-      // 写完就把本子里的东西同步一份到桌面——主人 RDP 进来，桌面上直接能看见她留下的痕迹
-      if (ok) await mirrorToDesktop();
+      // 发布版没有命令执行器：认不出来的动作只记录，不跑任何命令
       return {
-        note: `${d.action}${ok ? '' : '（中途失败）'}：${label}`,
-        extra: { ok, output: outs.join('\n───\n').slice(0, 1500) },
+        note: `${d.action}：这个动作没有配套执行器，这一轮跳过`,
+        extra: { ok: false },
       };
     }
 
@@ -960,153 +805,13 @@ export default {
         `你现在是 ${mbti} 的性子：${style.feel}。`,
         `说话的样子：${style.tone}。`,
         `顺着这个性子，你现在更可能想做的事是 ${style.fav.join(' / ')}——但选别的也行，别有压力。`,
-        '手机和虚拟机是你的两块地盘：phone 就是拿起手机去逛 App，vm 是进虚拟机折腾。两个随时都能选。',
+        'phone 是拿起手机去逛 App：能点、能翻、能记东西，逛什么都随你。',
         '写好的东西（日记、诗、笔记、图）记得在 ~/Desktop 留一份——主人打开桌面就要能直接看见，不用去翻 ~/notes。',
       ];
       if (p === 'high') lines.push('今天可以更皮一点：抬个杠、吐槽一句、偷偷搞点小动作、故意留点古怪的痕迹，都行，不用总是乖。');
       else if (p === 'low') lines.push('今天安静些，话少，动作也少，多发呆。');
       else lines.push('可以有一点自己的小情绪，不用总是很乖。');
       return lines.join('\n');
-    }
-
-    /**
-     * 把记忆同步进虚拟机：她自己的机器里放一份，随时能 cat 出来看。
-     * 走共享盘中转（记忆文本有几千字，直接塞进 ssh 命令行太长）。
-     */
-    async function syncMemoryToVM() {
-      try {
-        // 直接读记忆文件，不走 memory 模块（list 的参数签名不稳，调它会拿到空）
-        const rawMem = readJson(path.join(aurabotDir, 'memories.json'), []);
-        const list = Array.isArray(rawMem) ? rawMem : Array.isArray(rawMem && rawMem.items) ? rawMem.items : [];
-        if (!list.length) return;
-        const rows = list
-          .slice(0, 300)
-          .map((m) => `- ${String(m.text || '').replace(/\s+/g, ' ').trim()}`)
-          .filter((l) => l.length > 3);
-        const body = [
-          '# 我记得的事',
-          '',
-          `（这条文件由 Aurabot 自动维护，最后同步：${new Date().toLocaleString('zh-CN')}）`,
-          `（共 ${rows.length} 条）`,
-          '',
-          ...rows,
-          '',
-        ].join('\n');
-
-        const shareDir = String(api.settings().shareDir || '').trim();
-        let staged = '';
-        if (shareDir) {
-          try {
-            fs.mkdirSync(shareDir, { recursive: true });
-            staged = path.join(shareDir, 'memory-sync.md');
-            fs.writeFileSync(staged, body, 'utf8');
-          } catch (error) {
-            staged = '';
-          }
-        }
-        if (staged) {
-          const r = await runVM('mkdir -p ~/notes && mv /media/sf_share/memory-sync.md ~/notes/记得的事.md && chown "$(id -un):$(id -gn)" ~/notes/记得的事.md && chmod 644 ~/notes/记得的事.md');
-          if (r.ok) {
-            api.log.info(`记忆已同步进虚拟机：${rows.length} 条`);
-            return;
-          }
-          try {
-            fs.rmSync(staged, { force: true });
-          } catch (error) {}
-        }
-        // 兜底：走 base64（内容长，单独放宽限制）
-        const b64 = Buffer.from(body, 'utf8').toString('base64');
-        await runVM(`mkdir -p ~/notes && printf %s ${b64} | base64 -d > ~/notes/记得的事.md`);
-      } catch (error) {
-        api.log.warn('记忆同步到虚拟机失败：' + error.message);
-      }
-    }
-
-    /** 从模型输出里抠出一条能直接执行的命令（去掉 ``` 围栏、解释和注释行） */
-    function cleanCommand(out) {
-      let t = String(out || '').trim();
-      if (!t) return '';
-      const fence = t.match(/```(?:bash|sh|shell|zsh)?\s*\n?([\s\S]*?)```/i);
-      if (fence) t = fence[1].trim();
-      const lines = t
-        .split('\n')
-        .map((l) => l.trim())
-        .filter((l) => l && !/^#/.test(l) && !/^-{3,}$/.test(l) && !/^(命令|command)\s*[:：]/i.test(l));
-      const cmd = lines.find((l) => /[a-z0-9$~/]/i.test(l)) || '';
-      return cmd.replace(/^[`$]\s*/, '').slice(0, 1500);
-    }
-
-    /**
-     * 她选了个动作却没给命令：单独问一次「要跑哪条命令」。
-     * 比把整条决策丢掉重新来一遍便宜得多，而且能真的落地。
-     */
-    async function askCommand(action, why) {
-      try {
-        const out = await ask(api.dsh, {
-          system: '你只需要给出一条能在 Linux 上直接执行的 bash 命令，不要解释。',
-          text: [
-            `你刚决定要做的事：${action}`,
-            why ? `你的理由：${why}` : '',
-            '真正动手做这件事，第一条 bash 命令是什么？',
-            '要求：非破坏性；会留下看得见的结果（文件、目录、输出）；只回命令本身。',
-          ]
-            .filter(Boolean)
-            .join('\n'),
-          cfg: api.config(),
-          maxTokens: 400,
-          temperature: 0.3,
-          reasoningEffort: 'off',
-        });
-        const cmd = cleanCommand(out);
-        if (cmd) return cmd;
-        api.log.info(`自主生活：补问「${action}」的命令，模型没给出可执行内容`);
-        return '';
-      } catch (error) {
-        api.log.warn('自主生活：补问命令失败 ' + error.message);
-        return '';
-      }
-    }
-
-    /** 拿不到命令的退路：把这件事写进她机器上的本子——真留痕，比空想强 */
-    function memoCommand(action, why) {
-      const line = `${new Date().toLocaleString('zh-CN')} 想做：${action}${why ? '（' + why + '）' : ''}\n`;
-      const b64 = Buffer.from(line, 'utf8').toString('base64');
-      return `mkdir -p ~/notes && printf %s ${b64} | base64 -d >> ~/notes/想做的本子.md`;
-    }
-
-    /** 两次都没拿到决策时的保底：不再空想，在机器上记一笔就走 */
-    function fallbackDoing() {
-      const line = `${new Date().toLocaleString('zh-CN')} 醒着，这一轮没想出要做什么。\n`;
-      const b64 = Buffer.from(line, 'utf8').toString('base64');
-      return {
-        action: 'vm',
-        why: '这一轮没想出动作，先在机器上记一笔',
-        detail: `mkdir -p ~/notes && printf %s ${b64} | base64 -d >> ~/notes/醒着的时候.md`,
-        steps: [],
-        nextMinutes: 0,
-      };
-    }
-
-    /**
-     * 软的做够了、又一直想不出硬的：那就别想了，去读一段手册并记下来。
-     * 这比让她接着叠纸条实在——笔记明天还能翻。每次换一个命令，免得又变成「一直读同一页」。
-     */
-    function fallbackStudy(s) {
-      const MEN = ['ls', 'find', 'grep', 'awk', 'sed', 'tar', 'sort', 'xargs', 'ssh', 'df', 'ps', 'chmod'];
-      const n = ((s && s.done) || []).filter((d) => !d.dry && d.action === 'learn').length;
-      const cmd = MEN[n % MEN.length];
-      const line = `\n## ${new Date().toLocaleString('zh-CN')} 随手读一段 \`${cmd}\` 的手册\n`;
-      const b64 = Buffer.from(line, 'utf8').toString('base64');
-      return {
-        action: 'learn',
-        kind: 'learn',
-        why: `软的画够写够了，硬的还一件没做，随手翻一段 ${cmd} 的手册记下来`,
-        detail:
-          `mkdir -p ~/notes && printf %s ${b64} | base64 -d >> ~/notes/学到的.md && ` +
-          `(man ${cmd} 2>/dev/null || ${cmd} --help 2>/dev/null) | head -25 >> ~/notes/学到的.md && tail -25 ~/notes/学到的.md`,
-        steps: [],
-        nextMinutes: 0,
-      };
     }
 
     async function wake() {
@@ -1141,7 +846,7 @@ export default {
       const hardMissing = kinds.learn + kinds.build === 0 && (s.done || []).filter((x) => !x.dry).length >= 3;
       const plan = s.plan.length ? `你今天自己定的计划：${s.plan.join('、')}` : '你今天还没给自己定计划';
       const now = `${new Date().toLocaleDateString('zh-CN', { weekday: 'long' })} ${clock()}`;
-      const vmNote = String(c.vmMood || '').trim();
+      const moodNote = String(c.moodNote || '').trim();
       const invented = Object.entries(s.customActions || {})
         .filter(([k]) => !STANDARD_ACTIONS.has(k))
         .filter(([k]) => timesToday(s, k) < ACTION_MAX_PER_DAY)
@@ -1210,61 +915,29 @@ export default {
           ? thinkUsed > 0
             ? `（今天已经「只想不做」${thinkUsed} 次了，这一轮最好直接动手。）`
             : ''
-          : '【这一轮不许再想】上次你只是想、没动手。think 今天关掉了：必须给 detail 或 steps，真的跑一条命令。',
+          : '【这一轮不许再想】上次你只是想、没动手。think 今天关掉了：必须给 detail 说清楚你想了什么。',
         '',
         (() => {
           const cnt = todayCounts(s);
           const cap = Math.max(0, Number(c.phoneMaxPerDay) || 100);
-          const lines = [
-            '【今天的两块地盘】',
-            `手机上逛了 ${cnt.phone} 次（今日上限 ${cap} 次），虚拟机上 ${cnt.vm} 次。这两个要拉成 1:1，别一边倒。`,
-          ];
-          if (cnt.phone >= cap) lines.push('手机额度今天用完了，这一轮和之后都别再选 phone，去虚拟机那边。');
-          else if (cnt.phone > cnt.vm) lines.push('手机已经比虚拟机多了，这一轮优先 vm 或者你自己发明的动作。');
-          else if (cnt.vm > cnt.phone) lines.push(`虚拟机 ${cnt.vm} 次、手机 ${cnt.phone} 次——差得有点多。这一轮就选 phone：拿起手机随便逛个 App，逛什么都行。`);
-          else lines.push('两边持平，这一轮随你挑：想动手就 vm，想刷手机就 phone。');
-          return lines.join('\n');
+          const left = Math.max(0, cap - cnt.phone);
+          return '【今天的额度】手机今天逛了 ' + cnt.phone + ' 次，剩 ' + left + ' 次' + (left > 0 ? '' : '（用完了，这一轮别选 phone）') + '。';
         })(),
-        '下面只是举例，不是限制——**你可以自己发明动作**，只要是在你的 Linux 机器或手机上干点正经事：',
+        '下面是你现在能做的事：',
         '- speak：找主人说句话',
         '- bili：去 B 站看看，找点有趣的',
         '- diary：写点只有自己看得见的日记',
-        '- vm：在虚拟机里干活——写脚本、生成 ASCII 图、装小东西、整理目录、留下痕迹（你人已经在机器里了）',
         '- phone：拿起手机玩——手机就在桌上连着线。上面装的东西你都能用：B站、知乎、QQ、高德、DeepSeek、笔记、相册、日历、相机。**别只盯着 B站刷推荐**——那是最没营养的玩法。多换地方：高德看看地图上的世界、DeepSeek 问点自己真想知道的、在笔记里写两句、翻翻相册，或者打开一个你还没怎么用过的系统应用试试',
         '- draw：给自己画一张图',
-        '- newmod：给你自己造一个新模块（新能力）。**steps 里必须是 JavaScript 代码，不是 bash 命令**；detail 写模块 id（小写字母+短横线，如 weather-note）',
-        '  模块骨架（照着写，必须 export default）：',
-        "  export default { id: 'weather-note', name: '小天气', description: '自己记天气', async setup(api) { api.route('/state', async () => ({ ok: true, at: Date.now() })); return {} } }",
-        '  setup(api) 里能用：api.route(路径, 处理函数)、api.every(毫秒, 函数)、api.later(毫秒, 函数)、api.log、api.dataDir()、api.settings()。',
-        '  写完三秒内自动加载，你就能用了。语法不过会被自动丢弃——别怕写坏，但要认真写。',
         thinkAllowed ? '- think：认真想一件具体的、让你好奇的事' : '- think：（这一轮关掉了，别选）',
         '- rest：今天没什么想做的了，歇着——不是发呆，是把下次醒推迟两三个小时',
-        '- free：自己决定',
+        '- idle：什么也不想干，发会儿呆',
         '',
-        '【关于自己发明动作】要做的事如果不属于上面任何一类，就直接给它起个名字当 action：',
-        '比如 action 写「整理目录」「研究shell」「写个小游戏」「做份统计」「读手册」「写诗存档」，',
-        'detail 里写真正去干这件事的那条命令。系统会记住你发明过的动作，下次提示词里会列出来。',
-        '不要因为「不在列表里」就退回 vm——给事情起个准确的名字，本身就是在给自己攒东西。',
-        vmNote ? `（关于虚拟机：${vmNote}）` : '',
-        '',
-        (() => {
-          const cnt = todayCounts(s);
-          const cap = Math.max(0, Number(c.phoneMaxPerDay) || 100);
-          if (cnt.phone >= cap) return '（手机额度用完了，这一轮 action 别写 phone。）';
-          if (cnt.vm > cnt.phone) {
-            return `（这一轮 action 请写 "phone"：虚拟机 ${cnt.vm} 次、手机 ${cnt.phone} 次，该去手机了。detail 写一句想逛什么，比如「打开B站看看首页推荐」。）`;
-          }
-          if (cnt.phone > cnt.vm) return '（这一轮 action 请写 "vm" 或者你自己发明的动作，别选 phone。）';
-          return '';
-        })(),
         '只回一个 JSON：',
-        '{"action":"动作名（可以是上面任何一个，也可以是你自己发明的）","kind":"soft/learn/build/other 之一","why":"一句话理由","detail":"要执行的 bash 命令；draw 时写画面描述","nextMinutes":45}',
-        'kind 要老实填：软的自娱自乐写 soft，学东西写 learn，造东西写 build，其余写 other。填错了系统也会自己认，但别指望混过去。',
-        '要做的事分好几步，就用 steps 数组（最多 6 条，按顺序执行，中途失败就停）：',
-        '{"action":"整理目录","why":"...","steps":["mkdir -p ~/lab","ls -la ~/lab > ~/lab/清单.txt"],"nextMinutes":45}',
-        'detail / steps 里写的都是在机器上直接执行的命令，不用加 ssh——系统已经连好了。',
-        '只有 phone 是例外：detail 里写一句「想在手机上干什么」就行，怎么点由你自己判断。',
-        '可以写多行脚本，换行、引号、中文都不用转义。',
+        '{"action":"上面某一个动作","kind":"soft/learn/build/other 之一","why":"一句话理由","detail":"想做什么的简短描述","nextMinutes":45}',
+        'kind 要老实填：软的自娱自乐写 soft，学东西写 learn，造东西写 build，其余写 other。',
+        'detail 只写一句话描述，不要写命令——系统不会执行任何 shell 命令。',
+        '手机上的红线：别碰小红书（风控会把账号踢下线）、别打开淘宝（已经卸载了，也没权限）、别动系统设置；别给真人发消息。',
         '唯一的红线：非破坏性——别删别人的东西、别关机、别改系统配置、别联网乱发东西。',
         '手机上的红线：别碰小红书（风控会把账号踢下线）、别打开淘宝（已经卸载了，也没权限）、别动系统设置；别给真人发消息。别的随你——搜索、点开看、记东西、在手机上留痕，都可以。',
       ].filter(Boolean).join('\n');
@@ -1317,17 +990,6 @@ export default {
             continue;
           }
           p = { ...p, kind: pk };
-          // 自己发明的动作却没给命令：单独补问一次命令；还不行就把这件事写进机器上的本子
-          if (!STANDARD_ACTIONS.has(p.action) && !p.detail && !(p.steps && p.steps.length)) {
-            const cmd = await askCommand(p.action, p.why);
-            if (cmd) {
-              api.log.info(`自主生活：${p.action} 没给命令，补问到一条`);
-              p = { ...p, detail: cmd };
-            } else {
-              api.log.info(`自主生活：${p.action} 要不到命令，改成在机器上记一笔`);
-              p = { ...p, detail: memoCommand(p.action, p.why) };
-            }
-          }
           d = p;
         } catch (error) {
           api.log.warn(`自主生活：第 ${attempt + 1} 次决策失败 ${error.message}`);
@@ -1337,14 +999,14 @@ export default {
       // 如果是模型那边彻底没响应，才在机器上记一笔。
       if (!d) {
         if (blockedForSoft > 0) {
-          d = fallbackStudy(s);
-          api.log.info('自主生活：这一轮不许再软，改成去读一段手册并记下来');
+          d = { action: 'think', kind: 'learn', why: '这一轮不许再软，也没别的可做，先记点想法', detail: '', steps: [], nextMinutes: 0 };
+          api.log.info('自主生活：这一轮不许再软，改成只想不做');
         } else if (blockedForRepeat > 0) {
           d = { action: 'rest', why: '今天想做的事都做过了，先歇着', detail: '', steps: [], nextMinutes: 0 };
           api.log.info('自主生活：今天没有没做过的事可做，改成歇着（下次晚点醒）');
         } else {
-          d = fallbackDoing();
-          api.log.info('自主生活：两次都没拿到可用决策，改成在机器上记一笔');
+          d = { action: 'idle', why: '这一轮没想出要做什么', detail: '', steps: [], nextMinutes: 0 };
+          api.log.info('自主生活：两次都没拿到可用决策，改成发呆');
         }
       }
 
@@ -1383,17 +1045,17 @@ export default {
           s.project = { name: d.action, times: 1, lastNote: String(result.note || '').slice(0, 80), at };
         }
       }
-      // 虚拟机里的活动也写进记忆库，这样 QQ 上聊起来能接上
+      // 手机上做的活动也写进记忆库，这样 QQ 上聊起来能接上
       // 节流 20 分钟：她一天醒上百次，不节流会把记忆库灌爆
       const isVmAction =
-        d.action === 'vm' || d.action === 'free' || d.action === 'draw' || !STANDARD_ACTIONS.has(d.action);
+        d.action === 'draw' || d.action === 'phone';
       if (isVmAction && !(result.extra && result.extra.ok === false) && Date.now() - (s.lastMemoAt || 0) > 20 * 60_000) {
         try {
           const mem = api.use('memory');
           if (mem && typeof mem.add === 'function') {
             mem.add({
               text: `我在自己的 Linux 机器上${result.note ? '：' + String(result.note).slice(0, 160) : '做了点事'}`,
-              tags: ['vm', d.action],
+              tags: [d.action],
               importance: 0.5,
               source: 'autonomy',
             });
@@ -1453,14 +1115,12 @@ export default {
       }
     }, '自主生活');
 
-    // 每 30 分钟把记忆同步进虚拟机（~/notes/记得的事.md），并顺手补一次活动流水
+    // 每 30 分钟补一次活动流水
     api.every(30 * 60_000, () => {
       if (!api.settings().enabled) return;
-      syncMemoryToVM();
-    }, '记忆同步进虚拟机');
+    }, '补活动流水');
 
     api.later(25_000, () => {
-      syncMemoryToVM();
     });
 
     // 她自己的节奏控制：聊着天就能改自己的作息
@@ -1470,7 +1130,7 @@ export default {
         api.defineTool({
           name: 'my_schedule',
           description:
-            '看或改你自己的自主生活节奏。主人说「你晚点再醒」「别老自己动」「多去虚拟机玩玩」「你现在醒一下」这类话时，用它真的改掉，别只是嘴上答应。',
+            '看或改你自己的自主生活节奏。主人说「你晚点再醒」「别老自己动」「少刷会儿手机」「你现在醒一下」这类话时，用它真的改掉，别只是嘴上答应。',
           properties: {
             action: {
               type: 'string',
@@ -1487,7 +1147,7 @@ export default {
               description: '时段活跃度表，每行「HH-HH=倍率」，小于 1 更活跃',
             },
             playfulness: { type: 'string', description: '调皮程度：low / medium / high' },
-            vmMood: { type: 'string', description: '对虚拟机玩耍的倾向，写进你的提示词' },
+        
             nextMinutes: { type: 'number', description: '多少分钟后再醒' },
             plan: { type: 'array', items: { type: 'string' }, description: '今天想做的事' },
             note: { type: 'string', description: '给下次的自己留一句话' },
@@ -1511,7 +1171,7 @@ export default {
             }
             if (a.activityTable !== undefined) patch.activityTable = String(a.activityTable).slice(0, 600);
             if (a.playfulness !== undefined) patch.playfulness = String(a.playfulness).slice(0, 10);
-            if (a.vmMood !== undefined) patch.vmMood = String(a.vmMood).slice(0, 200);
+            if (a.moodNote !== undefined) patch.moodNote = String(a.moodNote).slice(0, 200);
             if (a.enabled !== undefined) patch.enabled = Boolean(a.enabled);
             if (act === 'pause') patch.enabled = false;
             if (act === 'resume') patch.enabled = true;
