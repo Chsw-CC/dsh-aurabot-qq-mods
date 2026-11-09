@@ -652,6 +652,28 @@ try {
 } catch (e) { cliFail = { code: e.status, err: String(e.stderr || '') } }
 ok('连不上面板时退出码 2 并说清楚', cliFail.code === 2 && /找不到面板/.test(cliFail.err), 'exit=' + cliFail.code)
 
+console.log('\n=== 12.5 1.0.2 灯牌放弃标记绑房间（换直播间/换主播就作废）===')
+{
+  const src = readFileSync(new URL('../index.mjs', import.meta.url), 'utf8')
+  const d = boot().out._debug
+  const today = '2026-11-09'
+  ok('roomKeyOf 优先取房间号', d.roomKeyOf('https://live.douyin.com/467135990812?anchor_id=4107408219578990') === '467135990812')
+  ok('roomKeyOf 认「关注页」的直播间地址', d.roomKeyOf('https://www.douyin.com/follow/live/835225251778?anchor_id=1') === '835225251778')
+  ok('roomKeyOf 取不到房间号就退回原串（空串还是空串）', d.roomKeyOf('') === '')
+  ok('同一个房间：今天的放弃标记继续拦', d.giveUpRoomsDiffer(today, '835225251778', today, '835225251778') === false)
+  ok('换了房间：放弃标记作废', d.giveUpRoomsDiffer(today, '835225251778', today, '467135990812') === true)
+  ok('跨天自己不拦（每天重新算）', d.giveUpRoomsDiffer('2026-11-08', '835225251778', today, '467135990812') === false)
+  ok('房间号缺失时不乱清（维持旧行为，宁可不动）',
+    d.giveUpRoomsDiffer(today, '', today, '467135990812') === false && d.giveUpRoomsDiffer(today, '835225251778', today, '') === false)
+  ok('tick 在「今天已放弃」判定之前先按房间清标记',
+    /const curRoom = roomKeyOf\(url\)[\s\S]{0,300}giveUpRoomsDiffer\(badgeGiveUpDay, giveUpRoom, today, curRoom\)[\s\S]{0,500}badgeGiveUpDay = ''/.test(src))
+  ok('放弃时记下是在哪个房间放弃的',
+    /badgeGiveUpRoom = String\(room \|\| badgeGiveUpRoom \|\| roomKeyOf\(badgeUrl\)\)/.test(src) && /saveState\(\{ badgeGiveUpDay: today, badgeGiveUpRoom \}\)/.test(src))
+  ok('手动 /看直播 灯牌 把房间标记和连续失败计数一起清掉',
+    /cmd === '灯牌'[\s\S]{0,500}badgeGiveUpRoom = ''/.test(src) && /cmd === '灯牌'[\s\S]{0,500}badgeRejectStreak = 0/.test(src))
+  ok('/selfcheck 能看到 badgeGiveUpRoom', /badgeGiveUpRoom,\r?\n/.test(src))
+}
+
 if (LIVE) {
   console.log('\n=== 13. 真起一次浏览器（LIVE=1）===')
   const live = boot({ settings: { enabled: true, schedule: false, target: 'https://example.com/' }, cfg: { douyin: { enabled: true } } })
