@@ -1,11 +1,14 @@
 import { booruSources, requestKonachan, validateKonachanProxy } from './transport.mjs'
 import { requestAudit } from './diagnostics.mjs'
+import { saveCachedImage } from './image-cache.mjs'
+import { imageKeys } from './image-delivery.mjs'
+import { setTimeout as delay } from 'node:timers/promises'
 
 const pageSize = 100
 const maxImageBytes = 4 * 1024 * 1024
 const imageTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const tagPattern = /^[a-z0-9_][a-z0-9_()'.+\-]{0,79}$/
-const orders = { newest: 'id_desc', oldest: 'id', score: 'score', score_asc: 'score_asc', resolution: 'mpixels', resolution_asc: 'mpixels_asc' }
+const orders = { newest: 'id_desc', oldest: 'id', score: 'score', score_asc: 'score_asc', resolution: 'mpixels', resolution_asc: 'mpixels_asc', random: 'random' }
 
 export function ratingSelection(value, source) {
   const site = booruSources[source]
@@ -133,7 +136,7 @@ function imageUrl(post, source) {
   return null
 }
 
-export async function downloadKonachanImage(value, { source = 'konachan', proxyUrl = '', signal, fetchImage = requestKonachan, log, operation, trace = false } = {}) {
+export async function downloadKonachanImage(value, { source = 'konachan', proxyUrl = '', signal, fetchImage = requestKonachan, log, operation, trace = false, cacheDir } = {}) {
   const url = imageUrl({ file_url: value }, source)
   const { name } = booruSources[source]
   if (!url) throw new PermanentImageError('图片地址无效')
@@ -141,10 +144,27 @@ export async function downloadKonachanImage(value, { source = 'konachan', proxyU
   const timeout = AbortSignal.timeout(20_000)
   const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
   const audit = requestAudit({ log, operation, stage: 'image-download', host: new URL(url).hostname, proxyUrl })
+  const retryDelays = [300, 700]
+  for (const wait of [...retryDelays, null]) {
+    try {
+      const { bytes, type } = await downloadImageAttempt(url, { name, proxyUrl, requestSignal, timeout, fetchImage, audit, trace })
+      if (!signal?.aborted) await saveCachedImage(cacheDir, source, bytes, type, log)
+      return bytes
+    } catch (error) {
+      const cause = error.cause
+      const reset = (cause?.cause?.code || cause?.code) === 'ECONNRESET'
+      if (!reset || wait === null || requestSignal.aborted) throw error
+      audit('warn', 'retry-connection-reset', undefined, cause)
+      await delay(wait, undefined, { signal: requestSignal })
+    }
+  }
+}
+
+async function downloadImageAttempt(url, { name, proxyUrl, requestSignal, timeout, fetchImage, audit, trace }) {
   let response
   try { response = await fetchImage(url, { proxyUrl, signal: requestSignal }) } catch (error) {
     audit('warn', timeout.aborted ? 'timeout' : 'network-error', undefined, error)
-    throw new Error(`${proxyUrl ? '代理' : '直连'}下载图片失败或超时`)
+    throw new Error(`${proxyUrl ? '代理' : '直连'}下载图片失败或超时`, { cause: error })
   }
   if (response.headers.get('cf-mitigated') === 'challenge') {
     audit('warn', 'cloudflare-challenge', response)
@@ -176,14 +196,14 @@ export async function downloadKonachanImage(value, { source = 'konachan', proxyU
     }
   } catch (error) {
     audit('warn', timeout.aborted ? 'timeout' : 'image-read-error', response, error)
-    throw new Error(`读取 ${name} 图片失败或超时`)
+    throw new Error(`读取 ${name} 图片失败或超时`, { cause: error })
   }
   if (bytes > maxImageBytes || !bytes) {
     audit('warn', bytes ? 'image-too-large' : 'empty-image', response)
     throw new PermanentImageError(bytes ? '图片超过 4 MB' : `${name} 返回了空图片`)
   }
   if (trace) audit('info', 'ok', response)
-  return Buffer.concat(chunks)
+  return { bytes: Buffer.concat(chunks), type }
 }
 
 // 来源接口统一返回 { key, url }，后续来源可用自己的 ID 前缀。
@@ -192,15 +212,18 @@ export async function selectKonachan(excluded, count, { filters = {}, ...options
   const { query, matches } = postCriteria({ min_score: 31, ...filters }, source)
   const list = listReader(options)
   const images = new Map()
+  const known = new Set(excluded)
   for (let page = 1; page <= 20; page++) {
     const posts = await list('/post.json', { tags: query, limit: pageSize, page })
     for (const post of posts) {
       if (!matches(post)) continue
       const key = `${source}:${post.id}`
-      if (excluded.has(key) || images.has(key)) continue
+      const identities = imageKeys(key, post.md5)
+      if (identities.some(identity => known.has(identity))) continue
       const src = imageUrl(post, source)
       if (!src) continue
-      images.set(key, { key, url: src })
+      images.set(key, { key, url: src, ...(post.md5 && { md5: post.md5 }) })
+      for (const identity of identities) known.add(identity)
       if (images.size === count) return [...images.values()]
     }
     if (posts.length === 0) break
@@ -288,22 +311,25 @@ function postCriteria(args, source) {
 export async function searchKonachan(args, options) {
   const source = options?.source || 'konachan'
   const { origin } = booruSources[source]
-  const { min_score = 0, limit = 8 } = args
-  if (!Number.isSafeInteger(min_score) || min_score < 0 || !Number.isInteger(limit) || limit < 1 || limit > 12) {
-    throw new Error('评分下限须为非负整数，候选数量须在 1–12 之间')
-  }
-  const { query, matches } = postCriteria({ ...args, min_score }, source)
+  const { created_since, created_until, limit = 8, excluded = new Set() } = args
+  if (!Number.isInteger(limit) || limit < 1 || limit > 12) throw new Error('候选数量须在 1–12 之间')
+  const { query, matches } = postCriteria(args, source)
   const list = listReader(options)
   const found = new Map()
+  const known = new Set(excluded)
   for (let page = 1; page <= 3; page++) {
     const posts = await list('/post.json', { tags: query, limit: 40, page })
     if (!posts.length) break
     for (const p of posts) {
       if (!matches(p, true)) continue
+      const identities = imageKeys(source + ':' + p.id, p.md5)
+      if (identities.some(identity => known.has(identity))) continue
+      if (created_since != null && (!Number.isSafeInteger(p.created_at) || p.created_at < created_since || p.created_at > created_until)) continue
       const postTags = String(p.tags ?? '').split(/\s+/).filter(t => tagPattern.test(t))
       const url = imageUrl(p, source)
-      if (!url || found.has(p.id)) continue
-      found.set(p.id, { id: p.id, rating: p.rating, score: p.score, width: p.width, height: p.height, tags: postTags.slice(0, 25), post_url: `${origin}/post/show/${p.id}`, url })
+      if (!url) continue
+      found.set(p.id, { id: p.id, md5: p.md5, rating: p.rating, score: p.score, width: p.width, height: p.height, tags: postTags.slice(0, 25), post_url: `${origin}/post/show/${p.id}`, url })
+      for (const identity of identities) known.add(identity)
       if (found.size === limit) return [...found.values()]
     }
   }

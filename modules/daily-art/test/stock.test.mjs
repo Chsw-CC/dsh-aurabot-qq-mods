@@ -109,6 +109,9 @@ test('stock host installs, groups the panel, claims raw requests and protects cr
   const groupOf = runInNewContext(client.slice(start, end) + '\nnavGroupOf')
   assert.equal(groupOf({ id: `ext:${module.id}`, ext: module.id, label: module.name }).id, 'platform')
   assert.ok(module.panel && !module.routes.some(route => route.endsWith('/pair')))
+  assert.equal(module.defaults.cacheImages, false)
+  const schema = (await fake.call('/ext/daily-art/settings-schema')).json()
+  assert.match(schema.defaultCacheDir, /daily-art-images$/)
   assert.equal((await post('/credentials', {}, '203.0.113.7')).ok, false)
   assert.equal(instance.getConfig().ext['daily-art'].konachanApiKey, undefined)
   const vault = join(dir, 'modules-data', 'daily-art', 'credentials.json')
@@ -124,7 +127,7 @@ test('stock host installs, groups the panel, claims raw requests and protects cr
     const record = JSON.parse(readFileSync(join(dir, 'modules-data', 'daily-art', 'delivery.json'), 'utf8'))
     assert.equal(record.slots['0'].rating, 's')
     assert.equal(record.slots['0'].recipients[`private:${owner}`], 'sent')
-  } else await until(() => sent().some(segment => segment.data.text?.includes('补充角色')))
+  } else await until(() => sent().some(segment => segment.data.text?.includes('补充想找的主题')))
   assert.equal(fake.turns.length, 0)
   if (persistent) return
   fake.dispose()
