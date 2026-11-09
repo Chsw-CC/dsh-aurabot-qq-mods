@@ -29,11 +29,12 @@ const DEFAULTS = {
 export default {
   id: 'token-budget',
   name: '预算管家',
-  version: '1.0.0',
+  version: '1.1.0',
   api: 1,
   description: '省 token：注入内容预算封顶、本地向量只带最相关的 16 条记忆、估算记账、日超预算自动熔断',
   category: 'manage',
   tags: ['省token', '预算', '熔断', '记忆'],
+  panel: 'panel.js',
 
   defaults: DEFAULTS,
 
@@ -102,6 +103,7 @@ export default {
     }
 
     // 改写「交给她的内容」：预算封顶 + 自己的 top-K 记忆块。熔断拦人交给 group/decide（那里分得出必回）。
+    // 顺手记一笔「省了多少」：不挑记忆全量带的假设开销 + 原始内容的开销，减去实际送出去的开销。
     api.on('prompt', async (content, info) => {
       if (!s().enabled) return content
       if (!Array.isArray(content) || !content.length) return content
@@ -109,10 +111,22 @@ export default {
       if (!chat || chat.kind === 'system') return content
       // 硬熔：主人私聊（可设置豁免）以外的轮次不交给她
       if (ledger.state() === 'hard' && !(s().protectOwner && ownerPrivate(chat))) return null
-      const block = memoryBlock(info?.queryText || '', chat.chatId || '')
+      const costOf = (blocks) => blocks.reduce((n, b) => n + (b?.type === 'image' ? IMAGE_TOKENS : estTokens(b?.text)), 0)
+      const base = costOf(content)
+      const queryText = info?.queryText || ''
+      const block = memoryBlock(queryText, chat.chatId || '')
+      // 假设不挑记忆、全量都带的成本（封顶 400 条，防超大记忆库把估算本身变成负担）
+      let fullMemCost = 0
+      const mem = memoryOf()
+      if (block && mem?.list) {
+        try { fullMemCost = estTokens((mem.list('') || []).slice(0, 400).map((it) => String(it.text || '')).join('\n')) } catch {}
+      }
       const withMemory = block ? [...content, { type: 'text', text: block }] : content
       const budget = Number(s().promptBudgetTokens) || DEFAULTS.promptBudgetTokens
-      return trimToBudget(withMemory, budget)
+      const result = trimToBudget(withMemory, budget)
+      const saved = Math.max(0, base + fullMemCost - costOf(result))
+      if (saved > 0) ledger.addChat(chat.chatId, 'saved', 0, saved)
+      return result
     })
 
     // 硬熔拦「回不回」：必回（mode must / 被 @）和主人永远放行——省钱不能变成装死。
@@ -134,10 +148,14 @@ export default {
     })
 
     // 记账：收到 / 发出的文字都估算 token 进账（system 会话是她自己想事情，不算 QQ 消息，跳过）。
+    // 全局账 + 按会话的桶各记一份，面板卡片读的就是桶。
     api.on('activity', ({ kind, chatId, text } = {}) => {
       if (!s().enabled) return
       if (!chatId || String(chatId).startsWith('system:')) return
-      ledger.add(kind === 'out' ? 'out' : 'in', estTokens(text))
+      const t = estTokens(text)
+      const k = kind === 'out' ? 'out' : 'in'
+      ledger.add(k, t)
+      ledger.addChat(chatId, k, t)
       // 刚跨过熔断线：提醒主人（每日至多 2 条，记在账本里防重启刷屏）
       if (ledger.state() === 'hard' && ledger.takeNotifySlot() > 0) {
         const to = ownerChatId()
@@ -174,17 +192,25 @@ export default {
       },
     })
 
-    // 面板接口：今日用量 + 熔断状态 + 近 7 天曲线数据。
+    // 面板接口：今日用量 + 熔断状态 + 近 7 天曲线 + 按会话聚合（卡片数据，近 7 天 top 12）
     api.route('/status', async () => {
       const day = ledger.today()
       const yuan = ledger.spentYuan()
       const limit = Math.max(0.01, Number(s().dailyBudgetYuan) || 15)
+      const pin = Math.max(0, Number(s().priceIn) || 0)
+      const pout = Math.max(0, Number(s().priceOut) || 0)
+      const chats = ledger.chatsByDay(7).slice(0, 12).map((c) => ({
+        ...c,
+        yuan: +(((c.inTok * pin + c.outTok * pout) / 1_000_000)).toFixed(3),
+        savedYuan: +((c.saved * pin) / 1_000_000).toFixed(3), // 省下的都是输入 token
+      }))
       return {
         ok: true,
         enabled: Boolean(s().enabled),
         state: ledger.state(),
         today: { inTok: Math.round(day.day.inTok), outTok: Math.round(day.day.outTok), yuan: +yuan.toFixed(3), limit, pct: Math.round((yuan / limit) * 100) },
         recent: ledger.recent(7),
+        chats,
       }
     })
 

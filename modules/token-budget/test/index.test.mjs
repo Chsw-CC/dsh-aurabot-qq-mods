@@ -124,12 +124,31 @@ test('ledger：takeNotifySlot 每日至多 2 次；recent 出 7 天', () => {
   assert.equal(recent[6].inTok, 5)
 })
 
+test('ledger：按会话分桶记账、chatsByDay 聚合排序', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tb-chat-'))
+  const led = createLedger({ dataDir: dir, tzOffsetMin: TZ, overheadFactor: 1, prices: { in: 0, out: 0, limit: 1 } })
+  led.addChat('group:1', 'in', 100)
+  led.addChat('group:1', 'out', 50)
+  led.addChat('group:1', 'saved', 0, 300) // saved 不计轮次
+  led.addChat('private:2', 'in', 10)
+  led.addChat('private:2', 'saved', 0, 5)
+  const chats = led.chatsByDay(7)
+  assert.equal(chats.length, 2)
+  assert.equal(chats[0].chatId, 'group:1', '按活跃度排序，group:1 量大在前')
+  assert.equal(chats[0].inTok, 100)
+  assert.equal(chats[0].outTok, 50)
+  assert.equal(chats[0].saved, 300)
+  assert.equal(chats[0].turns, 2, 'saved 不算轮次')
+  assert.equal(chats[1].saved, 5)
+})
+
 // ---------- 模块行为 ----------
 
-test('模块元信息：id、版本、设置项类型', () => {
+test('模块元信息：id、版本、面板、设置项类型', () => {
   assert.equal(plugin.id, 'token-budget')
-  assert.equal(plugin.version, '1.0.0')
+  assert.equal(plugin.version, '1.1.0')
   assert.equal(plugin.api, 1)
+  assert.equal(plugin.panel, 'panel.js')
   const keys = plugin.settings.map((s) => s.key)
   assert.deepEqual(keys, ['enabled', 'memoryTopK', 'promptBudgetTokens', 'dailyBudgetYuan', 'priceIn', 'priceOut', 'softFusePct', 'overheadFactor', 'fallbackModel', 'protectOwner'])
   for (const key of ['enabled', 'protectOwner']) assert.equal(plugin.settings.find((s) => s.key === key).type, 'switch', key + ' 应是 switch')
@@ -255,6 +274,10 @@ test('/status：面板数据形状', async (t) => {
   assert.ok(['ok', 'soft', 'hard'].includes(st.state))
   assert.equal(typeof st.today.yuan, 'number')
   assert.equal(st.recent.length, 7)
+  assert.ok(Array.isArray(st.chats), 'chats 卡片数据要在')
+  // 有过消息的会话应出现在 chats 里（前面 prompt/记忆测试同账本跑过一轮）
+  const withSaved = st.chats.find((c) => c.saved > 0)
+  if (withSaved) { assert.ok(withSaved.savedYuan >= 0, '节省折算字段在') }
 })
 
 test('总开关：关掉后记账不跑、prompt 原样放行', async (t) => {

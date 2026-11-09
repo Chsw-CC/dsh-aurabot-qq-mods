@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 const KEEP_DAYS = 30
+const MAX_CHATS_PER_DAY = 200 // 单日最多记多少个会话桶，防异常刷屏把账本撑爆
 const NOTIFY_PER_DAY = 2 // 每日至多提醒几次，别刷屏
 
 // 本地日期键：YYYY-MM-DD（按本机时区，不和 UTC 混）
@@ -62,6 +63,48 @@ export function createLedger({ dataDir, log = console, prices, overheadFactor = 
     return t
   }
 
+  // 按会话记一笔：tokens 记消耗，saved 记这一笔预估省下的 token（裁剪 + 挑记忆）。
+  // day.chats: { chatId: { inTok, outTok, saved, turns } }
+  function addChat(chatId, kind, tokens, saved = 0, ts) {
+    const { day } = today(ts)
+    const id = String(chatId || '')
+    if (!id) return
+    if (!day.chats) day.chats = {}
+    let c = day.chats[id]
+    if (!c) {
+      // 桶满就不再开新桶（极小概率，只影响当日统计的完整性）
+      if (Object.keys(day.chats).length >= MAX_CHATS_PER_DAY) return
+      c = day.chats[id] = { inTok: 0, outTok: 0, saved: 0, turns: 0 }
+    }
+    const t = Math.max(0, Math.round(Number(tokens) || 0)) * factor()
+    if (kind === 'in') c.inTok += t
+    else if (kind === 'out') c.outTok += t
+    c.saved += Math.max(0, Number(saved) || 0)
+    if (kind !== 'saved') c.turns++
+    save()
+  }
+
+  // 近 N 天按会话聚合（面板卡片数据）：[{ chatId, inTok, outTok, saved, turns }]，按活跃度排序
+  function chatsByDay(n = 7, ts = Date.now()) {
+    load()
+    const acc = new Map()
+    for (let i = 0; i < n; i++) {
+      const key = dayKey(ts - i * 86_400_000, tzOffsetMin)
+      const chats = days[key]?.chats || {}
+      for (const [id, c] of Object.entries(chats)) {
+        const cur = acc.get(id) || { chatId: id, inTok: 0, outTok: 0, saved: 0, turns: 0 }
+        cur.inTok += c.inTok || 0
+        cur.outTok += c.outTok || 0
+        cur.saved += c.saved || 0
+        cur.turns += c.turns || 0
+        acc.set(id, cur)
+      }
+    }
+    return [...acc.values()]
+      .map((c) => ({ ...c, inTok: Math.round(c.inTok), outTok: Math.round(c.outTok), saved: Math.round(c.saved) }))
+      .sort((a, b) => (b.inTok + b.outTok) - (a.inTok + a.outTok))
+  }
+
   // 当日花费（元）。priceIn / priceOut：元 / 百万 token。
   function spentYuan(ts) {
     const { day } = today(ts)
@@ -111,5 +154,5 @@ export function createLedger({ dataDir, log = console, prices, overheadFactor = 
     return out
   }
 
-  return { add, spentYuan, state, setExempt, recent, today, takeNotifySlot }
+  return { add, addChat, chatsByDay, spentYuan, state, setExempt, recent, today, takeNotifySlot }
 }
