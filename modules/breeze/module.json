@@ -18,6 +18,7 @@
     "network",
     "filesystem",
     "process",
-    "plugin-config"
+    "plugin-config",
+    "plugin-internals"
   ]
 }
