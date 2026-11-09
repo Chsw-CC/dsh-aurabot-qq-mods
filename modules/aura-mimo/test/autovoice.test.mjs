@@ -1,6 +1,6 @@
 // 离线集成测试：不联网、不碰真实数据，只验证 aura-mimo 的关键逻辑
 // 跑法：node test/autovoice.test.mjs
-import { mkdtempSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -138,6 +138,123 @@ const check = (name, ok, extra = '') => results.push({ name, ok, extra })
 // --- 用例 7：工具名与命令 ---
 {
   check('工具注册 mimo_say', typeof api.defineTool === 'function')
+}
+
+
+// ==================== 音色克隆链路 ====================
+//
+// 上面的用例只验证「发没发语音文件」。这里直接检查送给 MiMo 的请求：
+// API Key 怎么带、参考音频怎么塞、克隆 vs 设计两条分支怎么走、上传怎么落盘。
+
+
+/** 调一个「写 res」风格的路由，返回被 send 出去的 JSON 对象 */
+async function callRoute(path, req = {}) {
+  let captured = null
+  const realSend = api.core.http.send
+  const realBody = api.core.http.body
+  const realQuery = api.core.http.query
+  api.core.http.send = (_res, code, body) => {
+    try { captured = JSON.parse(String(body)) } catch { captured = { raw: String(body) } }
+    if (captured) captured.__code = code
+  }
+  // 路由会调 http.body(req) 读请求体、http.query(req) 读 query
+  api.core.http.body = async () => (req.body ? JSON.parse(req.body) : {})
+  api.core.http.query = (r) => {
+    const u = String(r?.url || '')
+    const qs = u.includes('?') ? u.slice(u.indexOf('?') + 1) : ''
+    return Object.fromEntries(new URLSearchParams(qs))
+  }
+  try {
+    await routes.get(path)({ method: 'GET', headers: {}, ...req }, {})
+    return captured || {}
+  } finally {
+    api.core.http.send = realSend
+    api.core.http.body = realBody
+    api.core.http.query = realQuery
+  }
+}
+
+/** 换一个能记录请求体的 fetch mock */
+function captureFetch() {
+  const calls = []
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), headers: init?.headers || {}, body: init?.body ? JSON.parse(init.body) : null })
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ choices: [{ message: { audio: { data: tinyWav().toString('base64') } } }] }),
+    }
+  }
+  return calls
+}
+
+// --- 用例：API Key 只走 Authorization 头，不进请求体 ---
+{
+  const calls = captureFetch()
+  settings.refAudio = 'preset:dafeiyu1.mp3'
+  const r = await callRoute('/preview', { method: 'GET', url: '/preview?text=测试一句' })
+  check('克隆：preview 合成成功', r.ok === true, JSON.stringify(r).slice(0, 80))
+  check('克隆：只发一次请求', calls.length === 1, 'calls=' + calls.length)
+  const c = calls[0] || { headers: {}, body: {} }
+  const auth = String(c.headers.Authorization || '')
+  check('API Key：走 Authorization Bearer', auth.startsWith('Bearer sk-test-'), auth.slice(0, 20))
+  check('API Key：不出现在请求体里', !JSON.stringify(c.body).includes('sk-test-'))
+}
+
+// --- 用例：参考音频以 data:audio 塞进 audio.voice ---
+{
+  const calls = captureFetch()
+  settings.refAudio = 'preset:dafeiyu1.mp3'
+  await callRoute('/preview', { method: 'GET', url: '/preview?text=克隆链路检查二' })
+  const body = calls[0]?.body || {}
+  check('音色克隆：payload 有 audio 字段', Boolean(body.audio), Object.keys(body).join(','))
+  check('音色克隆：audio.voice 是 data URI', String(body.audio?.voice || '').startsWith('data:audio/'))
+  check('音色克隆：参考音频非空', String(body.audio?.voice || '').length > 1000, 'len=' + String(body.audio?.voice || '').length)
+  check('音色克隆：用 voiceclone 模型', String(body.model || '').includes('voiceclone'), String(body.model))
+}
+
+// --- 用例：voicedesign 模式不带参考音频，用文字描述 ---
+{
+  const calls = captureFetch()
+  const oldModel = settings.model
+  settings.model = 'mimo-v2.5-tts-voicedesign'
+  settings.stylePrompt = '低沉男声，语速慢'
+  try {
+    await callRoute('/preview', { method: 'GET', url: '/preview?text=设计一句' })
+    const body = calls[0]?.body || {}
+    check('音色设计：不上传参考音频', body.audio?.voice === undefined)
+    check('音色设计：两段消息', Array.isArray(body.messages) && body.messages.length === 2, 'msgs=' + (body.messages || []).length)
+    check('音色设计：第一段是音色描述', body.messages?.[0]?.content === '低沉男声，语速慢', String(body.messages?.[0]?.content))
+    check('音色设计：第二段是要念的文字', String(body.messages?.[1]?.content || '').includes('设计一句'), String(body.messages?.[1]?.content || ''))
+  } finally {
+    settings.model = oldModel
+    settings.stylePrompt = ''
+  }
+}
+
+// --- 用例：没配 API Key 时拒绝，且不发请求 ---
+{
+  const calls = captureFetch()
+  const oldKey = settings.apiKey
+  settings.apiKey = ''
+  try {
+    const r = await callRoute('/preview', { method: 'GET', url: '/preview?text=没key' })
+    check('无 Key：拒绝合成', r.ok === false, JSON.stringify(r).slice(0, 80))
+    check('无 Key：没有发出请求', calls.length === 0, 'calls=' + calls.length)
+    check('无 Key：提示里说明原因', /key/i.test(String(r.message || '')), String(r.message || '').slice(0, 60))
+  } finally {
+    settings.apiKey = oldKey
+  }
+}
+
+// --- 用例：上传参考音频 → 落盘 + 写设置 ---
+{
+  const r = await callRoute('/upload-ref', { method: 'POST', body: JSON.stringify({ name: '我的声音.mp3', data: tinyWav().toString('base64') }) })
+  check('上传参考音频：成功', r.ok === true, JSON.stringify(r).slice(0, 90))
+  check('上传参考音频：设置指向 ref', String(settings.refAudio || '').startsWith('ref'), String(settings.refAudio))
+  const refDir = join(dataDir, 'ref')
+  const files = existsSync(refDir) ? readdirSync(refDir).filter((n) => !n.startsWith('.')) : []
+  check('上传参考音频：文件已落盘', files.length > 0, files.join(','))
 }
 
 // --- 输出 ---
