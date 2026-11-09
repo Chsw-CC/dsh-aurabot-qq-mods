@@ -11,7 +11,7 @@ import { checkinAction, describeClaim, formatDate, looksLoggedIn, msUntil, nowMi
 export default {
   id: 'breeze',
   name: 'Breeze 语音',
-  version: '1.3.0',
+  version: '1.3.2',
   api: 1,
   description: 'Breeze Blue 在线文字转语音 + 每日自动签到领积分',
   tab: 'voice',
@@ -42,10 +42,8 @@ export default {
     // 而在 net 的回调里抛出去就是 uncaught exception，会直接把 host 进程带走）。
     let bridgeGen = 0
 
-    function breezeReady() {
-      const s = api.settings() || {}
-      return Boolean(s.on && String(s.apiKey || '').trim() && String(s.voiceId || '').trim())
-    }
+    /** 这份设置够不够开服务：要开、有 key、有音色 */
+    const bridgeWanted = (s) => Boolean(s && s.on && String(s.apiKey || '').trim() && String(s.voiceId || '').trim())
 
     /** 调 Breeze 合成一段，返回 mp3 字节 */
     async function synthMp3(text) {
@@ -75,8 +73,9 @@ export default {
     }
 
     /** 起本地语音服务（端口尽量固定），并把「语音」页的引擎指过来 */
-    function startBridge() {
-      if (bridgeServer || !breezeReady()) return
+    function startBridge(settings) {
+      const s = settings || api.settings() || {}
+      if (bridgeServer || !bridgeWanted(s)) return
       const gen = ++bridgeGen
       const srv = http.createServer(async (req, res) => {
         const u = new URL(req.url || '/', 'http://127.0.0.1')
@@ -129,13 +128,16 @@ export default {
         bridgePort = port
         bridgeServer = srv
         const v = api.config().voice || {}
-        if (!restoreVoice) restoreVoice = { engine: v.engine, http: { ...(v.http || {}) } }
+        if (!restoreVoice) {
+          restoreVoice = { engine: v.engine, http: { ...(v.http || {}) }, enabled: v.enabled !== false }
+          writeVoiceBackup(restoreVoice)
+        }
         try {
           api.setConfig({
             voice: {
               enabled: true,
               engine: 'http',
-              http: { ...(v.http || {}), urlTemplate: `http://127.0.0.1:${port}/?text={text}`, method: 'GET' },
+              http: { ...(v.http || {}), urlTemplate: `http://127.0.0.1:${port}/?text={text}`, method: 'GET', sampleRate: 24000 },
             },
           })
         } catch (error) {
@@ -156,14 +158,48 @@ export default {
       }
       if (restoreVoice) {
         const v = api.config().voice || {}
-        const mine = v.engine === 'http' && String((v.http || {}).urlTemplate || '').includes(`127.0.0.1:${bridgePort}/`)
-        try {
-          if (mine) api.setConfig({ voice: { engine: restoreVoice.engine, http: restoreVoice.http } })
-        } catch {}
-        restoreVoice = null
+        const myPort = bridgePort || BRIDGE_PORT
+        const template = String((v.http || {}).urlTemplate || '')
+        // 只认自己刚写的那个端口：用户把地址改成别的本地服务时，不能当成自己的备份盖回去
+        const mine = v.engine === 'http' && template.includes(`127.0.0.1:${myPort}/`)
+        let done = false
+        if (mine) {
+          try {
+            // 模块停用后 api.setConfig 会同步抛错，必须走未包装的 core.setConfig
+            const core = api.core
+            // core.setConfig 不做合并：必须传整份配置，否则只有 voice 的补丁会把其余设置洗成默认（已踩坑）
+            const patch = { voice: { ...v, enabled: restoreVoice.enabled, engine: restoreVoice.engine, http: restoreVoice.http } }
+            if (core && typeof core.setConfig === 'function') core.setConfig({ ...api.config(), voice: patch.voice })
+            else api.setConfig(patch)
+            done = true
+          } catch (error) {
+            api.log.warn('[breeze] 还原语音引擎失败，备份留着下次再试：', error.message)
+          }
+        }
+        if (mine || done) restoreVoice = null
+        if (mine && done) clearVoiceBackup()
       }
       bridgePort = 0
     }
+
+    const voiceBackupFile = () => join(api.dataDir(), 'voice-backup.json')
+    const writeVoiceBackup = (o) => {
+      try {
+        mkdirSync(api.dataDir(), { recursive: true })
+        writeFileSync(voiceBackupFile(), JSON.stringify(o, null, 2))
+      } catch (error) {
+        api.log.warn('语音原值备份写不进去：', error.message)
+      }
+    }
+    const clearVoiceBackup = () => {
+      try {
+        if (existsSync(voiceBackupFile())) unlinkSync(voiceBackupFile())
+      } catch {}
+    }
+    try {
+      const saved = JSON.parse(readFileSync(voiceBackupFile(), 'utf8'))
+      if (saved && saved.engine) restoreVoice = saved
+    } catch {}
 
     startBridge()
     api.onDispose(stopBridge)
@@ -245,10 +281,17 @@ export default {
           if (res.status === 401 || res.status === 403) memCookie = ''
           return { ok: false, message: `HTTP ${res.status} ${text.slice(0, 200)}` }
         }
-        let data = {}
+        let data = null
         try {
           data = JSON.parse(text)
         } catch {}
+        // cookie 过期时站点常见是 200 + 登录页 HTML，别把它当成签到成功
+        const html = /^\s*</.test(text) || /<html[\s>]/i.test(text)
+        const good = data && (data.claimed === true || data.already_claimed === true || data.daily_claim_available === false)
+        if (html || !good || data.error) {
+          api.log.warn('签到回包不像成功：' + text.slice(0, 200))
+          return { ok: false, message: html ? '登录态可能过期了（回的是登录页）' : '回包说没领到' + (data && data.error ? '：' + data.error : '') }
+        }
         const r = describeClaim(data)
         api.log.info('签到：' + r.message)
         return { ok: true, message: r.message, balance: r.balance, claimed: r.claimed }
@@ -347,6 +390,11 @@ export default {
       const a = (before && before.ext && before.ext.breeze) || {}
       const b = (next && next.ext && next.ext.breeze) || {}
       if (a.checkinTime !== b.checkinTime || a.checkinOn !== b.checkinOn) scheduleNext()
+      // 开关 / key / 音色变了：重新判断该不该开服务（用事件里那份设置，别读 api.settings，两处数据源会打架）
+      if (a.on !== b.on || a.apiKey !== b.apiKey || a.voiceId !== b.voiceId) {
+        if (bridgeWanted(b)) startBridge(b)
+        else stopBridge()
+      }
     })
     // 启动时补一次（昨天没开 DSH 的情况）
     api.later(8000, () => tick('startup'))
