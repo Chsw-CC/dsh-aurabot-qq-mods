@@ -150,7 +150,7 @@ test('模块元信息：id、版本、面板、设置项类型', () => {
   assert.equal(plugin.api, 1)
   assert.equal(plugin.panel, 'panel.js')
   const keys = plugin.settings.map((s) => s.key)
-  assert.deepEqual(keys, ['enabled', 'memoryTopK', 'promptBudgetTokens', 'dailyBudgetYuan', 'priceIn', 'priceOut', 'softFusePct', 'overheadFactor', 'fallbackModel', 'protectOwner', 'baseTokensPerTurn'])
+  assert.deepEqual(keys, ['enabled', 'memoryTopK', 'promptBudgetTokens', 'dailyBudgetYuan', 'priceIn', 'priceOut', 'softFusePct', 'overheadFactor', 'fallbackModel', 'protectOwner'])
   for (const key of ['enabled', 'protectOwner']) assert.equal(plugin.settings.find((s) => s.key === key).type, 'switch', key + ' 应是 switch')
 })
 

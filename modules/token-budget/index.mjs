@@ -24,7 +24,6 @@ const DEFAULTS = {
   overheadFactor: 1.3, // 隐形消耗放大系数：system 轮 / 工具调用不经过记账，靠它补偿
   fallbackModel: '', // 软熔后非主人聊天换用的模型，写 provider/model，如 deepseek/deepseek-chat；留空不降级
   protectOwner: true,
-  baseTokensPerTurn: 0, // 每轮请求的基础开销估算（人格 + 规则 + 会话历史 + 工具定义）。0 = 不计；照宿主面板「本轮用量」的均值填
 }
 
 export default {
@@ -47,10 +46,9 @@ export default {
     { key: 'priceIn', label: '输入单价（元/百万 token）', type: 'number', min: 0, max: 500, step: 0.5 },
     { key: 'priceOut', label: '输出单价（元/百万 token）', type: 'number', min: 0, max: 500, step: 0.5 },
     { key: 'softFusePct', label: '软熔百分比（降级模型）', type: 'number', min: 1, max: 99, step: 1 },
-    { key: 'overheadFactor', label: '隐形消耗放大系数（1 = 不补偿）', type: 'number', min: 1, max: 5, step: 0.1 },
+    { key: 'overheadFactor', label: '隐形消耗放大系数（仅估算记账与熔断线用，不影响真实口径）', type: 'number', min: 1, max: 5, step: 0.1 },
     { key: 'fallbackModel', label: '软熔后用的便宜模型（provider/model，留空不降级）', type: 'text' },
     { key: 'protectOwner', label: '主人私聊不受熔断影响', type: 'switch' },
-    { key: 'baseTokensPerTurn', label: '每轮基础开销估算（token，照宿主「本轮用量」均值填；0 = 不计）', type: 'number', min: 0, max: 200000, step: 500 },
   ],
 
   setup(api) {
@@ -154,7 +152,7 @@ export default {
     api.on('activity', ({ kind, chatId, text } = {}) => {
       if (!s().enabled) return
       if (!chatId || String(chatId).startsWith('system:')) return
-      const t = estTokens(text) + (kind === 'in' ? (Number(s().baseTokensPerTurn) || 0) : 0) // 每轮请求的基础开销（人格/历史等）摊到进向
+      const t = estTokens(text)
       const k = kind === 'out' ? 'out' : 'in'
       ledger.add(k, t)
       ledger.addChat(chatId, k, t)
