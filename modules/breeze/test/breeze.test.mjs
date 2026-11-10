@@ -14,6 +14,7 @@ import {
   parseActivePort,
   pickCookies,
   toMinutes,
+  wsMatches,
 } from '../lib/pure.mjs'
 
 test('hm 解析时:分，空的或写坏了按 08:10', () => {
@@ -107,12 +108,21 @@ test('checkinAction：关掉、没登录、领过了、没到点、试满了都�
   assert.equal(checkinAction({ ...base, done: '2026-11-05' }), 'run')
 })
 
-test('parseActivePort 只认第一行的端口，坏的当没开', () => {
-  assert.equal(parseActivePort('9222\n/devtools/browser/abc'), 9222)
-  assert.equal(parseActivePort('9222\r\nws://127.0.0.1'), 9222)
-  assert.equal(parseActivePort(''), 0)
-  assert.equal(parseActivePort('abc'), 0)
-  assert.equal(parseActivePort(undefined), 0)
+test('parseActivePort 给出第一行端口和第二行 ws 路径，坏的当没开', () => {
+  assert.deepEqual(parseActivePort('9222\n/devtools/browser/abc'), { port: 9222, wsPath: '/devtools/browser/abc' })
+  assert.equal(parseActivePort('9222\r\nws://127.0.0.1').port, 9222)
+  assert.equal(parseActivePort('').port, 0)
+  assert.equal(parseActivePort('abc').port, 0)
+  assert.equal(parseActivePort(undefined).port, 0)
+})
+
+test('第二行对不上就当没开着（0）', () => {
+  const { port, wsPath } = parseActivePort('9222\n/devtools/browser/ours')
+  assert.equal(wsMatches({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/ours' }, wsPath) ? port : 0, 9222)
+  assert.equal(
+    wsMatches({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/other' }, wsPath) ? port : 0,
+    0,
+  )
 })
 
 test('pickCookies 只认 breezeblue.ai 自己的域，仿冒的子串不放过去', () => {

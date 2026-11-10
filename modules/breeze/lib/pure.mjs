@@ -59,11 +59,16 @@ export const describeClaim = (data = {}) => {
   }
 }
 
-/** Chrome 的 DevToolsActivePort 文件：第一行是端口，坏的当没开 */
+/** Chrome 的 DevToolsActivePort 文件：第一行是端口、第二行是 ws 路径，坏的当没开 */
 export const parseActivePort = (text) => {
-  const port = Number(String(text || '').split(/\r?\n/)[0])
-  return port > 0 ? port : 0
+  const [first, second] = String(text || '').split(/\r?\n/)
+  const port = Number(first)
+  return port > 0 ? { port, wsPath: String(second || '').trim() } : { port: 0, wsPath: '' }
 }
+
+/** /json/version 的 webSocketDebuggerUrl 得对上第二行，才算「是我们这个配置目录开的」 */
+export const wsMatches = (v, wsPath) =>
+  Boolean(wsPath) && String((v && v.webSocketDebuggerUrl) || '').endsWith(wsPath)
 
 /** 从 CDP 给的 cookie 列表里挑出 breezeblue.ai 自己的、还没过期的，拼成 name=value */
 export const pickCookies = (list, now = Date.now() / 1000) => {
