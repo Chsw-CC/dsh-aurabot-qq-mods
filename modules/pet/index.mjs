@@ -1335,9 +1335,31 @@ export default {
       } catch { return true }
     }
 
-    /** 小屋素材是否缺失（数据目录 house/ 里没有 manifest.json——目录即数据，没它进屋就是「素材未就绪」）。 */
+    /**
+     * 小屋素材是否缺失。完整性 = manifest.json 在 + 至少一张底图/manifest 引用的图在盘上。
+     * 只有 manifest、一张图都没有（上次下载中断只落了一半）也算缺 → 走自动补全；
+     * manifest 引用的图全部不在盘上同样算缺。已有文件不会被补全覆盖（见 ensureDefaultPack 落位循环）。
+     */
     function housePackMissing() {
-      try { return !existsSync(join(houseDir(), 'manifest.json')) } catch { return true }
+      try {
+        const dir = houseDir()
+        if (!existsSync(join(dir, 'manifest.json'))) return true
+        const IMG = /\.(?:jpe?g|png|webm|gif)$/i
+        const files = readdirSync(dir)
+        if (!files.some((f) => IMG.test(f))) return true // manifest 在但一张图都没有：上次中断只落了一半
+        try {
+          // manifest 里引用到的图（底图/姿势帧/patch）至少一张在，全缺也算半截包
+          const refs = []
+          const walk = (v) => {
+            if (typeof v === 'string') { if (IMG.test(v)) refs.push(v) }
+            else if (Array.isArray(v)) v.forEach(walk)
+            else if (v && typeof v === 'object') Object.values(v).forEach(walk)
+          }
+          walk(JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')))
+          if (refs.length && !refs.some((f) => existsSync(join(dir, f)))) return true
+        } catch {} // manifest 解析不了不当缺：落位时原样收下的清单，客户端自己会报
+        return false
+      } catch { return true }
     }
 
     /**
@@ -1423,7 +1445,9 @@ export default {
             if (!/^(manifest\.json|.*\.(?:jpe?g|png|webm|gif))$/i.test(f)) continue // 只收清单与图片，README 之类不带
             const src = join(houseRoot, f)
             try { if (!statSync(src).isFile()) continue } catch { continue }
-            copyFileSync(src, join(houseDir(), f))
+            const dst = join(houseDir(), f)
+            if (!force && existsSync(dst)) continue // 已有文件不动：手改过的/上次已落位的不覆盖不回滚，只补缺的
+            copyFileSync(src, dst)
             houseCopied++
           }
           if (houseCopied) {

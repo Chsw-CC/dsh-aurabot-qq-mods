@@ -462,7 +462,9 @@ test('素材包：没配下载地址 → 明确报错不炸；包已就位 → �
 
   writePack(process.env.AURABOT_DATA_DIR, 'default', { 'anim-001.webm': WEBM }, { pools: {} })
   mkdirSync(join(process.env.AURABOT_DATA_DIR, 'modules-data', 'pet', 'house'), { recursive: true })
-  writeFileSync(join(process.env.AURABOT_DATA_DIR, 'modules-data', 'pet', 'house', 'manifest.json'), '{}') // 小屋素材也已就位
+  const houseOk = join(process.env.AURABOT_DATA_DIR, 'modules-data', 'pet', 'house')
+  writeFileSync(join(houseOk, 'manifest.json'), '{}')
+  writeFileSync(join(houseOk, 'day.jpg'), 'fake-jpeg') // manifest + 至少一张图 = 完整（manifest-only 现在算缺）
   const skip = await env.exports.ensureDefaultPack(false)
   assert.equal(skip.ok, true)
   assert.equal(skip.skipped, true, '包已就位时非 force 调用跳过')
@@ -513,6 +515,55 @@ test('素材包：形象包已就位但小屋素材缺失 → 非 force 也要�
   assert.equal(r.skipped, undefined, '只缺小屋时不跳过')
   assert.equal(r.houseCount, 2, '小屋素材落位 2 个文件')
   assert.ok(existsSync(join(env.api.dataDir('house'), 'night.jpg')))
+})
+
+test('小屋素材：manifest 在但一张图都没有（上次下载中断）→ 算缺，非 force 也要补齐落位', async () => {
+  const fakeZip = tinyZip([
+    ['mods-main/pet-home/', Buffer.alloc(0)],
+    ['mods-main/pet-home/manifest.json', Buffer.from(JSON.stringify({ poses: { desk: { frames: [{ src: 'desk-a.png' }] } } }))],
+    ['mods-main/pet-home/day.jpg', Buffer.from('fake-day')],
+    ['mods-main/pet-home/desk-a.png', Buffer.from('fake-desk')],
+  ])
+  const env = startModule({
+    settings: { petPackUrl: 'https://example.com/mods.zip' },
+    hooks: { fetchZip: async () => ({ ok: true, arrayBuffer: async () => fakeZip.buffer.slice(fakeZip.byteOffset, fakeZip.byteOffset + fakeZip.byteLength) }) },
+  })
+  // 上次中断的现场：manifest 落到了、图片一张都没落
+  const house = env.api.dataDir('house')
+  mkdirSync(house, { recursive: true })
+  writeFileSync(join(house, 'manifest.json'), '{"poses":{"desk":{"frames":[{"src":"desk-a.png"}]}}}')
+  writePack(process.env.AURABOT_DATA_DIR, 'default', { 'anim-001.webm': WEBM }, { pools: {} }) // 形象包已就位
+  const r = await env.exports.ensureDefaultPack(false)
+  assert.equal(r.ok, true, r.message)
+  assert.equal(r.skipped, undefined, '半截包要触发补全，不能跳过')
+  assert.equal(r.houseCount, 2, '已有 manifest 不重拷，补齐 2 张图')
+  assert.ok(existsSync(join(house, 'day.jpg')), '底图补上了')
+  assert.ok(existsSync(join(house, 'desk-a.png')), 'manifest 引用的姿势帧补上了')
+})
+
+test('小屋素材：补齐时不覆盖已有文件（手改的 manifest/图片保持原样，只补缺的）', async () => {
+  const fakeZip = tinyZip([
+    ['mods-main/pet-home/', Buffer.alloc(0)],
+    ['mods-main/pet-home/manifest.json', Buffer.from(JSON.stringify({ poses: { desk: { frames: [{ src: 'desk-a.png' }] } } }))],
+    ['mods-main/pet-home/day.jpg', Buffer.from('zip-version-day')],
+    ['mods-main/pet-home/desk-a.png', Buffer.from('zip-desk')],
+  ])
+  const env = startModule({
+    settings: { petPackUrl: 'https://example.com/mods.zip' },
+    hooks: { fetchZip: async () => ({ ok: true, arrayBuffer: async () => fakeZip.buffer.slice(fakeZip.byteOffset, fakeZip.byteOffset + fakeZip.byteLength) }) },
+  })
+  // 上次中断：manifest（主人改过内容）与底图已落，姿势帧缺
+  const house = env.api.dataDir('house')
+  mkdirSync(house, { recursive: true })
+  writeFileSync(join(house, 'manifest.json'), '{"poses":{"desk":{"frames":[{"src":"desk-a.png"}]}}, "_myCustom": true}')
+  writeFileSync(join(house, 'day.jpg'), 'my-custom-day')
+  writePack(process.env.AURABOT_DATA_DIR, 'default', { 'anim-001.webm': WEBM }, { pools: {} })
+  const r = await env.exports.ensureDefaultPack(false)
+  assert.equal(r.ok, true, r.message)
+  assert.equal(r.houseCount, 1, '只补缺的 1 个文件，已有的两个不动')
+  assert.equal(readFileSync(join(house, 'manifest.json'), 'utf8'), '{"poses":{"desk":{"frames":[{"src":"desk-a.png"}]}}, "_myCustom": true}', '手改过的 manifest 不被覆盖')
+  assert.equal(readFileSync(join(house, 'day.jpg'), 'utf8'), 'my-custom-day', '已有底图不被 zip 版覆盖')
+  assert.ok(existsSync(join(house, 'desk-a.png')), '缺的姿势帧补上了')
 })
 
 test('素材包：status().packInfo 给面板用（地址 / 是否就位 / 动画数 / 包列表）', async () => {
