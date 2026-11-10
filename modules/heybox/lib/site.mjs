@@ -32,12 +32,19 @@ const DEFAULT_STATE = {
   risk: { level: 0, until: 0, reason: '', at: 0 },
   failures: 0,
   retryAt: 0,
+  // 自动发帖的独立退避（真失败时记这里，不影响「逛」的 retryAt）
+  postFailures: 0,
+  postRetryAt: 0,
   // 分区缓存：每天拉一次真实分区表（含热门游戏分区）
   topics: { fetchedAt: 0, date: '', list: [] },
   // 话题缓存：每天扫一次信息流，收集创作活动 + 普通话题（都带热度）
   acts: { fetchedAt: 0, date: '', list: [], plain: [] },
 }
 const RETRY_BACKOFF_MS = [2, 5, 15, 30, 60, 120].map((n) => n * 60_000)
+// 自动发帖那一轮要模型写一整篇（还要按字数补细节），4 分钟在实测里经常不够：
+// 一超时宿主就把这个后台会话标记成卡住、取消归档再重建，于是后台会话列表里
+// 每隔十几分钟就多出一条 system:heybox。放宽到 10 分钟，并在真失败时退避。
+const POST_TURN_TIMEOUT_MS = 600_000
 
 export const today = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
@@ -977,13 +984,13 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
     const giveBack = () => { if (reserved) { reserved = false; releaseQuota('post') } }
 
     try {
-    // 字数范围：显式传入的（自动发帖给模型写的要求）> 排期 > 面板手改 > 风格自带值
+    // 字数范围：只认自定义值 —— 显式传入的（自动发帖给模型写的要求）> 排期 > 面板。
     // ⚠ 排期项里缺一个值时必须回落，不能把 undefined 当成覆盖，否则 words 会变成 NaN 校验直接失效
-    const wordCfg = (wordsMin || wordsMax)
-      ? { postWordsMin: wordsMin || plan.wordsMin || cfg.postWordsMin, postWordsMax: wordsMax || plan.wordsMax || cfg.postWordsMax }
-      : (plan.wordsMin || plan.wordsMax)
-        ? { postWordsMin: plan.wordsMin, postWordsMax: plan.wordsMax }
-        : cfg
+    // ⚠ 风格不再自带字数：没配自定义值时不做字数硬校验（自带值会把「写不够」变成死循环）
+    const wordCfg = {
+      postWordsMin: wordsMin || plan.wordsMin || cfg.postWordsMin || 0,
+      postWordsMax: wordsMax || plan.wordsMax || cfg.postWordsMax || 0,
+    }
     const st = styleOf(style || plan.style || cfg.postStyle, wordCfg)
     const words = countWords(text)
     // 字数**硬校验**：以前只在明显偏短时记一条 warn，照样发出去，结果就是「永远达不到设置的字数」。
@@ -996,8 +1003,8 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
         ok: false,
         code: 'too_short',
         words, minWords: minW, maxWords: maxW, needMore: short,
-        message: `正文只有 ${words} 字，低于「${st.label}」的下限 ${minW} 字（还差 ${short} 字），没有发出。`
-          + `请补到 ${minW}~${maxW} 字再发：可以多给一个具体细节（价格 / 销量 / 机制名 / 时间点）、`
+        message: `正文只有 ${words} 字，低于设的字数下限 ${minW} 字（还差 ${short} 字），没有发出。`
+          + `请补到 ${maxW ? minW + '~' + maxW : minW + ' 字以上'}再发：可以多给一个具体细节（价格 / 销量 / 机制名 / 时间点）、`
           + `多写一段你自己的看法，或者把某个点展开说。别用「首先其次总之」这类词凑字数。`,
       }
     }
@@ -1006,7 +1013,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
         ok: false,
         code: 'too_long',
         words, minWords: minW, maxWords: maxW, exceed: words - maxW,
-        message: `正文 ${words} 字，超过「${st.label}」的上限 ${maxW} 字（多 ${words - maxW} 字），没有发出。请删减到 ${minW}~${maxW} 字再发。`,
+        message: `正文 ${words} 字，超过设的字数上限 ${maxW} 字（多 ${words - maxW} 字），没有发出。请删减到 ${minW ? minW + '~' + maxW : maxW + ' 字以内'}再发。`,
       }
     }
 
@@ -1752,6 +1759,12 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
     const c = getConfig().heybox || {}
     if (c.autoPost === false) return { ok: false, skipped: true, message: '自动发帖已关（面板里关的）' }
     if (risk().leftMs > 0) return { ok: false, skipped: true, message: '小黑盒在冷却中' }
+    // 上一轮真失败过（模型没写成 / 稿子被硬校验拒了）就按退避等，别再每分钟写一篇废稿。
+    // 挡在这里（而不是 tick 里）：runDuty「逛完顺手发帖」那条路也一起受管。
+    const st0 = readState()
+    if (st0.postRetryAt && nowMs() < st0.postRetryAt) {
+      return { ok: false, skipped: true, message: '发帖在退避中（还要等 ' + Math.ceil((st0.postRetryAt - nowMs()) / 60_000) + ' 分钟）' }
+    }
     const pend = pendingPosts()
     if (!pend.configured) return { ok: false, skipped: true, message: '没配排期，不自动发' }
     if (pend.owe <= 0) return { ok: false, skipped: true, message: `今天的排期已经发完了（${pend.done}/${Math.min(pend.configured, pend.cap)}）` }
@@ -1786,28 +1799,65 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
       ].join('\n\n')
       let out = ''
       try {
-        out = await hub.runSystemTurn('heybox', 'QQ · 小黑盒发帖', prompt, { timeoutMs: 240000, noTools: true })
+        out = await hub.runSystemTurn('heybox', 'QQ · 小黑盒发帖', prompt, { timeoutMs: POST_TURN_TIMEOUT_MS, noTools: true })
       } catch (e) {
         log?.warn?.('小黑盒自动发帖：模型没写成（' + e.message + '），本篇先跳过')
-        return { ok: false, skipped: true, message: '模型没写成，本篇先跳过' }
+        // 模型侧失败（回合超时、后台会话在冷却）不是「配置不让发」，必须让 tick 退避。
+        // 不退避就会每分钟撞一次：每次撞都要开一个几分钟的长回合，回合超时又会让宿主
+        // 把这个卡住的会话归档重建 —— 线上表现就是「一天凭空多出好几条 system:heybox 会话」。
+        return { ok: false, retry: true, message: '模型没写成，本篇先跳过' }
       }
       // 等回复的这几分钟里模块可能已经卸载了，别再往下发
       if (disposed) return { ok: false, skipped: true, message: '模块已关闭' }
       const draft = pickJson(out)
-      const title = String(draft?.title || '').trim()
-      const text = String(draft?.text || '').trim()
+      let title = String(draft?.title || '').trim()
+      let text = String(draft?.text || '').trim()
       if (!title || !text) {
         log?.warn?.('小黑盒自动发帖：模型没给成型的标题/正文，本轮跳过')
-        return { ok: false, skipped: true, message: '模型输出的不是合法 JSON，本轮跳过' }
+        return { ok: false, retry: true, message: '模型输出的不是合法 JSON，本轮跳过' }
       }
-      // 排期/风格里配了字数下限的，按这个下限写给模型（写不够 post() 会 too_short 拒发，白占一轮）
-      const st = styleOf(plan.style || c.postStyle, { ...c, postWordsMin: plan.wordsMin || c.postWordsMin, postWordsMax: plan.wordsMax || c.postWordsMax })
+      // 字数只认自定义值（面板 / 当天排期）；风格不再自带下限。
+      // 下限写给模型的同时也要能撑住 post() 的校验，两边口径必须来自同一份配置。
+      const st = styleOf(plan.style || c.postStyle, {
+        postWordsMin: plan.wordsMin || c.postWordsMin || 0,
+        postWordsMax: plan.wordsMax || c.postWordsMax || 0,
+      })
       const minW = Number(st.words?.[0]) || 0
       const maxW = Number(st.words?.[1]) || 0
-      const r = await post({ title, text, style: plan.style || '', hashtags: plan.hashtags || [], topic: plan.topic || '', wordsMin: minW, wordsMax: maxW })
+      const send = () => post({ title, text, style: plan.style || '', hashtags: plan.hashtags || [], topic: plan.topic || '', wordsMin: minW, wordsMax: maxW })
+      let r = await send()
+      // 字数没达标别整篇丢掉重写：把原文交给模型、只叫它补足差额，比从零再写一篇省一轮
+      // 也更容易达标（从零重写每次都会落回它习惯的八九百字，于是永远差那点）。
+      // 只补一轮：还不行就按失败退避，不许拿同一个坑一直撞。
+      if (r && !r.ok && r.code === 'too_short' && minW) {
+        if (disposed) return { ok: false, skipped: true, message: '模块已关闭' }
+        const fixPrompt = [
+          '【把这篇小黑盒帖子补长一点，不是聊天】也不要调用工具，直接输出 JSON。',
+          `现在的正文只有 ${r.words} 字，至少要 ${minW} 字，还差 ${r.needMore} 字。`,
+          `保留原文的口吻和结构，把篇幅补到 ${maxW ? minW + '~' + maxW : minW + ' 字以上'}：`,
+          '补的是**具体信息** —— 多给一个数字（价格 / 销量 / 时长 / 日期）、多讲一段自己的看法、把某个点点开说。',
+          '别用「首先 / 其次 / 总之」这类词凑字数，也别把同一句话换个说法再讲一遍。',
+          `标题：${title}`,
+          '正文：',
+          text,
+          '',
+          '只输出 JSON：{"title":"标题，30 字以内","text":"补长后的正文"}',
+        ].join('\n\n')
+        try {
+          const out2 = await hub.runSystemTurn('heybox', 'QQ · 小黑盒发帖', fixPrompt, { timeoutMs: POST_TURN_TIMEOUT_MS, noTools: true })
+          if (disposed) return { ok: false, skipped: true, message: '模块已关闭' }
+          const d2 = pickJson(out2)
+          const t2 = String(d2?.title || '').trim()
+          const x2 = String(d2?.text || '').trim()
+          if (t2 && x2) { title = t2; text = x2; r = await send() }
+        } catch (e) {
+          log?.warn?.('小黑盒自动发帖：补字数那一轮没成（' + e.message + '）')
+        }
+      }
       if (r?.ok) log?.info?.(`小黑盒自动发帖成功：${title}`)
-      else log?.warn?.('小黑盒自动发帖被拒：' + String(r?.message || '').slice(0, 80))
-      return r
+      else if (!r?.skipped) log?.warn?.('小黑盒自动发帖被拒：' + String(r?.message || '').slice(0, 80))
+      // post() 的硬拒发（字数 / 配图 / 分区）同样要退避：不退避就是每分钟重写一遍注定被拒的稿
+      return r && !r.ok && !r.skipped ? { ...r, retry: true } : r
     } finally {
       if (tookLock) running = false
     }
@@ -1880,9 +1930,30 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
         ? await maybeAutoPost({ memory, owner, token: myToken })
         : await runDuty({ memory, owner, token: myToken })
       const fresh = readState()
-      fresh.failures = 0
-      fresh.retryAt = 0
-      if (!r.ok) fresh.lastSkipReason = r.message
+      // 两种「没干成」要分开：
+      //   · skipped —— 安全阀（关了自动发帖、没配排期、额度用完、还没到点、正在退避），
+      //     本来就不该干活，不进阶梯；
+      //   · retry —— 真失败（模型没写成、稿子过不了 post() 的硬校验）。旧版在这里一律
+      //     清零 failures/retryAt，于是 tick 每分钟重来一遍：每分钟开一个几分钟的长回合，
+      //     回合超时又让宿主不断归档重建后台会话。
+      // 退避只记在 postRetryAt 上，不碰 retryAt —— 后者会连「逛」一起挡掉，而逛本身没事。
+      // runDuty 把发帖结果嵌在 r.post 里；直接补发那一路 r 本身就是发帖结果。
+      const postRes = r.post !== undefined ? r.post : r
+      const hardFail = Boolean(postRes?.retry)
+      if (hardFail) {
+        const n = Math.min(RETRY_BACKOFF_MS.length, (Number(fresh.postFailures) || 0) + 1)
+        fresh.postFailures = n
+        fresh.postRetryAt = nowMs() + RETRY_BACKOFF_MS[n - 1]
+        fresh.lastSkipReason = postRes.message || '发帖失败'
+        log?.warn?.(`小黑盒自动发帖退避 ${Math.round(RETRY_BACKOFF_MS[n - 1] / 60000)} 分钟：` + String(fresh.lastSkipReason).slice(0, 60))
+      } else {
+        fresh.failures = 0
+        fresh.retryAt = 0
+        // 只有**发帖真的成功**才清零退避。逛成功不代表发帖成功，
+        // 早先写成看 r.ok 会把「这一圈逛得很顺」误当成稿子发掉了，顺手抹掉还在生效的退避。
+        if (postRes?.ok) { fresh.postFailures = 0; fresh.postRetryAt = 0 }
+        if (!r.ok) fresh.lastSkipReason = r.message
+      }
       writeState(fresh)
       if (r.ok) log?.info?.('小黑盒后台会话跑完：' + String(r.message || '').slice(0, 40))
     } catch (e) {

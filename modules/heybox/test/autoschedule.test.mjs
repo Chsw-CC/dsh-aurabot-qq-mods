@@ -14,8 +14,11 @@ const BODY = ('今天在小黑盒刷到一条很有意思的帖子，说的是�
   + '其中任务追踪终于支持跨地图自动寻路了，玩起来省事不少。').repeat(2)
 
 const isPostPrompt = (p) => String(p).includes('写一篇小黑盒帖子')
+// 「带原文补长」那一轮的开头
+const isFixPrompt = (p) => String(p).includes('把这篇小黑盒帖子补长一点')
 
-/** 造一个能跑 tick 全链路（逛 + 自动发帖）的 fixture：网络全 mock、时间可控 */
+/** 造一个能跑 tick 全链路（逛 + 自动发帖）的 fixture：网络全 mock、时间可控
+ *  发帖那一轮返回什么由 f.postMode 决定（ok | badJson | short），用来模拟模型写歪 / 写不够字数 */
 function fx({ heybox = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'heybox-sched-'))
   mkdirSync(join(dir, 'packs'), { recursive: true })   // 空图库 → 纯文字帖放行
@@ -34,11 +37,20 @@ function fx({ heybox = {} } = {}) {
   }
   const turns = []
   const posted = []
+  let postMode = 'ok'   // 由测试通过 setPostMode 改：'ok' | 'badJson' | 'short'
   const chat = {
     runSystemTurn: async (ext, title, prompt, opts) => {
       turns.push({ ext, title, prompt, opts })
       if (isPostPrompt(prompt)) {
+        if (postMode === 'badJson') return '抱歉，我这次没写成'
+        if (postMode === 'short') return JSON.stringify({ title: '短稿', text: '今天刷到一条。' })
+        if (postMode === 'shortThenFixed') return JSON.stringify({ title: '第一稿', text: '今天刷到一条。' })
         return JSON.stringify({ title: '排期到点自动发的测试帖', text: BODY })
+      }
+      // 「带原文补长」那一轮：只有 shortThenFixed 会写成合格稿，其余模式仍回垃圾
+      if (isFixPrompt(prompt)) {
+        if (postMode === 'shortThenFixed') return JSON.stringify({ title: '补长后的测试帖', text: BODY })
+        return '抱歉，我这次没写成'
       }
       return JSON.stringify({ note: '看到一个有趣的帖子', share: '', linkId: '', remember: '' })
     },
@@ -83,6 +95,7 @@ function fx({ heybox = {} } = {}) {
     hb, cfg, turns, posted, stateFile, dir,
     get time() { return time },
     set time(v) { time = v },
+    setPostMode(v) { postMode = v },
     at(h, m = 0) { time = new Date(2026, 5, 8, h, m).getTime() },
     close() { hb.dispose(); rmSync(dir, { recursive: true, force: true }) },
   }
@@ -168,3 +181,120 @@ test('没配排期就绝不自动发（maybeAutoPost 空排期安全阀）', asy
   assert.equal(f.posted.length, 0)
   assert.equal(f.hb.postWindowOpen(f.cfg, new Date(2026, 5, 8, 20)), false)
 })
+
+// ── 真失败要退避 ──────────────────────────────────────────────
+//
+// 线上事故的样子：排期欠着稿 → 每分钟叫模型写一篇 → 那篇要么写不够字数被 post()
+// 硬拒、要么这一轮直接超时 → 旧版把 tick 的 failures/retryAt 一律清零，下一分钟
+// 再来一遍。每次超时都会让宿主把卡住的 system:heybox 会话归档重建，于是一天多出
+// 好几条会话。现在的闸门就是这两条测试。
+
+test('模型这轮没写成：记退避，退避期内不再叫模型，到期后恢复', async (t) => {
+  const f = fx()
+  t.after(() => f.close())
+  f.setPostMode('badJson')
+
+  // 第 1 轮：逛 + 顺手发帖，发帖那一轮模型返回垃圾 → 标记 retry 并记退避
+  f.at(10, 0)
+  const r1 = await f.hb.tick()
+  assert.equal(r1.due, true)
+  assert.equal(postTurns(f).length, 1, '跑了一次发帖回合')
+  const st1 = f.hb.state()
+  assert.equal(st1.postFailures, 1, '真失败要记一次')
+  assert.ok(st1.postRetryAt > f.time, '要记下退避时刻')
+  assert.equal(st1.postRetryAt - f.time, 2 * 60_000, '第一次退避 2 分钟')
+
+  // 第 2 分钟：还在退避期内 —— 不许再开模型回合（会话不再被耗光的关键）
+  f.at(10, 1)
+  await f.hb.tick()
+  assert.equal(postTurns(f).length, 1, '退避期内不能再叫模型')
+  assert.equal(f.posted.length, 0)
+
+  // 退避到期后自动恢复
+  f.setPostMode('ok')
+  f.at(10, 3)
+  const r3 = await f.hb.tick()
+  assert.equal(postTurns(f).length, 2, '到期后应该再试一次')
+  assert.equal(f.posted.length, 1, '这次真的发出去了')
+  assert.equal(f.hb.state().postFailures, 0, '成功就清零')
+})
+
+test('稿子被 post() 硬拒（字数不够）：同样退避，不会每分钟重写一篇废稿', async (t) => {
+  // fixture 默认 postWordsMin=100，模型只写 7 个字 → too_short
+  const f = fx()
+  t.after(() => f.close())
+  f.setPostMode('short')
+
+  f.at(10, 0)
+  await f.hb.tick()
+  assert.equal(postTurns(f).length, 1)
+  const st = f.hb.state()
+  assert.equal(st.postFailures, 1, '硬拒发要算真失败')
+  assert.match(String(st.lastSkipReason), /字数下限|没有发出/)
+
+  // 退避期内连试都不试
+  f.at(10, 1)
+  await f.hb.tick()
+  assert.equal(postTurns(f).length, 1, '退避期内不许重写')
+
+  // 第二次失败要按阶梯往上退（2 → 5 分钟）
+  f.at(10, 3)
+  await f.hb.tick()
+  assert.equal(postTurns(f).length, 2, '退避过后重试一次')
+  const st2 = f.hb.state()
+  assert.equal(st2.postFailures, 2)
+  assert.ok(st2.postRetryAt - f.time > 2 * 60_000, '第二次退得更久')
+})
+
+test('安全阀式跳过（关自动发帖/没排期/额度没了）不退避，也不算失败', async (t) => {
+  const f = fx({ heybox: { autoPost: false } })
+  t.after(() => f.close())
+  f.at(10, 0)
+  await f.hb.tick()
+  const st = f.hb.state()
+  assert.equal(st.postFailures || 0, 0, 'skipped 不该进退避阶梯')
+  assert.equal(st.postRetryAt || 0, 0)
+  assert.equal(postTurns(f).length, 0, '自动发帖关了就不叫模型')
+})
+
+test('第一稿字数不够：带原文补一轮，补够就发出去（不整篇丢掉重写）', async (t) => {
+  const f = fx()
+  t.after(() => f.close())
+  f.setPostMode('shortThenFixed')
+
+  f.at(10, 0)
+  await f.hb.tick()
+
+  const postTurns2 = f.turns.filter((x) => isPostPrompt(x.prompt))
+  const fixTurns = f.turns.filter((x) => isFixPrompt(x.prompt))
+  assert.equal(postTurns2.length, 1, '写第一稿一次')
+  assert.equal(fixTurns.length, 1, '太短时补一轮')
+  // 补写那一轮必须把原文和差额都带上，否则模型只会从零再写一篇同样短的
+  assert.match(fixTurns[0].prompt, /还差 \d+ 字/)
+  assert.match(fixTurns[0].prompt, /今天刷到一条/, '要带上原文')
+  assert.match(fixTurns[0].prompt, /保留原文的口吻和结构/)
+
+  assert.equal(f.posted.length, 1, '补够之后真的发出去了')
+  assert.match(String(f.posted[0].title), /补长后的测试帖/)
+  assert.equal(f.hb.state().postFailures || 0, 0, '发成功要清零退避')
+})
+
+test('补一轮还不行：就按失败退避，不无限重写', async (t) => {
+  const f = fx()
+  t.after(() => f.close())
+  f.setPostMode('short')   // 第一稿和补写轮都回短稿
+
+  f.at(10, 0)
+  await f.hb.tick()
+  assert.equal(f.turns.filter((x) => isPostPrompt(x.prompt)).length, 1)
+  assert.equal(f.turns.filter((x) => isFixPrompt(x.prompt)).length, 1, '只补一轮')
+  assert.equal(f.posted.length, 0)
+  const st = f.hb.state()
+  assert.equal(st.postFailures, 1, '两轮都不行算一次失败')
+
+  // 下一分钟不再重写
+  f.at(10, 1)
+  await f.hb.tick()
+  assert.equal(f.turns.filter((x) => isFixPrompt(x.prompt)).length, 1, '退避期内不补写')
+})
+
