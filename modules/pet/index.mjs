@@ -1006,6 +1006,32 @@ export default {
       }
     }
 
+    /** 反算 app/ 现状的模板签名（算法与 clientTemplate 一致）：与生成凭据里的 sig 相等 = 生成后没被人手改过。 */
+    function installedSig() {
+      const dest = appDir()
+      const files = CLIENT_FILES.map((f) => ({ name: f, hash: fileHash(join(dest, f)) })).filter((f) => f.hash)
+      if (!files.length) return ''
+      return createHash('sha1').update(files.map((f) => `${f.name}:${f.hash}`).join('|')).digest('hex').slice(0, 12)
+    }
+
+    /** 自动重装过期客户端（治「市场升级到新版后，点小屋还是白屏/黑屏」）：
+     *  用户端升级模块只换插件里的模板，数据目录 app/ 这个客户端副本不会跟着更新，
+     *  旧壳没有新修复照样白屏，而很多人不会去看面板提示。这里在模块启动时兜一道：
+     *  只覆盖「生成后没被手改」的 app/（现状签名 == 生成凭据签名）；手改过的一律不动，
+     *  维持只读对账由面板提示。 */
+    function autoRegenClient() {
+      try {
+        const stamp = readJson(join(appDir(), CLIENT_STAMP), null)
+        if (!stamp || typeof stamp.sig !== 'string' || !stamp.sig) return null // 没凭据的老安装：不猜，交给面板
+        const tpl = clientTemplate()
+        if (!tpl.sig || stamp.sig === tpl.sig) return null // 已一致 / 没模板：不动
+        if (installedSig() !== stamp.sig) return null // 被手改过：绝不自动覆盖
+        const r = installClient()
+        if (r?.ok) api.log.info('客户端模板有更新且 app/ 未被手改：已自动重新生成（正在运行的 Electron 重启后生效）')
+        return r
+      } catch (error) { api.log.warn('客户端自动重装失败（不影响使用）：', String(error?.message || error)); return null }
+    }
+
     // ---------- Electron 三键（面板按钮 / HTTP 路由共用）：安装 → 启动 → 停止 ----------
     // 安装走 npmmirror 镜像（真机直连 github release 会 fetch failed）；启动前必须清掉
     // 子进程环境的 ELECTRON_RUN_AS_NODE（宿主环境必带，不清则 Electron 以纯 Node 模式启动即崩）。
@@ -3449,6 +3475,7 @@ export default {
 
     // ---------- 启动 ----------
     writeHostFile(true)
+    autoRegenClient() // 升级后 app/ 未被手改就自动跟上新模板（治「升级完点小屋还是白屏」）
     ensureAssetRoutes()
     ensureHouseRoutes()
     // 碎碎念排程先落一次盘：面板一打开就能看到「下次约 N 分钟后」，重启也不丢排程

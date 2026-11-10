@@ -616,6 +616,50 @@ test('clientStatus：手改 app/main.js → changed 点名，但不谎报「跑�
   assert.equal(st.healthy, true) // 内容不同 ≠ 缺文件：只是提醒「重新生成会覆盖」
 })
 
+// ---------- 升级自动重装（治「市场升级后点小屋还是白屏」：app/ 副本不随模块升级更新） ----------
+
+/** 与模块 clientTemplate/installedSig 同算法：算 app/ 现状的模板签名（模拟「旧版模板生成时的凭据」）。 */
+function appSig(app) {
+  const names = ['main.js', 'preload.js', 'index.html', 'physics.js', 'packmeta.js', 'behavior.js', 'chat.html', 'house.html', 'house.js']
+  const files = names.map((f) => {
+    try { return { name: f, hash: createHash('sha1').update(readFileSync(join(app, f))).digest('hex').slice(0, 12) } } catch { return null }
+  }).filter(Boolean)
+  if (!files.length) return ''
+  return createHash('sha1').update(files.map((f) => `${f.name}:${f.hash}`).join('|')).digest('hex').slice(0, 12)
+}
+
+test('autoRegenClient：升级后 app/ 未被手改 → 模块重启时自动重新生成，凭据跟上新模板', async () => {
+  const env = startModule()
+  await env.call('/client/install', { method: 'POST', json: {} })
+  const app = env.api.dataDir('app')
+  // 伪装「旧版模板生成的壳」：main.js 是旧内容，凭据 sig 与这份旧内容一致（= 没被手改过）
+  writeFileSync(join(app, 'main.js'), '// 旧版 main.js：没有小屋白屏兜底\n')
+  writeFileSync(join(app, 'client-stamp.json'), JSON.stringify({ sig: appSig(app), at: 1 }))
+  const st = env.exports.clientStatus()
+  assert.equal(st.outdated, true, '升级后模板与凭据签名不一致 = outdated')
+  assert.equal(st.healthy, false)
+  // 模拟插件重启：同一数据目录重新 setup（启动段会调 autoRegenClient）
+  startModule()
+  assert.equal(readFileSync(join(app, 'main.js'), 'utf8').includes('旧版 main.js'), false, '旧 main.js 已被新模板覆盖')
+  const st2 = env.exports.clientStatus()
+  assert.equal(st2.healthy, true, st2.message)
+  assert.equal(st2.generatedSig, st2.sig, '生成凭据已跟上新模板')
+})
+
+test('autoRegenClient：手改过的过期 app/ → 绝不自动覆盖，维持面板提示', async () => {
+  const env = startModule()
+  await env.call('/client/install', { method: 'POST', json: {} })
+  const app = env.api.dataDir('app')
+  const p = join(app, 'main.js')
+  writeFileSync(p, readFileSync(p, 'utf8') + '\n// 用户手改：别动我的\n')
+  writeFileSync(join(app, 'client-stamp.json'), JSON.stringify({ sig: 'oldoldold123', at: 1 }))
+  startModule() // 模拟重启：签名对不上凭据 = 手改过，不许覆盖
+  assert.ok(readFileSync(p, 'utf8').includes('用户手改'), '手改内容原样保留')
+  const st = env.exports.clientStatus()
+  assert.deepEqual(st.changed, ['main.js']) // 面板点名手改文件，提示重新生成会覆盖
+  assert.match(st.message, /更新|重新生成/)
+})
+
 test('/status：带 client 对账字段（面板「桌宠」卡据此提示）', async () => {
   const env = startModule()
   await env.call('/client/install', { method: 'POST', json: {} })

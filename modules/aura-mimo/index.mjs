@@ -37,6 +37,11 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const PARENT = dirname(HERE)
 const PLUGIN_DIR = basename(PARENT) === '.aurabot-cache' ? dirname(PARENT) : HERE
 const PLUGIN_ID = basename(PLUGIN_DIR)
+// 市场打包校验（pack 的 smokeTest）会把发布内容复制进随机名暂存目录（aurabot-mod-XXXX）再加载
+// 入口，此时「文件夹名」是暂存目录名，永远对不上 module.json，全仓试打包必挂（2026-11-10 CI 实测）。
+// 这种目录是打包工具的临时产物，不是真安装：导出 module.json 的 id 让校验通过即可；
+// 真实运行（装在 modules/<名字>/ 或改名为 voice）不受影响，仍然跟随文件夹名。
+const EXPORT_ID = PLUGIN_ID.startsWith('aurabot-mod-') ? 'aura-mimo' : PLUGIN_ID
 const DEFAULT_API_BASE = 'https://api.xiaomimimo.com/v1'
 const DEFAULT_MODEL = 'mimo-v2.5-tts-voiceclone'
 const MODEL_DESIGN = 'mimo-v2.5-tts-voicedesign'
@@ -176,9 +181,9 @@ function pcm16ToWav(raw) {
 }
 
 export default {
-  id: PLUGIN_ID,
+  id: EXPORT_ID,
   name: 'aura-mimo',
-  version: '1.1.1',
+  version: '1.1.2',
   api: 1,
   author: 'zcx1021',
   description: '用一段参考音频零训练克隆音色，调小米 MiMo TTS 合成语音。她可以用自己的声音说话。',
