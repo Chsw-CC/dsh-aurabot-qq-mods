@@ -225,12 +225,17 @@ export function createRunner({ store, log, settings }) {
     child.on('close', (code, signal) => {
       clearTimeout(timeout)
       const status = current.status === 'stopping' ? 'stopped' : code === 0 ? 'success' : 'error'
+      // 先等日志流真正落盘（finish 事件），再更新运行状态——否则读取方可能看到「已结束」但日志还是空的
       stream.end(`\n## 执行结束 ${new Date().toLocaleString()}，退出码 ${code ?? ''} ${signal || ''}\n`)
-      runtime.delete(id)
-      store.updateRun(runId, { status, code, signal: signal || '', finishedAt: new Date().toISOString(), logTruncated: truncated })
-      const latest = store.state().tasks.find((t) => t.id === id)
-      if (latest) store.upsertTask({ ...latest, lastStatus: status, lastExitCode: code, lastFinishedAt: new Date().toISOString() })
-      log?.[status === 'success' ? 'info' : 'warn'](`薅羊毛任务「${item.name}」：${status}`)
+      const settle = () => {
+        runtime.delete(id)
+        store.updateRun(runId, { status, code, signal: signal || '', finishedAt: new Date().toISOString(), logTruncated: truncated })
+        const latest = store.state().tasks.find((t) => t.id === id)
+        if (latest) store.upsertTask({ ...latest, lastStatus: status, lastExitCode: code, lastFinishedAt: new Date().toISOString() })
+        log?.[status === 'success' ? 'info' : 'warn'](`薅羊毛任务「${item.name}」：${status}`)
+      }
+      stream.once('finish', settle)
+      stream.once('error', settle)
     })
     return { ok: true, message: '任务已按已确认的来源与内容启动', runId, pid: child.pid }
   }
