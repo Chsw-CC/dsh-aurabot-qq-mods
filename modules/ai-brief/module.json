@@ -1,0 +1,26 @@
+{
+  "api": 1,
+  "tags": [
+    "新闻",
+    "早报",
+    "晚报",
+    "论坛",
+    "AI资讯"
+  ],
+  "author": "chienchen-png",
+  "description": "早报/午报/晚报三合一：AI 资讯（Bing 新闻 + 知乎热榜）+ 论坛热帖速报，带吐槽和完整链接",
+  "requires": [],
+  "version": "2.0.0",
+  "category": "tool",
+  "license": "MIT",
+  "name": "AI 新闻推送",
+  "id": "ai-brief",
+  "capabilities": [
+    "network",
+    "filesystem",
+    "process",
+    "plugin-config",
+    "plugin-internals"
+  ],
+  "minPluginVersion": "1.2.0"
+}
