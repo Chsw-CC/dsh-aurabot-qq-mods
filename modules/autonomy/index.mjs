@@ -346,7 +346,7 @@ export function parsePersonaMbti(md) {
 export default {
   id: 'autonomy',
   name: '自主生活',
-  version: '0.6.0',
+  version: '0.6.1',
   api: 1,
   description: '她自己决定这一刻做什么、下次什么时候醒；间隔按区间随机并受时段活跃度影响。不执行 shell 命令',
   panel: 'panel.js',
