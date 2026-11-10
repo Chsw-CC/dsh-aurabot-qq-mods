@@ -11,6 +11,8 @@ import {
   looksLoggedIn,
   msUntil,
   nowMinutes,
+  parseActivePort,
+  pickCookies,
   toMinutes,
 } from '../lib/pure.mjs'
 
@@ -103,4 +105,47 @@ test('checkinAction：关掉、没登录、领过了、没到点、试满了都�
   assert.equal(checkinAction({ ...base, tries: 2 }), 'run')
   // 昨天领过的不影响今天
   assert.equal(checkinAction({ ...base, done: '2026-11-05' }), 'run')
+})
+
+test('parseActivePort 只认第一行的端口，坏的当没开', () => {
+  assert.equal(parseActivePort('9222\n/devtools/browser/abc'), 9222)
+  assert.equal(parseActivePort('9222\r\nws://127.0.0.1'), 9222)
+  assert.equal(parseActivePort(''), 0)
+  assert.equal(parseActivePort('abc'), 0)
+  assert.equal(parseActivePort(undefined), 0)
+})
+
+test('pickCookies 只认 breezeblue.ai 自己的域，仿冒的子串不放过去', () => {
+  const now = 1000
+  const list = [
+    { domain: 'breezeblue.ai', name: 'a', value: '1', expires: now + 10 },
+    { domain: '.breezeblue.ai', name: 'breeze_blue_session', value: 'xyz', expires: now + 10 },
+    { domain: 'breezeblue.ai.attacker.com', name: 'evil', value: 'x', expires: now + 10 },
+    { domain: 'notbreezeblue.ai', name: 'nope', value: 'x', expires: now + 10 },
+  ]
+  assert.deepEqual(pickCookies(list, now), ['a=1', 'breeze_blue_session=xyz'])
+})
+
+test('pickCookies 里 session cookie 留着，真过期的丢', () => {
+  const now = 1000
+  const list = [
+    { domain: 'breezeblue.ai', name: 's1', value: 'a', expires: -1 },
+    { domain: 'breezeblue.ai', name: 's2', value: 'b', expires: 0 },
+    { domain: 'breezeblue.ai', name: 's3', value: 'c' },
+    { domain: 'breezeblue.ai', name: 'old', value: 'd', expires: now - 1 },
+    { domain: 'breezeblue.ai', name: 'live', value: 'e', expires: now + 60 },
+  ]
+  assert.deepEqual(pickCookies(list, now), ['s1=a', 's2=b', 's3=c', 'live=e'])
+})
+
+test('pickCookies 空列表和坏输入给空数组，别炸', () => {
+  assert.deepEqual(pickCookies([]), [])
+  assert.deepEqual(pickCookies(null), [])
+  assert.deepEqual(pickCookies(undefined), [])
+})
+
+test('pickCookies 缺 domain 的条目直接跳过', () => {
+  const now = 1000
+  const list = [{ name: 'x', value: '1' }, { domain: null, name: 'y', value: '2' }, { domain: 'breezeblue.ai', name: 'z', value: '3' }]
+  assert.deepEqual(pickCookies(list, now), ['z=3'])
 })

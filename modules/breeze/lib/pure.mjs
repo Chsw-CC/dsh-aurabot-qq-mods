@@ -59,6 +59,22 @@ export const describeClaim = (data = {}) => {
   }
 }
 
+/** Chrome 的 DevToolsActivePort 文件：第一行是端口，坏的当没开 */
+export const parseActivePort = (text) => {
+  const port = Number(String(text || '').split(/\r?\n/)[0])
+  return port > 0 ? port : 0
+}
+
+/** 从 CDP 给的 cookie 列表里挑出 breezeblue.ai 自己的、还没过期的，拼成 name=value */
+export const pickCookies = (list, now = Date.now() / 1000) => {
+  const mine = (d) => d === 'breezeblue.ai' || d.endsWith('.breezeblue.ai')
+  return (Array.isArray(list) ? list : [])
+    .filter((c) => mine(String((c && c.domain) || '')))
+    // expires 是 -1 或 0 表示 session cookie，不能当过期扔掉
+    .filter((c) => c.expires == null || c.expires <= 0 || c.expires > now)
+    .map((c) => `${c.name}=${c.value}`)
+}
+
 /** 今天还能不能再试：返回 'skip' 或 'run'，省得在 tick 里堆一堆 if */
 export const checkinAction = ({ on, hasCookie, done, day, tries, at, now, maxTries = 3 }) => {
   if (!on) return 'skip'

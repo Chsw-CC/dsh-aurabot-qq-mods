@@ -6,7 +6,7 @@ import http from 'node:http'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
-import { checkinAction, describeClaim, formatDate, looksLoggedIn, msUntil, nowMinutes } from './lib/pure.mjs'
+import { checkinAction, describeClaim, formatDate, looksLoggedIn, msUntil, nowMinutes, parseActivePort, pickCookies } from './lib/pure.mjs'
 
 export default {
   id: 'breeze',
@@ -453,9 +453,7 @@ export default {
      *  不去扫端口 —— 免得连到别人开着的 Chrome 上读别人的 cookie。 */
     function readActivePort() {
       try {
-        const [p] = readFileSync(activePortFile(), 'utf8').split(/\r?\n/)
-        const port = Number(p)
-        return port > 0 ? port : 0
+        return parseActivePort(readFileSync(activePortFile(), 'utf8'))
       } catch {
         return 0
       }
@@ -587,12 +585,7 @@ export default {
       try {
         ws.close()
       } catch {}
-      const now = Date.now() / 1000
-      const mine = (d) => d === 'breezeblue.ai' || d.endsWith('.breezeblue.ai')
-      return list
-        .filter((c) => mine(String(c.domain || '')))
-        .filter((c) => c.expires == null || c.expires <= 0 || c.expires > now)
-        .map((c) => `${c.name}=${c.value}`)
+      return pickCookies(list)
     }
 
     let watching = false
