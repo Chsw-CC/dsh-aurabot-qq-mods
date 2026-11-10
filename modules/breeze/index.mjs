@@ -6,12 +6,12 @@ import http from 'node:http'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
-import { checkinAction, describeClaim, formatDate, looksLoggedIn, msUntil, nowMinutes, parseActivePort, pickCookies } from './lib/pure.mjs'
+import { checkinAction, describeClaim, formatDate, looksLoggedIn, msUntil, nowMinutes, parseActivePort, pickCookies, wsMatches } from './lib/pure.mjs'
 
 export default {
   id: 'breeze',
   name: 'Breeze 语音',
-  version: '1.3.2',
+  version: '1.3.3',
   api: 1,
   description: 'Breeze Blue 在线文字转语音 + 每日自动签到领积分',
   tab: 'voice',
@@ -237,7 +237,7 @@ export default {
       }
       return ''
     }
-    const hasLogin = () => Boolean(memCookie || readState().loginAt || cookiesFile())
+    const hasLogin = () => Boolean(memCookie || readState().loginAt)
 
     /** 现取的登录态：内存里有就用，没有就从专用浏览器配置里读一次 */
     async function sessionCookie() {
@@ -346,7 +346,7 @@ export default {
       }
       if (tried + 1 < MAX_TRIES) {
         api.log.warn(`签到没成功（今天第 ${tried + 1} 次），5 分钟后再试：` + r.message)
-        api.later(RETRY_MS, () => tick('retry'))
+        api.later(RETRY_MS, () => tick('retry').catch((e) => api.log.warn('[breeze] 签到入口出错：', e.message)))
       } else {
         api.log.warn(`签到今天试了 ${tried + 1} 次都没成，明天再说：` + r.message)
         if (wantNotify()) notifyOwner(`Breeze 今天签到没成功：${r.message}。可能登录过期了，去面板点「登录」重新登一次`)
@@ -397,7 +397,7 @@ export default {
       }
     })
     // 启动时补一次（昨天没开 DSH 的情况）
-    api.later(8000, () => tick('startup'))
+    api.later(8000, () => tick('startup').catch((e) => api.log.warn('[breeze] 签到入口出错：', e.message)))
 
     // ---------- 登录并抓 cookie：按需开一次 Chrome，抽完就关 ----------
     // 调试端口不让用户填、也不扫端口段：让 Chrome 自己挑（--remote-debugging-port=0），
@@ -455,18 +455,18 @@ export default {
       try {
         return parseActivePort(readFileSync(activePortFile(), 'utf8'))
       } catch {
-        return 0
+        return { port: 0, wsPath: '' }
       }
     }
 
     async function findExistingPort() {
-      const port = readActivePort()
+      const { port, wsPath } = readActivePort()
       if (!port) return 0
       try {
         const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1500) })
         if (!res.ok) return 0
         const v = await res.json()
-        return v?.webSocketDebuggerUrl ? port : 0
+        return wsMatches(v, wsPath) ? port : 0
       } catch {
         return 0
       }
@@ -526,12 +526,12 @@ export default {
       child.on('error', (error) => api.log.warn('[breeze] 浏览器起不来：', error.message))
       child.unref()
       for (let i = 0; i < 60; i++) {
-        const port = readActivePort()
+        const { port, wsPath } = readActivePort()
         if (port) {
           debugPort = port
           try {
             const v = await debugJson('/json/version')
-            if (v?.webSocketDebuggerUrl) return { reused: false }
+            if (wsMatches(v, wsPath)) return { reused: false }
           } catch {}
         }
         await new Promise((r) => setTimeout(r, 250))
@@ -670,12 +670,16 @@ export default {
       watching = false
       memCookie = ''
       await closeBrowser()
-      await new Promise((r) => setTimeout(r, 800))
-      try {
-        rmSync(chromeDir(), { recursive: true, force: true })
-      } catch (error) {
-        api.log.warn('[breeze] 浏览器配置目录没删干净：', error.message)
+      // Windows 上 Chrome 放 profile 锁常超过一秒：等到能删为止，删不掉就如实报错，不谎称清干净了
+      let removed = false
+      for (let i = 0; i < 12 && !removed; i++) {
+        await new Promise((r) => setTimeout(r, 250))
+        try {
+          rmSync(chromeDir(), { recursive: true, force: true })
+          removed = true
+        } catch {}
       }
+      if (!removed) return { ok: false, message: '浏览器配置目录还占着，登录态没清掉；把那个 Chrome 窗口关掉，再点一次「退出登录」' }
       const { loginAt, ...rest } = readState()
       writeState({ ...rest, lastResult: '已退出登录', lastReason: 'logout' })
       api.log.info('[breeze] 已退出登录，浏览器里的登录态清掉了')
@@ -683,8 +687,7 @@ export default {
 
     api.route('/logout', async () => {
       try {
-        await logout()
-        return { ok: true, message: '已经退出登录，浏览器里的登录态清掉了；要换号就再点「登录」' }
+        return (await logout()) || { ok: true, message: '已经退出登录，浏览器里的登录态清掉了；要换号就再点「登录」' }
       } catch (error) {
         return { ok: false, message: '退出没干净：' + error.message }
       }
