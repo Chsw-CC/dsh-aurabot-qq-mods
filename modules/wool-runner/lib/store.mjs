@@ -62,9 +62,13 @@ export function createStore(root) {
     addRun(run) { runs.unshift(run); runs = runs.slice(0, 200); saveRuns(); return run },
     updateRun(id, patch) { const r = runs.find((x) => x.id === id); if (r) Object.assign(r, patch); saveRuns(); return r },
     envList: () => env.map(({ id, name, remarks, createdAt, updatedAt }) => ({ id, name, remarks, createdAt, updatedAt, configured: true })),
-    envValues() {
+    envValues(names = null) {
       const out = {}
-      for (const item of env) out[item.name] = out[item.name] ? `${out[item.name]}&${item.value}` : item.value
+      const allowed = names === null ? null : new Set(names)
+      for (const item of env) {
+        if (allowed && !allowed.has(item.name)) continue
+        out[item.name] = out[item.name] ? `${out[item.name]}&${item.value}` : item.value
+      }
       return out
     },
     envSecrets: () => env.map((x) => String(x.value || '')).filter(Boolean),
@@ -90,8 +94,27 @@ export function createStore(root) {
     updateSubscription(id, patch) {
       const item = state.subscriptions.find((s) => s.id === id)
       if (!item) throw new Error('订阅不存在')
-      Object.assign(item, normalizeSubscription({ ...item, ...patch, id }))
+      const next = normalizeSubscription({ ...item, ...patch, id })
+      const sourceChanged = next.url !== item.url || next.branch !== item.branch
+      Object.assign(item, next)
+      if (sourceChanged) {
+        for (const task of state.tasks.filter((t) => t.subscriptionId === id)) {
+          task.enabled = false
+          task.approval = null
+          task.revokedReason = '订阅地址或分支已变化，请重新审查并确认'
+        }
+      }
       saveState(); return item
+    },
+    revokeTasks(id, reason = '源码已变化，请重新审查并确认') {
+      let count = 0
+      for (const task of state.tasks.filter((t) => t.subscriptionId === id)) {
+        if (task.enabled || task.approval) count++
+        task.enabled = false
+        task.approval = null
+        task.revokedReason = reason
+      }
+      saveState(); return count
     },
     removeSubscription(id) {
       const item = state.subscriptions.find((s) => s.id === id)
@@ -113,6 +136,8 @@ export function createStore(root) {
 export function normalizeSubscription(s) {
   const url = String(s.url || '').trim()
   if (!/^https:\/\/[^\s]+\.git$/i.test(url)) throw new Error('订阅地址必须是 https:// 开头的 .git 地址')
+  const parsed = new URL(url)
+  if (parsed.username || parsed.password) throw new Error('订阅地址不能包含账号、密码或访问令牌')
   return {
     id: s.id, name: String(s.name || s.id).slice(0, 80), url,
     branch: String(s.branch || 'main').replace(/[^\w./-]/g, ''),

@@ -12,12 +12,15 @@ export default {
   api: 1,
   description: '参考青龙的订阅、环境变量、Cron 任务与日志管理，内置 jdpro、smzdm_script、QLScriptPublic 源，支持京东扫码获取 JD_COOKIE',
   panel: 'panel.js',
-  defaults: { nodePath: '', pythonPath: '', bashPath: '', timeoutMinutes: 30 },
+  defaults: { enabled: false, nodePath: '', pythonPath: '', bashPath: '', timeoutMinutes: 30, maxConcurrent: 2, memoryMb: 256 },
   settings: [
+    { key: 'enabled', label: '允许执行脚本（总开关）', type: 'switch', hint: '默认关闭；关闭时手动和定时执行都会被拒绝，订阅管理与扫码配置仍可使用' },
     { key: 'nodePath', label: 'Node.js 路径（可选）', type: 'text', hint: '留空使用 DSH 当前运行时；也可填本机 node.exe 的绝对路径' },
     { key: 'pythonPath', label: 'Python 路径（可选）', type: 'text', hint: '运行 .py 脚本时使用，留空从 PATH 查找 python' },
     { key: 'bashPath', label: 'Bash 路径（可选）', type: 'text', hint: '运行 .sh 脚本时使用，留空从 PATH 查找 bash' },
     { key: 'timeoutMinutes', label: '单任务超时（分钟）', type: 'number', min: 1, max: 240, step: 1 },
+    { key: 'maxConcurrent', label: '最大并发任务数', type: 'number', min: 1, max: 4, step: 1 },
+    { key: 'memoryMb', label: 'Node.js 堆内存上限（MiB）', type: 'number', min: 64, max: 2048, step: 64 },
   ],
   setup(api) {
     const store = createStore(api.dataDir())
@@ -35,7 +38,9 @@ export default {
     route('/subscription/update', async (req) => {
       const input = await body(req)
       if (!input.id) throw new Error('缺少订阅 id')
-      return { ok: true, item: store.updateSubscription(input.id, input) }
+      const item = store.updateSubscription(input.id, input)
+      if (!item.enabled) store.revokeTasks(item.id, '订阅已停用，任务已关闭且旧审批失效')
+      return { ok: true, item }
     })
     route('/subscription/sync', async (req) => runner.sync(String((await body(req)).id || '')))
     route('/subscription/delete', async (req) => {
@@ -60,16 +65,32 @@ export default {
       if (store.state().tasks.some((t) => t.id === script.id)) throw new Error('这个脚本已在任务列表中')
       const cron = String(input.cron || script.cron || '').trim()
       parseCron(cron)
-      return { ok: true, item: store.upsertTask({ id: script.id, subscriptionId: sub.id, file: script.file, name: String(input.name || script.name), cron, enabled: false }) }
+      return { ok: true, item: store.upsertTask({ id: script.id, subscriptionId: sub.id, file: script.file, name: String(input.name || script.name), cron, enabled: false, envNames: [], approval: null }) }
     })
     route('/task/update', async (req) => {
       const input = await body(req)
       const old = store.state().tasks.find((t) => t.id === input.id)
       if (!old) throw new Error('任务不存在')
       if (input.cron !== undefined) parseCron(input.cron)
-      return { ok: true, item: store.upsertTask({ ...old, name: input.name === undefined ? old.name : String(input.name).slice(0, 120), cron: input.cron ?? old.cron, enabled: input.enabled === undefined ? old.enabled : input.enabled === true }) }
+      if (input.enabled === true && input.confirm !== true) return { ok: false, needsConfirmation: true, message: '启用定时前必须确认来源与脚本内容' }
+      const approval = input.enabled === true ? runner.authorize(old.id).approval : old.approval
+      const cronChanged = input.cron !== undefined && input.cron !== old.cron
+      return { ok: true, item: store.upsertTask({ ...old, name: input.name === undefined ? old.name : String(input.name).slice(0, 120), cron: input.cron ?? old.cron, enabled: cronChanged ? false : input.enabled === undefined ? old.enabled : input.enabled === true, approval }) }
     })
-    route('/task/run', async (req) => runner.run(String((await body(req)).id || '')))
+    route('/task/env', async (req) => {
+      const input = await body(req)
+      const old = store.state().tasks.find((t) => t.id === input.id)
+      if (!old) throw new Error('任务不存在')
+      const known = new Set(store.envList().map((x) => x.name))
+      const envNames = [...new Set((Array.isArray(input.names) ? input.names : []).map((x) => String(x).trim()).filter(Boolean))]
+      for (const name of envNames) if (!known.has(name)) throw new Error(`环境变量 ${name} 不存在`)
+      store.upsertTask({ ...old, envNames })
+      return { ok: true, message: envNames.length ? `已授权 ${envNames.join('、')}` : '已设为不注入任何自定义凭据' }
+    })
+    route('/task/run', async (req) => {
+      const input = await body(req)
+      return runner.run(String(input.id || ''), 'manual', { confirm: input.confirm === true })
+    })
     route('/task/stop', async (req) => runner.stop(String((await body(req)).id || '')))
     route('/task/delete', async (req) => {
       const id = String((await body(req)).id || '')
@@ -87,31 +108,19 @@ export default {
     api.every(1000, () => runner.tick(), '薅羊毛 Cron 调度')
     api.onDispose(() => runner.dispose())
     api.command({
-      name: '羊毛', desc: '查看薅羊毛任务：/羊毛 列表；/羊毛 运行 任务名',
-      async run(arg) {
-        const text = String(arg || '').trim()
+      name: '羊毛', desc: '查看薅羊毛任务状态：/羊毛 列表',
+      async run() {
         const tasks = store.state().tasks
-        if (!text || text === '列表') return tasks.length ? tasks.map((t, i) => `${i + 1}. ${t.name}｜${t.enabled ? '定时开' : '定时关'}｜${t.lastStatus || '未运行'}`).join('\n') : '还没有任务，请先到 Aurabot 面板的「薅羊毛任务中心」添加。'
-        const match = text.match(/^运行\s+(.+)$/)
-        if (!match) return '用法：/羊毛 列表，或 /羊毛 运行 任务名'
-        const found = tasks.find((t) => t.name === match[1] || t.id === match[1])
-        if (!found) return '没找到这个任务，先发 /羊毛 列表 看看名字。'
-        const result = await runner.run(found.id)
-        return result.message + `：${found.name}`
+        return tasks.length ? tasks.map((t, i) => `${i + 1}. ${t.name}｜${t.enabled ? '定时开' : '定时关'}｜${t.lastStatus || '未运行'}`).join('\n') : '还没有任务，请先到 Aurabot 面板的「薅羊毛任务中心」添加。'
       },
     })
     api.tool(({ level, chat }) => level === 'full' && chat.kind === 'private' ? api.defineTool({
       name: 'wool_tasks',
-      description: '查看或手动运行主人在 Aurabot 薅羊毛任务中心里配置的脚本任务。action 填 list 或 run；run 时 task 填完整任务名。不能新增任务、修改定时或读取环境变量。',
-      properties: { action: { type: 'string', enum: ['list', 'run'] }, task: { type: 'string', description: '运行时的完整任务名' } },
-      required: ['action'],
-      execute: async ({ action, task: name }) => {
-        if (action === 'list') return { ok: true, tasks: store.state().tasks.map((t) => ({ name: t.name, enabled: t.enabled, lastStatus: t.lastStatus || 'never' })) }
-        const found = store.state().tasks.find((t) => t.name === String(name || ''))
-        if (!found) return { ok: false, message: '没找到完整任务名，请先列出任务' }
-        return runner.run(found.id)
-      },
+      description: '只读查看主人在 Aurabot 薅羊毛任务中心里配置的任务状态。不能运行脚本、新增任务、修改定时或读取环境变量；执行和启用只能在面板中由主人确认。',
+      properties: {},
+      required: [],
+      execute: async () => ({ ok: true, tasks: store.state().tasks.map((t) => ({ name: t.name, enabled: t.enabled, approved: Boolean(t.approval), lastStatus: t.lastStatus || 'never' })) }),
     }) : [])
-    return { state, sync: runner.sync, run: runner.run, stop: runner.stop, dispose: runner.dispose }
+    return { state }
   },
 }

@@ -4,7 +4,7 @@ const emptySource = { id: '', name: '', url: 'https://github.com/', branch: 'mai
 const inputStyle = { width: '100%', boxSizing: 'border-box', marginBottom: 6 }
 const rowStyle = { borderTop: '1px solid var(--ab-border, #e5e7eb)', padding: '10px 0' }
 
-return function Panel({ toast }) {
+return function Panel({ toast, settings, save }) {
   const [tab, setTab] = useState('subscriptions')
   const [data, setData] = useState(null)
   const [busy, setBusy] = useState('')
@@ -75,7 +75,11 @@ return function Panel({ toast }) {
           } }, '删除'))))),
     !data?.subscriptions?.length ? h(ui.Empty, { icon: '☁️', text: '还没有订阅，点右上角添加' }) : null)
 
-  const tasks = h(ui.Card, { title: '定时任务', desc: '兼容 5 字段（分）与 6 字段（秒）Cron；启用后按本机时间运行，同一任务不会重叠执行。' },
+  const confirmTask = (t, action) => {
+    const s = (data?.subscriptions || []).find((x) => x.id === t.subscriptionId)
+    return window.confirm(`${action}「${t.name}」？\n\n来源：${s?.url || t.subscriptionId}\n分支：${s?.branch || ''}\nCommit：${s?.commit || '未同步'}\n脚本：${t.file}\n\n审批将绑定当前来源、commit 和脚本 SHA-256。源码更新后旧审批自动失效。`)
+  }
+  const tasks = h(ui.Card, { title: '定时任务', desc: '任务默认停用、未审批且不注入凭据。手动运行和启用定时都需逐次确认；源码或来源变化会自动撤销审批。' },
     h('div', { className: 'ab-flex', style: { marginBottom: 8 } },
       h('select', { className: 'ab-input', value: scriptSub, onChange: (e) => { setScriptSub(e.target.value); setScripts(null) } },
         h('option', { value: '' }, '选择订阅以添加脚本'), (data?.subscriptions || []).map((s) => h('option', { key: s.id, value: s.id }, s.name))),
@@ -94,9 +98,23 @@ return function Panel({ toast }) {
       h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
         h('div', { style: { flex: 1, minWidth: 220 } },
           h('strong', null, t.name), t.running ? h('span', { className: 'ab-badge', style: { marginLeft: 6 } }, '运行中') : null,
-          h('div', { className: 'ab-small ab-muted' }, t.file), h('div', { className: 'ab-small' }, 'Cron：', t.cron, ' · 最近：', t.lastStatus || '未运行')),
-        h(ui.Switch, { on: t.enabled === true, onChange: (v) => act('toggle-' + t.id, '/task/update', { id: t.id, enabled: v }, v ? '定时已启用' : '定时已停用') }),
-        h(ui.Btn, { small: true, kind: 'primary', disabled: t.running, onClick: () => act('run-' + t.id, '/task/run', { id: t.id }, '任务已开始') }, '运行'),
+          h('div', { className: 'ab-small ab-muted' }, t.file), h('div', { className: 'ab-small' }, 'Cron：', t.cron, ' · 最近：', t.lastStatus || '未运行'),
+          h('div', { className: 'ab-small' }, t.approval ? '✅ 已审批当前来源与内容' : '🔒 未审批', ' · 凭据：', t.envNames?.length ? t.envNames.join('、') : '不注入'),
+          t.revokedReason ? h('div', { className: 'ab-note warn' }, t.revokedReason) : null),
+        h(ui.Switch, { on: t.enabled === true, onChange: (v) => {
+          if (v && !confirmTask(t, '确认当前源码并启用定时')) return
+          act('toggle-' + t.id, '/task/update', { id: t.id, enabled: v, confirm: v }, v ? '已审批并启用定时' : '定时已停用')
+        } }),
+        h(ui.Btn, { small: true, kind: 'primary', disabled: t.running || settings.enabled !== true, onClick: () => {
+          if (!confirmTask(t, '确认当前源码并手动运行')) return
+          act('run-' + t.id, '/task/run', { id: t.id, confirm: true })
+        } }, '确认并运行'),
+        h(ui.Btn, { small: true, disabled: t.running, onClick: async () => {
+          const available = (data?.env || []).map((x) => x.name)
+          const value = window.prompt(`输入允许注入此任务的变量名，逗号分隔；留空表示不注入任何自定义凭据。\n可用：${available.join('、') || '暂无'}`, (t.envNames || []).join(','))
+          if (value === null) return
+          await act('env-task-' + t.id, '/task/env', { id: t.id, names: value.split(/[,，\s]+/).filter(Boolean) })
+        } }, '变量授权'),
         t.running ? h(ui.Btn, { small: true, onClick: () => act('stop-' + t.id, '/task/stop', { id: t.id }) }, '停止') : null,
         h(ui.Btn, { small: true, onClick: async () => {
           const cron = window.prompt('修改 Cron（5 或 6 字段）', t.cron)
@@ -150,6 +168,13 @@ return function Panel({ toast }) {
 
   return h('div', { className: 'ab-grid' },
     h(ui.Card, { title: '薅羊毛任务中心', desc: '订阅管理 · 青龙式 Cron · 环境变量 · 扫码登录 · 日志' },
+      settings.enabled !== true ? h('div', { className: 'ab-note warn', style: { marginBottom: 8 } }, '⚠️ 脚本执行总开关处于关闭状态：可以管理订阅和环境变量，但任何任务（手动或定时）都不会运行。确认风险后在下方打开。') : h('div', { className: 'ab-note', style: { marginBottom: 8 } }, '✅ 脚本执行总开关已打开：任务仍需逐条审批后才能运行。'),
+      h(ui.Row, { label: '允许执行脚本（总开关）', hint: '第三方脚本以本机权限运行，可能访问账号或触发风控，请确认后再打开' },
+        h(ui.Switch, { on: settings.enabled === true, onChange: async (v) => {
+          if (v && !window.confirm('打开总开关后，已审批的任务可以被手动运行，启用定时的任务会按计划自动执行。\n\n审批绑定当前来源与脚本内容，源码更新后必须重新确认。\n\n确认打开？')) return
+          await save({ enabled: v })
+          toast(v ? '总开关已打开' : '总开关已关闭', 'ok')
+        } })),
       h('div', { className: 'ab-flex' }, tabs.map(([id, label]) => h(ui.Btn, { key: id, small: true, kind: tab === id ? 'primary' : 'ghost', onClick: () => setTab(id) }, label)))),
     sourceEditor,
     tab === 'subscriptions' ? subscriptions : tab === 'tasks' ? tasks : tab === 'env' ? env : logs)
