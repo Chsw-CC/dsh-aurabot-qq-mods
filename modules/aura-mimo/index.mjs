@@ -183,7 +183,7 @@ function pcm16ToWav(raw) {
 export default {
   id: EXPORT_ID,
   name: 'aura-mimo',
-  version: '1.1.1',
+  version: '1.1.2',
   api: 1,
   author: 'zcx1021',
   description: '用一段参考音频零训练克隆音色，调小米 MiMo TTS 合成语音。她可以用自己的声音说话。',
