@@ -82,6 +82,24 @@ export async function acquireEgoTarget(port, getJson) {
 }
 
 /** ego 后端：ensure() 返回可用的 { port }；没跑就用 DSH 自带的 node 拉起（一行 heredoc，实测可冷启动）。 */
+// 拉起 ego-browser 时给子进程的环境。
+//
+// EGO_LINUX_HEADLESS 会从三个地方漏进来：系统环境变量、宿主进程（DSH 在某些装法下
+// 自己就带着 =1）、以及面板里的「headless override」。后两者用户并没有亲手选过，
+// 却会跟着 process.env 一路继承下去 —— 结果每次冷启动都起成无头实例：
+//   · 没有窗口，人没法扫码登录，登录态一过期就只能干等；
+//   · 页面按后台节流渲染，`section.note-item` 拿不到布局，量出来是 0×0，卡片解析
+//     全部返回空，调用方退到滚动兜底（xhs 的 b.scroll 就踩在这里）。
+// 桌面平台默认带窗口才合理；真要无头（服务器 / CI）显式设 AURABOT_EGO_HEADLESS=1
+// 说明意图。Linux 无显示环境仍原样尊重该变量。
+export function egoChildEnv(base = process.env, plat = process.platform) {
+  const env = { ...base, ELECTRON_RUN_AS_NODE: '1' }
+  if (plat !== 'win32' && plat !== 'darwin') return env
+  if (/^(1|true|yes|on)$/i.test(String(env.AURABOT_EGO_HEADLESS || ''))) env.EGO_LINUX_HEADLESS = '1'
+  else delete env.EGO_LINUX_HEADLESS
+  return env
+}
+
 export function createEgoBackend({
   stateFile = egoStateFile(),
   cliPath = () => findEgoCli(),
@@ -105,7 +123,7 @@ export function createEgoBackend({
         child = execFile(node, [cli], {
           windowsHide: true,
           timeout: 45000,
-          env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+          env: egoChildEnv(),
         }, () => {
           // 脚本执行完但端口没就绪也按失败处理（下一轮错误提示会带上端口没开）
           if (readEgoPort(stateFile)) return
