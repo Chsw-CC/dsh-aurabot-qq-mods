@@ -206,16 +206,20 @@ export function collect(mod, m = readManifest(mod.dir)) {
 /** 把发布内容放到临时目录真正加载一次，确认入口能跑通、和 module.json 对得上。 */
 export function smokeTest(files, m) {
   const tmp = mkdtempSync(join(tmpdir(), 'aurabot-mod-'))
+  // 用 module.json 的 id 作为临时子目录名：有些模块从「文件夹名」推导自己的 id
+  // （如 aura-mimo 支持改名为 voice 接管内置语音），随机临时目录名会让入口 id
+  // 和 module.json 对不上。真实安装目录也是模块 id，这样最接近发布后的形态。
+  const root = join(tmp, m.id)
   try {
     for (const [name, data] of files) {
-      mkdirSync(dirname(join(tmp, name)), { recursive: true })
-      writeFileSync(join(tmp, name), data)
+      mkdirSync(dirname(join(root, name)), { recursive: true })
+      writeFileSync(join(root, name), data)
     }
-    const entry = entryOf(tmp)
+    const entry = entryOf(root)
     if (!entry) return ['发布内容里没有入口文件']
-    const script = `globalThis.aurabot={lib:()=>new Proxy({},{get:()=>()=>{}}),src:'file:///'};const d=(await import(${JSON.stringify(pathToFileURL(join(tmp, entry)).href)})).default;console.log('@@'+JSON.stringify({id:d?.id,version:d?.version,api:d?.api,setup:typeof d?.setup}));process.exit(0)`
+    const script = `globalThis.aurabot={lib:()=>new Proxy({},{get:()=>()=>{}}),src:'file:///'};const d=(await import(${JSON.stringify(pathToFileURL(join(root, entry)).href)})).default;console.log('@@'+JSON.stringify({id:d?.id,version:d?.version,api:d?.api,setup:typeof d?.setup}));process.exit(0)`
     let out
-    try { out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { cwd: tmp, encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] }) } catch (error) { return [`入口加载失败：${String(error.stderr || error.message).slice(0, 500)}`] }
+    try { out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { cwd: root, encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] }) } catch (error) { return [`入口加载失败：${String(error.stderr || error.message).slice(0, 500)}`] }
     const got = JSON.parse(out.split('\n').find((l) => l.startsWith('@@')).slice(2))
     const errors = []
     if (got.setup !== 'function') errors.push('入口要 export default 一个带 setup(api) 的对象')
