@@ -125,7 +125,8 @@ test('授权 model 之后才允许调用', async () => {
     },
     get: (n) => (n === 'agentDefaultModel' ? { currentSelection: () => ({ provider: 'p', model: 'm' }) } : null),
   }
-  const c = makeApi({ settings: { enabled: true, grants: { model: true, phone: false } }, dsh })
+  // awakeFrom/awakeTo 固定为全天：CI 机器多为 UTC 时区，不固定会撞上夜间静默导致 wake 短路（2026-11-10 CI 实测）
+  const c = makeApi({ settings: { enabled: true, awakeFrom: 0, awakeTo: 24, grants: { model: true, phone: false } }, dsh })
   try {
     const out = autonomy.setup(c.api)
     await out.wake({ manual: true }).catch(() => {})
