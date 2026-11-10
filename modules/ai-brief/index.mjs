@@ -210,7 +210,7 @@ function uniq(list) {
 export default {
   id: 'ai-brief',
   name: 'AI 新闻推送',
-  version: '2.0.1',
+  version: '2.1.0',
   api: 1,
   description: '每天早晚 AI 简报（Bing 新闻 + 知乎热榜 + 热榜）+ 中午论坛速报（腾讯频道校园论坛热帖），带链接和她的一句吐槽',
   panel: 'panel.js',
@@ -405,6 +405,91 @@ export default {
           } catch (e) { /* 单条失败跳过 */ }
         }
         return details
+      } finally { await s.close() }
+    }
+    /** 按关键词翻论坛：滚动收集帖子 → 关键词匹配 → 命中的打开详情补全 */
+    async function forumSearch(keyword, limit) {
+      const q = String(keyword || '').trim()
+      if (!q) return { ok: false, message: '关键词是空的' }
+      const url = String(cfg().forumUrl || '').trim().replace(/[?&]subc=[^&]*/g, '').replace(/[?&]$/, '')
+      if (!url) return { ok: false, message: '还没配置论坛地址' }
+      const s = await cdpSession(url)
+      try {
+        let ready = false
+        for (let i = 0; i < 40; i++) {
+          await sleep(500)
+          const n = await evalIn(s, `document.querySelectorAll('.game-guild-main__waterfalls__item').length`)
+          if (n) { ready = true; break }
+        }
+        if (!ready) return { ok: false, message: '论坛列表没加载出来' }
+        const seen = new Map()
+        let stale = 0
+        let lastTop = -1
+        for (let round = 0; round < 100; round++) {
+          const raw = await evalIn(s, `(() => {
+            const out = [];
+            for (const it of document.querySelectorAll('.game-guild-main__waterfalls__item')) {
+              const a = it.querySelector('a.game-guild-main__short-content');
+              out.push({ href: a ? a.getAttribute('href') : '', text: (it.innerText || '').replace(/\\s+/g, ' ').trim() });
+            }
+            return JSON.stringify(out);
+          })()`)
+          let batch = []
+          try { batch = JSON.parse(raw || '[]') } catch (e) { batch = [] }
+          const before = seen.size
+          for (const it of batch) if (it.href && !seen.has(it.href)) seen.set(it.href, it)
+          if (seen.size === before) stale += 1
+          else stale = 0
+          if (stale >= 20 || seen.size >= 260) break
+          await evalIn(s, `(() => {
+            const sc = document.querySelector('.vue-recycle-scroller');
+            if (sc) sc.scrollTop = sc.scrollTop + sc.clientHeight * 3;
+            else window.scrollBy(0, window.innerHeight * 2);
+            return 1;
+          })()`)
+          await sleep(300)
+        }
+        const all = [...seen.values()]
+        const ql = q.toLowerCase()
+        const hits = all.filter((x) => String(x.text || '').toLowerCase().includes(ql))
+        if (!hits.length) return { ok: true, message: `论坛里没翻到和「${q}」有关的帖子，一共翻了 ${all.length} 条` }
+        const picks = hits.slice(0, Math.max(1, Math.min(8, Number(limit) || 5)))
+        const rows = []
+        for (const h of picks) {
+          let extra = ''
+          try {
+            await s.send('Page.navigate', { url: h.href })
+            let ok = false
+            for (let i = 0; i < 20; i++) {
+              await sleep(500)
+              const has = await evalIn(s, `(document.body.innerText || '').includes('评论')`)
+              if (has) { ok = true; break }
+            }
+            if (ok) {
+              const d = await evalIn(s, `(() => {
+                const txt = document.body.innerText || '';
+                const lines = txt.split('\\n').map(x => x.trim()).filter(Boolean);
+                const at = lines.indexOf('热门');
+                const head = at > 0 ? lines.slice(0, at).join('\\n') : lines.slice(0, 12).join('\\n');
+                const views = (head.match(/浏览\\s*([\\d.,]+\\s*[万千k]?)/) || [])[1] || '';
+                const comments = (head.match(/评论\\s*([\\d.,]+\\s*[万千k]?)/) || [])[1] || '';
+                const fc = document.querySelector('.feed-content');
+                const fcLines = fc ? (fc.innerText || '').split('\\n').map(x => x.trim()).filter(Boolean) : [];
+                const dateAt = fcLines.findIndex(l => /^\\d{4}-\\d{2}-\\d{2}$/.test(l));
+                const body = (dateAt > 0 ? fcLines.slice(0, dateAt) : fcLines.slice(0, 2)).join(' ');
+                return JSON.stringify({ views, comments, body });
+              })()`)
+              const j = JSON.parse(d || '{}')
+              const b = String(j.body || '').trim()
+              const st = []
+              if (j.views) st.push(`浏览 ${j.views}`)
+              if (j.comments) st.push(`评论 ${j.comments}`)
+              extra = (b ? '｜' + b.slice(0, 120) : '') + (st.length ? '｜' + st.join(' ') : '')
+            }
+          } catch (e) { /* 单条失败跳过 */ }
+          rows.push(`· ${String(h.text || '').slice(0, 100)}${extra}\n  ${h.href}`)
+        }
+        return { ok: true, message: `翻到 ${hits.length} 条和「${q}」相关的帖子：\n` + rows.join('\n') }
       } finally { await s.close() }
     }
     async function composeForum(details) {
@@ -680,6 +765,10 @@ export default {
         counts: { morning: Number(c.morningCount) || 5, forum: Number(c.forumPickN) || 4, evening: Number(c.eveningCount) || 5 },
       }
     })
+    api.route('/forum/search', async (req) => {
+      const q = api.core?.http?.query?.(req) || {}
+      return forumSearch(String(q.q || ''), Number(q.limit) || 5)
+    })
     api.route('/forum/preview', async () => {
       try {
         const details = await forumPosts()
@@ -762,6 +851,21 @@ export default {
       } catch (e) { return { ok: false, message: e.message } }
     })
     api.every(30_000, tick, 'AI 早报晚报')
+    // 给她一个「翻论坛找帖子」的工具，群友让她找东西时用
+    api.tool(() => {
+      if (cfg().forumEnabled === false) return []
+      return [api.defineTool({
+        name: 'forum_search',
+        description: '在校园论坛里按关键词翻帖子，标题和正文都会搜。群友让你找论坛里的某条消息、某个话题时用，返回匹配的帖子和链接。',
+        properties: {
+          query: { type: 'string', description: '要搜的关键词，比如 食堂、选课、二手' },
+          limit: { type: 'integer', description: '最多返回几条，默认 5' },
+        },
+        required: ['query'],
+        slow: '正在翻论坛…',
+        execute: async ({ query, limit }) => forumSearch(query, limit),
+      })]
+    })
     api.command({ name: '早报', desc: '发今天的 AI 早报（主人可用）', run: async (arg, msg) => {
       const t = dayText('morning')
       if (t) await api.sendText(msg.chatId, t)
