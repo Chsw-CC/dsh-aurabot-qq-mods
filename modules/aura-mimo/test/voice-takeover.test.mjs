@@ -4,8 +4,10 @@
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, cpSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const SRC = 'C:/Users/98418/Documents/deepseek-harness/default-workspace/build/aura-mimo'
+// 模块目录 = 测试文件所在目录的上一级（相对路径，CI 和本地都能跑）
+const SRC = fileURLToPath(new URL('..', import.meta.url))
 const results = []
 const check = (name, ok, extra = '') => { results.push({ name, ok, extra }); console.log(`${ok ? '  PASS' : '  FAIL'}  ${name}${extra ? '  [' + extra + ']' : ''}`) }
 
