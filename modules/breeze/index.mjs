@@ -588,9 +588,10 @@ export default {
         ws.close()
       } catch {}
       const now = Date.now() / 1000
+      const mine = (d) => d === 'breezeblue.ai' || d.endsWith('.breezeblue.ai')
       return list
-        .filter((c) => String(c.domain || '').includes('breezeblue.ai'))
-        .filter((c) => !c.expires || c.expires > now)
+        .filter((c) => mine(String(c.domain || '')))
+        .filter((c) => c.expires == null || c.expires <= 0 || c.expires > now)
         .map((c) => `${c.name}=${c.value}`)
     }
 
