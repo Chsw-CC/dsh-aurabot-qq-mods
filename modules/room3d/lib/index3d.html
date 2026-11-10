@@ -3604,6 +3604,32 @@ renderer.domElement.addEventListener('click', (e) => {
 }, true);
 
 // ---- 猫咪面板 ----
+// Electron 面板没有 window.prompt；用页面内输入框，打开就能直接改名，Esc/取消不新增。
+function askCatName(defaultName) {
+  return new Promise((resolve) => {
+    const mask = document.createElement('div');
+    mask.style.cssText = 'position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;background:rgba(8,12,18,.58)';
+    const box = document.createElement('div');
+    box.style.cssText = 'width:260px;background:#1b212b;border:1px solid rgba(255,255,255,.2);border-radius:12px;padding:16px;color:#e9eef6;font-size:13px';
+    box.innerHTML = '<div style="margin-bottom:10px;opacity:.8">给这只猫起个名字（可留空）</div>'
+      + '<input id="cat-name-input" maxlength="20" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.25);background:#11161e;color:#fff;outline:none">'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button id="cat-name-cancel" style="padding:6px 12px;border-radius:8px;border:1px solid #555;background:#2a2f38;color:#e9eef6">取消</button><button id="cat-name-ok" style="padding:6px 12px;border-radius:8px;border:0;background:#ffcf72;color:#20160a;font-weight:600">确定</button></div>';
+    mask.appendChild(box);
+    const input = box.querySelector('#cat-name-input');
+    input.value = defaultName || '';
+    const finish = (value) => { try { mask.remove(); } catch (_e) {} resolve(value); };
+    box.querySelector('#cat-name-ok').onclick = () => finish(input.value);
+    box.querySelector('#cat-name-cancel').onclick = () => finish(null);
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(input.value); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(null); }
+    };
+    mask.onclick = (e) => { if (e.target === mask) finish(null); };
+    document.body.appendChild(mask);
+    setTimeout(() => { try { input.focus(); input.select(); } catch (_e) {} }, 30);
+  });
+}
+
 const catPanel = document.createElement('div');
 catPanel.style.cssText = 'position:fixed;left:50%;top:64px;transform:translateX(-50%);z-index:82;'
   + 'display:none;background:rgba(20,24,32,.96);border:1px solid rgba(255,255,255,.18);'
@@ -3621,8 +3647,8 @@ CAT_PRESETS.forEach((pr) => {
   b.style.cssText = 'padding:6px 8px;border-radius:9px;border:1px solid rgba(255,255,255,.16);'
     + 'background:#232933;color:#e9eef6;cursor:pointer;font-size:12px';
   b.textContent = pr.name;
-  b.onclick = () => {
-    const nm = prompt('给这只' + pr.name + '起个名字（可留空）', pr.name);
+  b.onclick = async () => {
+    const nm = await askCatName(pr.name);
     if (nm === null) return;
     addCat(pr.id, (nm || '').trim() || pr.name, catMood);
   };

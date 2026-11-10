@@ -289,3 +289,10 @@ test('工具：系统会话不给工具；go_room_spot 非主人调用被拒，�
   const empty = await tools.go_room_spot.execute({ spot: '  ' })
   assert.equal(empty.ok, false, '空 spot 不写盘')
 })
+
+test('猫咪起名使用页面内输入框，不依赖 window.prompt', () => {
+  const page = readFileSync(join(MOD, 'lib', 'index3d.html'), 'utf8')
+  assert.match(page, /function askCatName/)
+  assert.match(page, /cat-name-input/)
+  assert.ok(!/\bprompt\s*\(/.test(page.replace(/^\s*\/\/.*$/gm, '')), '页面不能再调用 window.prompt')
+})
