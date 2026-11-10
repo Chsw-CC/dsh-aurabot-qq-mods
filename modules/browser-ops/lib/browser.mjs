@@ -609,7 +609,11 @@ export function createBrowser({
 
   /** 窗口挪到屏幕里给人看 / 挪回屏幕外（登录扫码时用 visible=true）。 */
   async function show(visible) {
-    if (egoTarget) return { ok: true, visible: !!visible } // 窗口归 DSH，挪不动
+    if (egoTarget) {
+      // 同 douyin/xhs/heybox：ego 模式下「显示」= bringToFront 唤起共享窗口、切到本标签页。
+      if (visible) await cdp?.send('Page.bringToFront').catch(() => {})
+      return { ok: true, visible: !!visible }
+    }
     const c = need()
     const { windowId } = await c.send('Browser.getWindowForTarget')
     await c.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } }).catch(() => {})

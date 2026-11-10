@@ -486,3 +486,56 @@ test('定时私信启动也标记为定时；忙碌时关闭开关仍先关闭�
   gate.resolve({ ok: false, message: '关闭了' })
   assert.equal((await running).ok, false)
 })
+
+test('ego 模式：open 走共享实例，show(true) 把窗口带到前台而不是空操作', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'dy-ego-show-'))
+  writeFileSync(join(dir, 'browser.json'), JSON.stringify({ port: 19999 }))
+  const oldEnv = process.env.EGO_LINUX_STATE_DIR
+  process.env.EGO_LINUX_STATE_DIR = dir
+  const oldFetch = globalThis.fetch
+  const json = (x) => new Response(JSON.stringify(x), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  const closed = []
+  globalThis.fetch = async (url) => {
+    const u = String(url)
+    if (u.includes('/json/version')) return json({ Browser: '假 ego' })
+    if (u.includes('/json/new')) return json({ id: 'ego-tab', type: 'page', url: 'about:blank', webSocketDebuggerUrl: 'ws://127.0.0.1:19999/devtools/page/ego-tab' })
+    if (u.includes('/json/close/')) { closed.push(u.split('/').pop()); return json({ OK: true }) }
+    return json([])
+  }
+  t.after(() => {
+    globalThis.fetch = oldFetch
+    if (oldEnv === undefined) delete process.env.EGO_LINUX_STATE_DIR
+    else process.env.EGO_LINUX_STATE_DIR = oldEnv
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const sent = []
+  const browser = createBrowser({
+    profileDir: join(dir, 'unused-profile'),
+    useEgo: () => true,
+    getPort: async () => { throw new Error('ego 模式不该分配端口') },
+    spawnProcess: () => { throw new Error('ego 模式不该 spawn 专用浏览器') },
+    connect: () => ({
+      closed: false,
+      ready: Promise.resolve(),
+      async send(method) { sent.push(method); return {} },
+      close() { this.closed = true },
+    }),
+  })
+  assert.equal((await browser.open('登录')).ok, true)
+  assert.ok(sent.includes('Network.enable'), 'ego 模式要开 Network（等接口回执用）')
+
+  // 回归点：这里曾是 `if (egoTarget) return` 的空操作。面板「显示浏览器窗口」点了
+  // 没任何反应，主人没法在共享窗口里扫码 / 过安全验证，登录永远完不成，
+  // 模块就一直报「抖音还没登录」，看起来像「开了侧边浏览器却不使用侧边浏览器」。
+  sent.length = 0
+  await browser.show(true)
+  assert.deepEqual(sent, ['Page.bringToFront'], '「显示」= 把共享窗口带到前台、切到本模块标签页')
+
+  sent.length = 0
+  await browser.show(false)
+  assert.deepEqual(sent, [], '「收起」不动 DSH 的窗口')
+
+  await browser.close()
+  assert.deepEqual(closed, ['ego-tab'], 'close 只关自己认领的标签页，不碰别人的')
+})

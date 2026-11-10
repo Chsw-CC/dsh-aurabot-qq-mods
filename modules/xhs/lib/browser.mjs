@@ -630,7 +630,13 @@ export function createBrowser({ profileDir, browserPath = () => '', log, now = D
    * 卡片尺寸变 0×0、真鼠标点不到，笔记详情一律 404。收起来时挪到右下角一小块，页面仍可见。
    */
   async function show(visible) {
-    if (egoTarget) return // 窗口归 DSH，挪不动
+    if (egoTarget) {
+      // 共享窗口归 DSH 管，模块挪不动；但「显示浏览器窗口」不能是空操作 ——
+      // 主人扫码、做安全验证时点它，至少要把窗口带到前台、切到本模块的标签页。
+      // 收起（visible=false）什么都不做：把 DSH 的窗口挪走不是模块该干的事。
+      if (visible) await cdp?.send('Page.bringToFront').catch(() => {})
+      return
+    }
     const c = need()
     const { windowId } = await c.send('Browser.getWindowForTarget')
     await c.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } }).catch(() => {})
