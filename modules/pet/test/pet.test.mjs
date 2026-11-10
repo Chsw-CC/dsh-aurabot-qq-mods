@@ -461,10 +461,58 @@ test('素材包：没配下载地址 → 明确报错不炸；包已就位 → �
   assert.match(r.json.message, /下载地址/, '提示去面板配置地址，而不是抛错')
 
   writePack(process.env.AURABOT_DATA_DIR, 'default', { 'anim-001.webm': WEBM }, { pools: {} })
+  mkdirSync(join(process.env.AURABOT_DATA_DIR, 'modules-data', 'pet', 'house'), { recursive: true })
+  writeFileSync(join(process.env.AURABOT_DATA_DIR, 'modules-data', 'pet', 'house', 'manifest.json'), '{}') // 小屋素材也已就位
   const skip = await env.exports.ensureDefaultPack(false)
   assert.equal(skip.ok, true)
   assert.equal(skip.skipped, true, '包已就位时非 force 调用跳过')
   assert.ok(!existsSync(env.api.dataDir('packs-staging')), '不留下暂存目录')
+})
+
+// ---------- 小屋素材自动落位（原素材源 404 后，素材收进素材仓 pet-home/，随素材包 zip 搭车落位） ----------
+
+test('素材包自动下载：zip 带 pet-home/ → 小屋素材（manifest.json+图片）一并落位 house/；README 不带', async () => {
+  const fakeZip = tinyZip([
+    ['dsh-aurabot-qq-mods-main/', Buffer.alloc(0)],
+    ['dsh-aurabot-qq-mods-main/pet-pack/', Buffer.alloc(0)],
+    ['dsh-aurabot-qq-mods-main/pet-pack/default-config.json', Buffer.from('{}')],
+    ['dsh-aurabot-qq-mods-main/pet-pack/default-animation/anim-001.webm', WEBM],
+    ['dsh-aurabot-qq-mods-main/pet-home/', Buffer.alloc(0)],
+    ['dsh-aurabot-qq-mods-main/pet-home/manifest.json', Buffer.from('{"world":{"w":1672,"h":941}}')],
+    ['dsh-aurabot-qq-mods-main/pet-home/day.jpg', Buffer.from('fake-jpeg')],
+    ['dsh-aurabot-qq-mods-main/pet-home/desk-a.png', Buffer.from('fake-png')],
+    ['dsh-aurabot-qq-mods-main/pet-home/README.md', Buffer.from('# pet-home')],
+  ])
+  const env = startModule({
+    settings: { petPackUrl: 'https://example.com/mods.zip' },
+    hooks: { fetchZip: async () => ({ ok: true, arrayBuffer: async () => fakeZip.buffer.slice(fakeZip.byteOffset, fakeZip.byteOffset + fakeZip.byteLength) }) },
+  })
+  const r = await env.call('/packs/fetch-default', { method: 'POST', json: {} })
+  assert.equal(r.json.ok, true, r.json.message)
+  assert.equal(r.json.houseCount, 3, 'manifest + 2 张图落位 3 个文件')
+  const house = join(process.env.AURABOT_DATA_DIR, 'modules-data', 'pet', 'house')
+  assert.ok(existsSync(join(house, 'manifest.json')), 'manifest.json 落位')
+  assert.ok(existsSync(join(house, 'day.jpg')), '底图落位')
+  assert.ok(existsSync(join(house, 'desk-a.png')), '姿势帧落位')
+  assert.ok(!existsSync(join(house, 'README.md')), 'README 不落位（只收清单与图片）')
+})
+
+test('素材包：形象包已就位但小屋素材缺失 → 非 force 也要下载（只缺小屋也触发落位）', async () => {
+  const fakeZip = tinyZip([
+    ['mods-main/pet-home/', Buffer.alloc(0)],
+    ['mods-main/pet-home/manifest.json', Buffer.from('{}')],
+    ['mods-main/pet-home/night.jpg', Buffer.from('fake-jpeg')],
+  ])
+  const env = startModule({
+    settings: { petPackUrl: 'https://example.com/mods.zip' },
+    hooks: { fetchZip: async () => ({ ok: true, arrayBuffer: async () => fakeZip.buffer.slice(fakeZip.byteOffset, fakeZip.byteOffset + fakeZip.byteLength) }) },
+  })
+  writePack(process.env.AURABOT_DATA_DIR, 'default', { 'anim-001.webm': WEBM }, { pools: {} }) // 形象包已就位
+  const r = await env.exports.ensureDefaultPack(false)
+  assert.equal(r.ok, true, r.message)
+  assert.equal(r.skipped, undefined, '只缺小屋时不跳过')
+  assert.equal(r.houseCount, 2, '小屋素材落位 2 个文件')
+  assert.ok(existsSync(join(env.api.dataDir('house'), 'night.jpg')))
 })
 
 test('素材包：status().packInfo 给面板用（地址 / 是否就位 / 动画数 / 包列表）', async () => {
@@ -2009,9 +2057,10 @@ test('1.0.14：defaults 与 /config 下发甩抛物理与互动开关；坏值�
   assert.equal(mod.defaults.petShowBalance, true)
   assert.equal(mod.defaults.petClickChase, false)
   assert.equal(mod.defaults.petTeaseChase, false)
-  // 版本三处同步：module.json 与 index.mjs 一起升
-  assert.equal(mod.version, '1.0.16')
-  assert.equal(JSON.parse(readFileSync(join(MODULE_DIR, 'module.json'), 'utf8')).version, '1.0.16')
+  // 版本三处同步：module.json 与 index.mjs 一起升（以 module.json 为准比对，免得每次升版本都改测试）
+  const modVersion = JSON.parse(readFileSync(join(MODULE_DIR, 'module.json'), 'utf8')).version
+  assert.equal(mod.version, modVersion)
+  assert.match(modVersion, /^\d+\.\d+\.\d+$/)
 
   const cfg = await env.call('/config')
   assert.equal(cfg.status, 200)
