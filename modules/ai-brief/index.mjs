@@ -75,7 +75,7 @@ const DEFAULTS = {
   hotNodesEnabled: true,
   // ── 论坛速报（腾讯频道 · 学校论坛热帖）──
   forumEnabled: false,
-  forumTime: '12:30',
+  forumTime: '12:00',
   forumUrl: '',
   forumTopN: 10,
   forumPickN: 4,
@@ -210,7 +210,7 @@ function uniq(list) {
 export default {
   id: 'ai-brief',
   name: 'AI 新闻推送',
-  version: '2.0.0',
+  version: '2.0.1',
   api: 1,
   description: '每天早晚 AI 简报（Bing 新闻 + 知乎热榜 + 热榜）+ 中午论坛速报（腾讯频道校园论坛热帖），带链接和她的一句吐槽',
   panel: 'panel.js',
@@ -227,6 +227,21 @@ export default {
     const hm = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
     const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
     const pick = (a) => a[Math.floor(Math.random() * a.length)]
+    const dayText = (kind) => {
+      const st = load()
+      const d = (st.days && st.days[dayKey(new Date())]) || {}
+      return (d.text && d.text[kind]) || ''
+    }
+    function saveDayText(kind, text) {
+      if (!text) return
+      const st = load()
+      const day = dayKey(new Date())
+      st.days = st.days || {}
+      const d = (st.days[day] = st.days[day] || {})
+      d.text = d.text || {}
+      d.text[kind] = text
+      save(st)
+    }
 
     /** 短链缓存：url → {short, at}，存在 state 里，重启也不丢。 */
     async function shortLink(url) {
@@ -547,12 +562,18 @@ export default {
     /** 发消息：标题/吐槽保持原样，链接逐条换成短链。 */
     async function sendBrief(kind, chatId, exclude = new Set()) {
       const c = cfg()
+      const cached = dayText(kind)
+      if (cached) {
+        if (chatId) { try { await api.sendText(chatId, cached) } catch (e) {} }
+        return { text: cached, urls: [] }
+      }
       const items = await gather(kind, exclude)
       if (!items.length) { api.log?.info?.(`${kind} 没有抓到合适的新闻`); return { text: '', urls: [] } }
       const built = await compose(kind, items)
       if (!built.picks?.length) return { text: '', urls: [] }
       const text = await formatBrief(kind, built.picks, built.tomorrow)
       const urls = built.picks.map((p) => p.url)
+      saveDayText(kind, text)
       if (chatId) {
         if (c.banner !== false) {
           try { await api.sendText(chatId, kind === 'morning' ? '早报来了。' : '晚报来了。') } catch (e) {}
@@ -600,7 +621,15 @@ export default {
           d.forum = t; dirty = true
         } catch (e) { api.log?.warn?.('论坛速报失败：' + (e?.message || e)) }
       }
-      if (dirty) save(st)
+      if (dirty) {
+        const fresh = load()
+        fresh.days = fresh.days || {}
+        const fd = (fresh.days[day] = fresh.days[day] || {})
+        if (d.morning) fd.morning = d.morning
+        if (d.evening) fd.evening = d.evening
+        if (d.forum) fd.forum = d.forum
+        save(fresh)
+      }
     }
 
     function addMin(hhmm, mins) {
@@ -694,8 +723,57 @@ export default {
       return { ok: true, kind, text: built.text }
     })
 
+    // 群友直接发「早报 / 晚报 / 论坛速报」也能要一份
+    const lastManual = new Map()
+    api.on('message', async (msg) => {
+      if (!cfg().enabled || !msg) return
+      const text = String(msg.text || '').trim()
+      const m = text.match(/^(?:来(?:一)?[份个]?|发(?:一)?[份个]?|看(?:看|下)?|给我|我要)?\s*(?:AI\s*)?(早报|晚报|论坛速报|论坛速递)\s*$/)
+      if (!m) return
+      const key = String(msg.chatId || '')
+      if (Date.now() - (lastManual.get(key) || 0) < 3 * 60_000) return true
+      lastManual.set(key, Date.now())
+      const kind = m[1].indexOf('论坛') >= 0 ? 'forum' : (m[1] === '早报' ? 'morning' : 'evening')
+      try {
+        if (kind === 'forum') await sendForum(msg.chatId)
+        else {
+          const cached = dayText(kind)
+          if (cached) await api.sendText(msg.chatId, cached)
+          else await sendBrief(kind, msg.chatId)
+        }
+      } catch (e) { api.log?.warn?.('手动简报失败：' + (e?.message || e)) }
+      return true
+    })
+
+    /** 面板/调试用：手动触发某份简报发到指定聊天 */
+    api.route('/manual', async (req) => {
+      const q = api.core?.http?.query?.(req) || {}
+      const kind = String(q.kind || '')
+      const chat = String(q.chat || 'private:' + (api.config()?.ownerQQ || ''))
+      if (!['morning', 'evening', 'forum'].includes(kind)) return { ok: false, message: 'kind 要 morning / evening / forum' }
+      try {
+        if (kind === 'forum') await sendForum(chat)
+        else {
+          const t = dayText(kind)
+          if (t) await api.sendText(chat, t)
+          else await sendBrief(kind, chat)
+        }
+        return { ok: true }
+      } catch (e) { return { ok: false, message: e.message } }
+    })
     api.every(30_000, tick, 'AI 早报晚报')
-    api.command({ name: '早报', desc: '现在生成一条 AI 早报发到当前聊天（主人可用）', run: async (arg, msg) => { await sendBrief('morning', msg.chatId); return null } })
-    api.command({ name: '晚报', desc: '现在生成一条 AI 晚报发到当前聊天（主人可用）', run: async (arg, msg) => { await sendBrief('evening', msg.chatId); return null } })
+    api.command({ name: '早报', desc: '发今天的 AI 早报（主人可用）', run: async (arg, msg) => {
+      const t = dayText('morning')
+      if (t) await api.sendText(msg.chatId, t)
+      else await sendBrief('morning', msg.chatId)
+      return null
+    } })
+    api.command({ name: '晚报', desc: '发今天的 AI 晚报（主人可用）', run: async (arg, msg) => {
+      const t = dayText('evening')
+      if (t) await api.sendText(msg.chatId, t)
+      else await sendBrief('evening', msg.chatId)
+      return null
+    } })
+    api.command({ name: '论坛速报', desc: '现抓论坛最新热帖并总结（主人可用）', run: async (arg, msg) => { await sendForum(msg.chatId); return null } })
   },
 }
