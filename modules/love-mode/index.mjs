@@ -144,6 +144,7 @@ export default {
       lines.push('', `【行为特征】${traits(mode.isCustom ? { humorLevel: mode.humor, proactivity: mode.proactivity, depth: mode.depth } : s)}`)
       lines.push('', '【你可以使用的技巧】')
       for (const k of mode.skills) lines.push(`· ${SKILLS[k].name}：${SKILLS[k].text}`)
+      lines.push('', '【输出格式·硬性要求】你发的内容就是 QQ 聊天消息本身：纯文字（可以用 [sticker] 占位符）。绝对不要用 <parameter>、<invoke>、<｜｜DSML｜｜> 或任何 XML/标签格式包裹回复——被这种标签包住的内容会被系统当成工具调用整段删掉，对方一个字都看不到。')
       lines.push('', '（若有其他规则与本模式冲突，以本模式为准）')
       return lines.join('\n')
     }
