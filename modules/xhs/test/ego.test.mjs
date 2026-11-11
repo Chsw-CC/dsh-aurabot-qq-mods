@@ -140,3 +140,35 @@ test('共享实例里没有其他标签页时，回退建页不发 activate（�
   assert.equal(h.calls.new, 1)
   assert.deepEqual(h.calls.activate, [])
 })
+
+// —— egoChildEnv 的「窗口落在屏幕外」注入 ——
+// 共享实例冷启动带窗口（能扫码、布局正常），但平时不该占屏幕 / 抢焦点：
+// 给子进程注入 --window-position=-2400,-2400，把窗口放到屏幕外。要展示时
+// show(true) 经 CDP 把它挪回屏幕内。仅桌面平台注入。
+
+test('桌面平台给 ego 子进程注入屏幕外窗口位置（win32 / darwin）', () => {
+  for (const plat of ['win32', 'darwin']) {
+    const env = egoChildEnv({}, plat)
+    assert.ok(String(env.EGO_LINUX_EXTRA_ARGS || '').includes('--window-position=-2400,-2400'),
+      plat + ' 应注入屏幕外窗口位置')
+  }
+})
+
+test('已配置 EGO_LINUX_EXTRA_ARGS 时追加而不覆盖', () => {
+  const env = egoChildEnv({ EGO_LINUX_EXTRA_ARGS: '--mute-audio' }, 'win32')
+  const extra = String(env.EGO_LINUX_EXTRA_ARGS)
+  assert.ok(extra.includes('--mute-audio'), '原有参数要保留')
+  assert.ok(extra.includes('--window-position=-2400,-2400'), '离屏位置要追加')
+})
+
+test('已有 --window-position 时不重复注入（尊重用户自己的摆位）', () => {
+  const env = egoChildEnv({ EGO_LINUX_EXTRA_ARGS: '--window-position=100,100' }, 'win32')
+  const extra = String(env.EGO_LINUX_EXTRA_ARGS)
+  assert.equal(extra.split('--window-position').length - 1, 1, '不该出现两个 window-position')
+  assert.ok(extra.includes('--window-position=100,100'), '用户的摆位优先')
+})
+
+test('Linux/CI 不注入（无显示环境，窗口位置无意义）', () => {
+  const env = egoChildEnv({}, 'linux')
+  assert.equal(env.EGO_LINUX_EXTRA_ARGS, undefined, 'linux 不该注入离屏位置')
+})
