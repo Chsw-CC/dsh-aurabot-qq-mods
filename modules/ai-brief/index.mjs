@@ -16,26 +16,9 @@ const DEFAULTS = {
   shortLinks: false,
   // 媒体源：每行「url|来源名」；留空 = 只用 Bing 新闻 + 知乎
   feeds: '',
-  // Bing 新闻查询词：每行一条（链接会解成发布方直链）
-  bingMorning: [
-    'AI 大模型 发布',
-    'AI 产品 定价 订阅',
-    'Anthropic OpenAI 创始人',
-    '开源模型 权重',
-    'AI 芯片 算力',
-    'AI 融资 估值',
-  ].join('\n'),
-  bingEvening: [
-    'AI 新模型 发布',
-    'OpenAI 新模型 发布',
-    'AI 模型 更新 能力',
-    'AI 融资 收购 裁员',
-    'AI Agent 智能体 工具',
-    'AI 争议 版权 监管',
-    'Claude 新模型 发布',
-    'Claude GPT Gemini 更新',
-    'DeepSeek 开源 发布',
-  ].join('\n'),
+  // Bing 新闻查询词：留空 = 不用（默认只用知乎热榜 + 全网热榜）
+  bingMorning: '',
+  bingEvening: '',
   keywords: [
     'AI', '人工智能', '大模型', '模型', 'OpenAI', 'DeepSeek', 'Anthropic', 'Claude', 'Gemini', 'GPT',
     'Sora', 'Qwen', '通义', 'Kimi', '豆包', '元宝', '文心', '智谱', 'MiniMax', 'Llama', 'Mistral', 'Grok',
@@ -52,6 +35,7 @@ const DEFAULTS = {
   ].join(', '),
   prompt: [
     '你是干饭鱼，一只傲娇、有点懒的鲸鱼娘，替群里挑今天值得看的 AI 资讯。',
+    '来源是知乎热榜和微博/抖音/头条等全网热榜，优先挑 AI 相关、有讨论度的。',
     '挑的时候按这个优先级：',
     '① **新模型发布**（最高优先）：任何厂商的新模型/新版本——OpenAI、Anthropic(Claude)、Google(Gemini)、DeepSeek、阿里(Qwen)、字节(豆包)、月之暗面(Kimi)、智谱、MiniMax、Meta(Llama)、Mistral、xAI(Grok) 等；关注能力/架构变化、上下文、开源权重、API、定价、订阅、限额。',
     '② **新 AI 产品 / 应用 / 工具**：新上线的 AI App、Agent/智能体、Skill、工作流、插件、玩法，谁家用起来更好。',
@@ -217,7 +201,7 @@ function uniq(list) {
 export default {
   id: 'ai-brief',
   name: 'AI 新闻推送',
-  version: '2.1.1',
+  version: '2.2.0',
   api: 1,
   description: '每天早晚 AI 简报（Bing 新闻 + 知乎热榜 + 热榜）+ 中午论坛速报（腾讯频道校园论坛热帖），带链接和她的一句吐槽',
   panel: 'panel.js',
@@ -558,9 +542,11 @@ export default {
 
     async function gather(kind, exclude = new Set()) {
       const c = cfg()
+      const today8 = new Date()
+      today8.setHours(8, 0, 0, 0)
       const start = kind === 'morning'
-        ? new Date(new Date().setHours(8, 0, 0, 0)).getTime() - 24 * 3600_000
-        : new Date(new Date().setHours(8, 0, 0, 0)).getTime()
+        ? today8.getTime() - 24 * 3600_000
+        : (Date.now() < today8.getTime() ? today8.getTime() - 24 * 3600_000 : today8.getTime())
       let list = []
       for (const [url, source] of feedsOf(c)) {
         try {
@@ -569,11 +555,14 @@ export default {
           list = list.concat(parsed)
         } catch (e) { api.log?.info?.(`早报源失败 ${source}: ${e.message}`) }
       }
-      try {
-        const b = await bing(linesOf(kind === 'morning' ? c.bingMorning : c.bingEvening))
-        api.log?.info?.(`早报源 Bing 新闻: ${b.length} 条`)
-        list = list.concat(b)
-      } catch (e) { api.log?.info?.('早报源失败 Bing: ' + e.message) }
+      const bingQueries = linesOf(kind === 'morning' ? c.bingMorning : c.bingEvening)
+      if (bingQueries.length) {
+        try {
+          const b = await bing(bingQueries)
+          api.log?.info?.(`早报源 Bing 新闻: ${b.length} 条`)
+          list = list.concat(b)
+        } catch (e) { api.log?.info?.('早报源失败 Bing: ' + e.message) }
+      }
       try { const z = await zhihu(); api.log?.info?.(`早报源 知乎: ${z.length} 条`); list = list.concat(z) } catch (e) { api.log?.info?.('早报源失败 知乎: ' + e.message) }
       let hot = []
       if (c.hotNodesEnabled !== false) {
