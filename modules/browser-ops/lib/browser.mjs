@@ -610,7 +610,17 @@ export function createBrowser({
   /** 窗口挪到屏幕里给人看 / 挪回屏幕外（登录扫码时用 visible=true）。 */
   async function show(visible) {
     if (egoTarget) {
-      // 同 douyin/xhs/heybox：ego 模式下「显示」= bringToFront 唤起共享窗口、切到本标签页。
+      // 同 douyin/xhs/heybox：ego 模式下「显示」= 把共享窗口从屏幕外 (-2400,-2400)
+      // 挪回屏幕内、带到前台、切到本标签页；收起挪回屏幕外。
+      try {
+        const { windowId } = await cdp.send('Browser.getWindowForTarget')
+        if (visible) {
+          await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } }).catch(() => {})
+          await cdp.send('Browser.setWindowBounds', { windowId, bounds: { left: 80, top: 60, width: 1280, height: 860 } }).catch(() => {})
+        } else {
+          await cdp.send('Browser.setWindowBounds', { windowId, bounds: { left: -2400, top: -2400 } }).catch(() => {})
+        }
+      } catch { /* 挪窗失败不拦着 bringToFront */ }
       if (visible) await cdp?.send('Page.bringToFront').catch(() => {})
       return { ok: true, visible: !!visible }
     }

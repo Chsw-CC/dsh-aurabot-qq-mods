@@ -128,6 +128,16 @@ export function egoChildEnv(base = process.env, plat = process.platform) {
   if (plat !== 'win32' && plat !== 'darwin') return env
   if (/^(1|true|yes|on)$/i.test(String(env.AURABOT_EGO_HEADLESS || ''))) env.EGO_LINUX_HEADLESS = '1'
   else delete env.EGO_LINUX_HEADLESS
+  // 窗口落在屏幕外 (-2400,-2400)：共享实例冷启动带窗口（能扫码、布局正常），
+  // 但平时不该占据屏幕 / 抢焦点。模块要展示窗口时用 show(true) 经 CDP 把它挪回
+  // 屏幕内（Browser.setWindowBounds），看完 show(false) 挪回去；后台标签页照常
+  // 渲染（LAUNCH_FLAGS 已带 --disable-backgrounding-occluded-windows 等三个
+  // 反节流开关）。仅桌面平台注入；不影响 Linux/CI。
+  const extra = String(env.EGO_LINUX_EXTRA_ARGS || '')
+  const pos = '--window-position=-2400,-2400'
+  if (!extra.includes('--window-position')) {
+    env.EGO_LINUX_EXTRA_ARGS = extra ? extra + ' ' + pos : pos
+  }
   return env
 }
 
