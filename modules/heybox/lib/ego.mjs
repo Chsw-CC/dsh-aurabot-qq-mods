@@ -65,7 +65,36 @@ export async function egoAlive(port, getJson) {
  * 认领一个属于本模块的标签页：新开自己的 about:blank（PUT，旧内核回退 GET），
  * 新不开不出来才捡一个现成的 about:blank；绝不关闭列表里的其他标签页（那是别人在用的）。
  */
-export async function acquireEgoTarget(port, getJson) {
+/**
+ * 认领一个属于本模块的标签页：优先走 CDP Target.createTarget({ background: true })
+ * 在后台建页 —— /json/new 会激活新标签页并把整个窗口顶到前台，定时任务每轮连接
+ * 都弹一次窗口、抢一次焦点；后台建页完全不碰焦点。浏览器级 CDP 不可用时退回
+ * /json/new（PUT，旧内核回退 GET），并把焦点还给建页前激活的那个标签页。
+ * 新不开不出来才捡一个现成的 about:blank；绝不关闭列表里的其他标签页（那是别人在用的）。
+ */
+export async function acquireEgoTarget(port, getJson, connect) {
+  const list = () => getJson(`http://127.0.0.1:${port}/json/list`, 3000).catch(() => [])
+  // 先记住当前激活的标签页，/json/new 回退路径要把焦点还给它
+  const before = (await list()).find((x) => x.type === 'page')
+  // —— 首选：浏览器级 CDP 后台建页，不打扰前台 ——
+  if (connect) {
+    try {
+      const v = await getJson(`http://127.0.0.1:${port}/json/version`, 1500)
+      const ws = v?.webSocketDebuggerUrl
+      if (ws) {
+        const browser = connect(ws)
+        try {
+          await browser.ready
+          const { targetId } = await browser.send('Target.createTarget', { url: 'about:blank', background: true }, 3000)
+          if (targetId) {
+            const fresh = (await list()).find((x) => x.id === targetId && x.type === 'page' && x.webSocketDebuggerUrl)
+            if (fresh) return fresh
+          }
+        } finally { browser.close() }
+      }
+    } catch { /* 浏览器级连不上就走 /json/new 回退 */ }
+  }
+  // —— 回退：HTTP 接口建页（会激活新页），把焦点还给之前的标签页 ——
   const url = `http://127.0.0.1:${port}/json/new?about:blank`
   let t = null
   try {
@@ -73,9 +102,11 @@ export async function acquireEgoTarget(port, getJson) {
     if (r.ok) t = await r.json()
   } catch { /* 旧内核或忙，走下面的回退 */ }
   if (!t?.webSocketDebuggerUrl) { try { t = await getJson(url) } catch { /* 再回退 */ } }
+  if (t?.webSocketDebuggerUrl && before?.id && before.id !== t.id) {
+    await fetch(`http://127.0.0.1:${port}/json/activate/${before.id}`).catch(() => {})
+  }
   if (!t?.webSocketDebuggerUrl) {
-    const list = (await getJson(`http://127.0.0.1:${port}/json/list`, 3000).catch(() => null)) || []
-    t = list.find((x) => x.type === 'page' && x.webSocketDebuggerUrl && /^about:blank/.test(x.url || '')) || null
+    t = (await list()).find((x) => x.type === 'page' && x.webSocketDebuggerUrl && /^about:blank/.test(x.url || '')) || null
   }
   if (!t?.webSocketDebuggerUrl) throw new Error('DSH 侧边浏览器里拿不到可用标签页')
   return t
