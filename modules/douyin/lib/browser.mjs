@@ -166,7 +166,7 @@ export function createBrowser({ profileDir, browserPath = () => '', log, now = D
       }
       if (!egoBackend) egoBackend = createEgoBackend({ getJson, log })
       const { port } = await egoBackend.ensure(check)
-      const target = await acquireEgoTarget(port, getBrowserJson)
+      const target = await acquireEgoTarget(port, getBrowserJson, connect)
       check()
       const c = connect(target.webSocketDebuggerUrl)
       try {
