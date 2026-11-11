@@ -161,15 +161,22 @@ async function bing(queries) {
 async function zhihu() {
   const j = JSON.parse(await get('https://api.zhihu.com/topstory/hot-lists/total?limit=30'))
   return (j.data || [])
-    .filter((d) => d?.target?.type === 'question' && d.target.id)
-    .map((d) => ({
-      title: d.target.title || '',
-      url: `https://www.zhihu.com/question/${d.target.id}`,
-      at: Date.now(),
-      source: '知乎热榜',
-      hot: d.detail_text || '',
-    }))
-    .filter((x) => x.title)
+    .filter((d) => d?.target?.type === 'question')
+    .map((d) => {
+      // target.id 是 JS number，19 位雪花 ID 会被浮点截断（末位丢精度），
+      // 真实 ID 在 target.url / card_id 里，用它拼才打得开
+      const fromUrl = (String(d.target.url || '').match(/questions\/(\d+)/) || [])[1]
+      const fromCard = (String(d.card_id || '').match(/^Q_(\d+)/) || [])[1]
+      const realId = fromUrl || fromCard || String(d.target.id || '')
+      return {
+        title: d.target.title || '',
+        url: `https://www.zhihu.com/question/${realId}`,
+        at: Date.now(),
+        source: '知乎热榜',
+        hot: d.detail_text || '',
+      }
+    })
+    .filter((x) => x.title && /\/question\/\d{6,}$/.test(x.url))
 }
 async function hotLists(api, nodes) {
   const out = []
@@ -210,7 +217,7 @@ function uniq(list) {
 export default {
   id: 'ai-brief',
   name: 'AI 新闻推送',
-  version: '2.1.0',
+  version: '2.1.1',
   api: 1,
   description: '每天早晚 AI 简报（Bing 新闻 + 知乎热榜 + 热榜）+ 中午论坛速报（腾讯频道校园论坛热帖），带链接和她的一句吐槽',
   panel: 'panel.js',
