@@ -48,6 +48,16 @@ const HASHTAG_TOTAL_CAP = 3
 // 一超时宿主就把这个后台会话标记成卡住、取消归档再重建，于是后台会话列表里
 // 每隔十几分钟就多出一条 system:heybox。放宽到 10 分钟，并在真失败时退避。
 const POST_TURN_TIMEOUT_MS = 600_000
+// 分块写长帖：自定义字数下限到这个数以上就别指望一稿写完。
+// 线上三天实测（DeepSeek-V4.1-Flash、日记体、下限 1500）：659 / 1077 / 1219 /
+// 1084 / 963 / 880 / 1301 —— 单轮全文补写也只能从 880 顶到 1301，到不了下限。
+// 但「每段写三四百字」是这个模型的舒适区，所以高下限改走「先大纲、再逐段生成」。
+const CHUNK_TARGET_MIN = 1000
+// 每段只写几百字，用不着整篇那一档 10 分钟超时
+const SECTION_TURN_TIMEOUT_MS = 300_000
+const MAX_SECTIONS = 5
+// too_short 的补写轮数：旧版只补一轮，880→1301 那口气刚提上来就放弃了
+const EXPAND_ROUNDS = 2
 
 export const today = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
@@ -1802,65 +1812,138 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
         '只输出 JSON：{"title":"标题，30 字以内","text":"正文，段落用 \\n\\n 分隔"}',
         '不要输出任何 JSON 以外的字符，不要加代码块围栏。',
       ].join('\n\n')
-      let out = ''
-      try {
-        out = await hub.runSystemTurn('heybox', 'QQ · 小黑盒发帖', prompt, { timeoutMs: POST_TURN_TIMEOUT_MS, noTools: true })
-      } catch (e) {
-        log?.warn?.('小黑盒自动发帖：模型没写成（' + e.message + '），本篇先跳过')
-        // 模型侧失败（回合超时、后台会话在冷却）不是「配置不让发」，必须让 tick 退避。
-        // 不退避就会每分钟撞一次：每次撞都要开一个几分钟的长回合，回合超时又会让宿主
-        // 把这个卡住的会话归档重建 —— 线上表现就是「一天凭空多出好几条 system:heybox 会话」。
-        return { ok: false, retry: true, message: '模型没写成，本篇先跳过' }
-      }
-      // 等回复的这几分钟里模块可能已经卸载了，别再往下发
-      if (disposed) return { ok: false, skipped: true, message: '模块已关闭' }
-      const draft = pickJson(out)
-      let title = String(draft?.title || '').trim()
-      let text = String(draft?.text || '').trim()
-      if (!title || !text) {
-        log?.warn?.('小黑盒自动发帖：模型没给成型的标题/正文，本轮跳过')
-        return { ok: false, retry: true, message: '模型输出的不是合法 JSON，本轮跳过' }
-      }
-      // 字数只认自定义值（面板 / 当天排期）；风格不再自带下限。
-      // 下限写给模型的同时也要能撑住 post() 的校验，两边口径必须来自同一份配置。
       const st = styleOf(plan.style || c.postStyle, {
         postWordsMin: plan.wordsMin || c.postWordsMin || 0,
         postWordsMax: plan.wordsMax || c.postWordsMax || 0,
       })
       const minW = Number(st.words?.[0]) || 0
       const maxW = Number(st.words?.[1]) || 0
-      const send = () => post({ title, text, style: plan.style || '', hashtags: plan.hashtags || [], topic: plan.topic || '', wordsMin: minW, wordsMax: maxW })
-      let r = await send()
-      // 字数没达标别整篇丢掉重写：把原文交给模型、只叫它补足差额，比从零再写一篇省一轮
-      // 也更容易达标（从零重写每次都会落回它习惯的八九百字，于是永远差那点）。
-      // 只补一轮：还不行就按失败退避，不许拿同一个坑一直撞。
-      if (r && !r.ok && r.code === 'too_short' && minW) {
-        if (disposed) return { ok: false, skipped: true, message: '模块已关闭' }
-        const fixPrompt = [
+      // ── 写这一篇稿子：高下限走分块扩写，不够再补写（最多 EXPAND_ROUNDS 轮）──
+      // 线上三天实测：下限 1500 时一稿只有 659~1301 字，单轮全文补写也只能从 880 顶到 1301。
+      // 但「每段写三四百字」是这个模型的舒适区，所以下限高时先出大纲、再逐段生成、本地拼接。
+      const runTurn = async (p, timeoutMs) => {
+        try { return { out: await hub.runSystemTurn('heybox', 'QQ · 小黑盒发帖', p, { timeoutMs, noTools: true }) } }
+        catch (e) { return { err: e } }
+      }
+      const takeDraft = (o) => {
+        const d = pickJson(o)
+        return { title: String(d?.title || '').trim(), text: String(d?.text || '').trim() }
+      }
+      // 分段扩写：大纲 + 逐段生成，最后本地拼接（再让模型合成一遍等于再给它一次缩水机会）
+      const expandBySections = async (needWords) => {
+        const g1 = await runTurn([
+          '【先给这篇小黑盒帖子做分段大纲，不是聊天】也不要调用工具，直接输出 JSON。',
+          brief,
+          '整篇要写 ' + needWords + ' 字左右，一次写完谁都写不够 —— 所以先只出大纲：',
+          '每段 200~400 字，段数按总字数摊开；每段给一个重点，并写清这段必须出现的**具体素材**（数字 / 细节 / 时间点）。',
+          '别写成论文提纲，口吻还是照上面那份风格要求。',
+          '只输出 JSON：{"title":"标题，30 字以内","sections":[{"focus":"这段讲什么","points":"要写进去的具体素材"}]}',
+          '不要输出任何 JSON 以外的字符，不要加代码块围栏。',
+        ].join('\n\n'), POST_TURN_TIMEOUT_MS)
+        if (g1.err) return { err: g1.err }
+        if (disposed) return { closed: true }
+        const od = pickJson(g1.out)
+        const outline = (Array.isArray(od?.sections) ? od.sections : []).filter((s) => s && (s.focus || s.points))
+        if (!outline.length) return { badOutline: true }
+        const picked = outline.slice(0, MAX_SECTIONS)
+        const per = Math.max(200, Math.ceil(needWords / picked.length))
+        const parts = []
+        for (let k = 0; k < picked.length; k++) {
+          if (disposed) return { closed: true }
+          const s = picked[k]
+          const gk = await runTurn([
+            '【写这篇小黑盒帖子的其中一段，不是聊天】也不要调用工具，直接输出 JSON。',
+            '整篇的口吻和风格要求：',
+            brief,
+            '整篇大纲（按顺序）：' + picked.map((x, n) => (n + 1) + '.' + String(x.focus || '')).join('；'),
+            '现在只写第 ' + (k + 1) + ' 段（共 ' + picked.length + ' 段）：' + String(s.focus || ''),
+            '这段要写进去的具体素材：' + String(s.points || '（自己补一个具体细节）'),
+            '这段写 ' + per + '~' + (per + 150) + ' 字；只写这一段，别写标题、别把别段的内容提前写进来。',
+            k === 0 ? '这是第一段，按风格要求该自我介绍就自我介绍。' : '别用「首先 / 其次 / 总之」起头，直接接上文说事。',
+            '只输出 JSON：{"text":"这一段"}',
+          ].join('\n\n'), SECTION_TURN_TIMEOUT_MS)
+          if (gk.err) { log?.warn?.('小黑盒自动发帖：第 ' + (k + 1) + ' 段没写成（' + gk.err.message + '），就发已写成的部分'); break }
+          if (disposed) return { closed: true }
+          const seg = String(pickJson(gk.out)?.text || '').trim()
+          if (seg) parts.push(seg)
+        }
+        if (!parts.length) return { noParts: true }
+        let joined = parts.join('\n\n')
+        // 按 post() 同一口径（去空白计字）收住上限：超了就从尾部丢段
+        if (maxW) { while (parts.length > 1 && countWords(joined) > maxW) { parts.pop(); joined = parts.join('\n\n') } }
+        const t0 = String(od?.title || '').trim()
+        return { title: t0 || String(picked[0].focus || '').slice(0, 30), text: joined, words: countWords(joined), got: parts.length, of: picked.length }
+      }
+      // 带原文补写：把差额和原文一起交给模型，比从零重写更容易达标
+      const expandOnce = async (cur) => {
+        const g = await runTurn([
           '【把这篇小黑盒帖子补长一点，不是聊天】也不要调用工具，直接输出 JSON。',
-          `现在的正文只有 ${r.words} 字，至少要 ${minW} 字，还差 ${r.needMore} 字。`,
-          `保留原文的口吻和结构，把篇幅补到 ${maxW ? minW + '~' + maxW : minW + ' 字以上'}：`,
+          '现在的正文只有 ' + cur.words + ' 字，至少要 ' + minW + ' 字，还差 ' + (minW - cur.words) + ' 字。',
+          '保留原文的口吻和结构，把篇幅补到' + (maxW ? ' ' + minW + '~' + maxW : ' ' + minW + ' 字以上') + '：',
           '补的是**具体信息** —— 多给一个数字（价格 / 销量 / 时长 / 日期）、多讲一段自己的看法、把某个点点开说。',
           '别用「首先 / 其次 / 总之」这类词凑字数，也别把同一句话换个说法再讲一遍。',
-          `标题：${title}`,
+          '标题：' + cur.title,
           '正文：',
-          text,
+          cur.text,
           '',
           '只输出 JSON：{"title":"标题，30 字以内","text":"补长后的正文"}',
-        ].join('\n\n')
-        try {
-          const out2 = await hub.runSystemTurn('heybox', 'QQ · 小黑盒发帖', fixPrompt, { timeoutMs: POST_TURN_TIMEOUT_MS, noTools: true })
-          if (disposed) return { ok: false, skipped: true, message: '模块已关闭' }
-          const d2 = pickJson(out2)
-          const t2 = String(d2?.title || '').trim()
-          const x2 = String(d2?.text || '').trim()
-          if (t2 && x2) { title = t2; text = x2; r = await send() }
-        } catch (e) {
-          log?.warn?.('小黑盒自动发帖：补字数那一轮没成（' + e.message + '）')
+        ].join('\n\n'), POST_TURN_TIMEOUT_MS)
+        if (g.err) { log?.warn?.('小黑盒自动发帖：补字数那一轮没成（' + g.err.message + '）'); return { err: g.err } }
+        if (disposed) return { closed: true }
+        return takeDraft(g.out)
+      }
+      const wantChunked = minW >= CHUNK_TARGET_MIN
+      let draft = null
+      let r = null
+      const send = (d) => post({ title: d.title, text: d.text, style: plan.style || '', hashtags: plan.hashtags || [], topic: plan.topic || '', wordsMin: minW, wordsMax: maxW })
+
+      // 第 1 步：整篇写一稿（所有下限都先走这条，低下限往往一次就够）
+      const g0 = await runTurn(prompt, POST_TURN_TIMEOUT_MS)
+      if (g0.err) {
+        log?.warn?.('小黑盒自动发帖：模型没写成（' + g0.err.message + '），本篇先跳过')
+        // 模型侧失败（回合超时、后台会话在冷却）不是「配置不让发」，必须让 tick 退避。
+        // 不退避就会每分钟撞一次：每次撞都要开一个几分钟的长回合，回合超时又让宿主
+        // 把这个卡住的会话归档重建 —— 线上表现就是「一天凭空多出好几条 system:heybox 会话」。
+        return { ok: false, retry: true, message: '模型没写成，本篇先跳过' }
+      }
+      // 等回复的这几分钟里模块可能已经卸载了，别再往下发
+      if (disposed) return { ok: false, skipped: true, message: '模块已关闭' }
+      draft = takeDraft(g0.out)
+      if (!draft.title || !draft.text) {
+        log?.warn?.('小黑盒自动发帖：模型没给成型的标题/正文，本轮跳过')
+        return { ok: false, retry: true, message: '模型输出的不是合法 JSON，本轮跳过' }
+      }
+      r = await send(draft)
+
+      // 第 2 步：高下限还差字 → 分段扩写（比第 N 轮全文补写靠谱得多）。
+      // 大纲拿不到就放弃这条路，交给第 3 步的整篇补写，别发半截稿。
+      if (r && !r.ok && r.code === 'too_short' && wantChunked) {
+        log?.info?.('小黑盒自动发帖：一稿 ' + r.words + ' 字到不了下限 ' + minW + '，改走分段扩写')
+        const ex = await expandBySections(minW)
+        if (ex.closed) return { ok: false, skipped: true, message: '模块已关闭' }
+        if (ex.err) return { ok: false, retry: true, message: '分段扩写没成：' + ex.err.message }
+        if (ex.badOutline || ex.noParts) log?.warn?.('小黑盒自动发帖：分段大纲没拿到 / 一段都没写成，退回整篇补写')
+        else {
+          log?.info?.('小黑盒自动发帖：分段扩写拼出 ' + ex.words + ' 字（' + ex.got + '/' + ex.of + ' 段）')
+          draft = { title: ex.title, text: ex.text }
+          r = await send(draft)
         }
       }
-      if (r?.ok) log?.info?.(`小黑盒自动发帖成功：${title}`)
-      else if (!r?.skipped) log?.warn?.('小黑盒自动发帖被拒：' + String(r?.message || '').slice(0, 80))
+
+      // 第 3 步：还差字就带原文补写，最多 EXPAND_ROUNDS 轮。
+      // 只有「还差字」值得再来一轮；别的拒发（配图 / 分区 / 超上限）重试也没用。
+      for (let k = 0; k < EXPAND_ROUNDS && r && !r.ok && r.code === 'too_short'; k++) {
+        if (disposed) return { ok: false, skipped: true, message: '模块已关闭' }
+        log?.warn?.('小黑盒自动发帖：第 ' + (k + 2) + ' 稿 ' + r.words + ' 字仍低于下限 ' + minW + '，再补一轮')
+        const ex2 = await expandOnce({ title: draft.title, text: draft.text, words: r.words })
+        if (ex2.closed) return { ok: false, skipped: true, message: '模块已关闭' }
+        if (!ex2.title || !ex2.text) continue
+        draft = { title: ex2.title, text: ex2.text }
+        r = await send(draft)
+      }
+
+      if (r?.ok) log?.info?.('小黑盒自动发帖成功：' + draft.title)
+      else if (r && !r.skipped) log?.warn?.('小黑盒自动发帖被拒：' + String(r.message || '').slice(0, 80))
       // post() 的硬拒发（字数 / 配图 / 分区）同样要退避：不退避就是每分钟重写一遍注定被拒的稿
       return r && !r.ok && !r.skipped ? { ...r, retry: true } : r
     } finally {
