@@ -41,6 +41,9 @@ const DEFAULT_STATE = {
   acts: { fetchedAt: 0, date: '', list: [], plain: [] },
 }
 const RETRY_BACKOFF_MS = [2, 5, 15, 30, 60, 120].map((n) => n * 60_000)
+// 一帖挂几个话题：主人定的规则 —— 活动和普通**不互斥**，但**共享总共 3 个名额**，
+// 活动仍最多 1 个。（小黑盒网页编辑器自己的计数上限是 5，这里按主人的口径收紧到 3。）
+const HASHTAG_TOTAL_CAP = 3
 // 自动发帖那一轮要模型写一整篇（还要按字数补细节），4 分钟在实测里经常不够：
 // 一超时宿主就把这个后台会话标记成卡住、取消归档再重建，于是后台会话列表里
 // 每隔十几分钟就多出一条 system:heybox。放宽到 10 分钟，并在真失败时退避。
@@ -617,7 +620,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
     return { ok: true, list: sorted.slice(0, Math.max(1, Number(limit) || 20)), total: sorted.length, message: sorted.length ? `匹配到 ${sorted.length} 个话题` : '没匹配到话题' }
   }
 
-  // 规则：活动和普通话题可以一起挂（活动最多 1 个 + 普通最多 3 个，共 4 个）。
+  // 规则：活动和普通话题可以一起挂，但**共享总共 3 个名额**（活动仍最多 1 个）。
   //
   // ⚠ 解析出来的 { id, name } 只是个中间形态。真正发帖时**只发 name 的纯文本数组**
   //   （见 post 里 hashtags 那一行）：服务端拿名字自己匹配成话题，写进帖子的 content_tags。
@@ -626,7 +629,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
   //   style_type=2 项里，protocol 指向 /bbs/hashtag。
   /**
    * 把话题（id 或名字）解析成 { id, name } 列表，供发帖带出去。
-   * 规则：活动最多 1 个，普通最多 3 个，可以同时带。
+   * 规则：活动和普通不互斥，共享 3 个名额（活动最多 1 个，剩下的位置给普通话题）。
    */
   async function resolveHashtagItems(input) {
     const raw = (Array.isArray(input) ? input : (input ? [input] : []))
@@ -651,7 +654,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
         const parts = want.split(/[,，;；\s]+/).map((x) => x.trim()).filter(Boolean)
         for (const p of parts) {
           const h2 = list.find((a) => a.name === p) || list.find((a) => a.name.includes(p) || p.includes(a.name))
-          if (h2 && !plains.some((x) => x.id === String(h2.id)) && plains.length < 3) {
+          if (h2 && !plains.some((x) => x.id === String(h2.id)) && plains.length < HASHTAG_TOTAL_CAP) {
             const nm = String(h2.name || p).trim()
             if (nm && !/^\d+$/.test(nm)) {
               log?.warn?.(`小黑盒：话题「${want}」是按逗号/空格拆开挂的（拆出「${nm}」），检查一下排期里的话题是不是写成了一个串`)
@@ -683,17 +686,19 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
         if (acts.length >= 1) { log?.warn?.('小黑盒：创作活动只能挂 1 个，多余的已跳过'); continue }
         acts.push(item)
       } else {
-        if (plains.length >= 3) { log?.warn?.('小黑盒：普通话题最多 3 个，多余的已跳过'); continue }
+        if (plains.length >= HASHTAG_TOTAL_CAP) { log?.warn?.(`小黑盒：话题总共只能挂 ${HASHTAG_TOTAL_CAP} 个，多余的普通话题已跳过`); continue }
         if (!plains.some((x) => x.id === item.id)) plains.push(item)
       }
     }
-    // ⚠ 以前这里有「创作活动和普通话题互斥，只保留活动」的规则。
-    //   实测（2026-11-02）名字数组一次可以带多个，服务端会全部写进 content_tags，
-    //   真实帖子也常常活动+普通话题同时挂（如「分享我的养鱼日常」+「盒友日常」+「deepseek」）。
-    //   所以不再互斥：活动最多 1 个 + 普通最多 3 个，一起带出去，总数不超过 4。
+    // ⚠ 规则演进：最早是「创作活动和普通话题互斥，只保留活动」（错的，#21 去掉）；
+    //   后来是「活动 1 个 + 普通 3 个 = 最多 4 个」。现在按主人的口径：
+    //   **不互斥，但活动和普通共享总共 3 个名额**（活动最多 1 个，优先占席），
+    //   超出的直接截掉并 warn 出来，别悄悄少挂。
     const out = []
     if (acts.length) out.push(acts[0])
-    for (const p of plains.slice(0, 3)) out.push(p)
+    const room = HASHTAG_TOTAL_CAP - out.length
+    if (plains.length > room) log?.warn?.(`小黑盒：话题总共只能挂 ${HASHTAG_TOTAL_CAP} 个，第 ${room + 1} 个起的普通话题（${plains.slice(room).map((x) => x.name).join('、')}）已跳过`)
+    out.push(...plains.slice(0, room))
     return out
   }
 
