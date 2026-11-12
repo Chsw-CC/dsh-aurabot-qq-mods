@@ -1,4 +1,4 @@
-// 台球：把桌宠里的「肥鱼台球」拆成独立模块（八球规则 + 两种球桌：小窗 / 整个桌面）。
+// 台球：把桌宠里的「肥鱼台球」拆成独立模块（八球规则 + 整个桌面当球桌）。
 //
 // 结构：
 //   lib/client/    Electron 客户端模板（页面 + 规则引擎 + 主进程），生成到数据目录 app/ 再跑
@@ -18,10 +18,7 @@ import {
   ELECTRON_VERSION, cleanElectronEnv, electronCandidates, electronRelExe, mirrorUrl, npmCliCandidates,
 } from './lib/electron.mjs'
 
-const CLIENT_FILES = [
-  'main.js', 'billiard-preload.js', 'billiard.html',
-  'arena-preload.js', 'arena.html', 'billiards-rules.js',
-]
+const CLIENT_FILES = ['main.js', 'arena-preload.js', 'arena.html', 'billiards-rules.js']
 
 export const DEFAULTS = {
   ballSkin: 'pack',          // pack = 球面披桌宠素材包的动画；plain = 普通色球
@@ -33,7 +30,7 @@ export default {
   name: '台球',
   version: '1.0.0',
   api: 1,
-  description: '桌宠那台台球桌搬出来了：拖白球出杆打八球，可以开小窗，也可以把整个桌面当球桌。',
+  description: '桌宠那台台球桌搬出来了：拖白球出杆打八球，整个桌面当球桌，球桌以外照常点东西。',
   panel: 'panel.js',
   defaults: DEFAULTS,
   settings: [
@@ -124,9 +121,9 @@ export default {
       }
       return p
     }
-    function stopProcess(why = '') {
+    function stopProcess() {
       const p = recorded()
-      if (!p) return { ok: false, message: '台球没在运行' + (why ? `（${why}）` : '') }
+      if (!p) return { ok: false, message: '台球没在运行' }
       try { killFn(p.pid) } catch (error) {
         if (String(error?.code) !== 'ESRCH') return { ok: false, message: '停止失败：' + String(error?.message || error).slice(0, 120) }
       }
@@ -135,31 +132,28 @@ export default {
       return { ok: true, pid: p.pid, message: `台球已停止（pid ${p.pid}）` }
     }
 
-    function open(mode) {
+    function openArena() {
       const client = syncClient()
       if (!client.ready) return { ok: false, message: `客户端文件不全（缺 ${client.missing.join('、')}）：模块文件夹被动过，重装一次` }
       const anims = writeAnims()
       const running = recorded()
-      if (running) {
-        if (running.mode === mode) return { ok: true, alreadyRunning: true, pid: running.pid, message: '台球窗已经开着了，换模式要先关掉' }
-        const stopped = stopProcess('换模式')
-        if (!stopped.ok) return stopped // 旧进程没死透就再起一个，单实例锁会让新窗口打不开
-      }
+      // 已经开着就别再起第二个 Electron：两副球桌会抢同一把单实例锁，后起的那个直接自杀
+      if (running) return { ok: true, alreadyRunning: true, pid: running.pid, message: '球桌已经开着了，要重开先点「关掉台球」' }
       const found = locateElectron()
       if (!found) return { ok: false, message: '还没装 Electron：先在面板点「安装 Electron」（或装好桌宠复用它的运行时）' }
       try {
         const child = spawnFn(found.exe, ['main.js'], {
           cwd: appDir(),
-          env: { ...cleanElectronEnv(), BILLIARDS_MODE: mode },
+          env: cleanElectronEnv(),
           detached: true, stdio: 'ignore', windowsHide: true,
         })
         // 没人听 error 事件就是未捕获异常，会带走整个 DSH 进程
         child.on?.('error', (error) => api.log.warn('台球启动失败：', error.message))
         child.unref?.()
-        const rec = { pid: child.pid, mode, startedAt: Date.now() }
+        const rec = { pid: child.pid, startedAt: Date.now() }
         try { writeFileSync(procFile(), JSON.stringify(rec)) } catch {}
-        api.log.info(`台球已启动（${mode === 'arena' ? '桌面球桌' : '小窗'}，pid ${child.pid}，素材 ${anims.count} 段）`)
-        return { ok: true, pid: child.pid, mode, anims, exe: found.exe, message: mode === 'arena' ? '桌面球桌已打开：收工点 HUD 上的「退出台球」（这窗口不抢键盘，Esc 不起作用）' : '台球小窗已打开' }
+        api.log.info(`台球已启动（桌面球桌，pid ${child.pid}，素材 ${anims.count} 段）`)
+        return { ok: true, pid: child.pid, anims, exe: found.exe, message: '桌面球桌已打开：收工点 HUD 上的「退出台球」（这窗口不抢键盘，Esc 不起作用）' }
       } catch (error) {
         return { ok: false, message: '启动失败：' + String(error?.message || error).slice(0, 160) }
       }
@@ -206,19 +200,18 @@ export default {
         client,
         electron: found ? { exe: found.exe, source: found.source } : null,
         anims: anim,
-        running: Boolean(running), pid: running?.pid || null, mode: running?.mode || '',
+        running: Boolean(running), pid: running?.pid || null,
         appDir: appDir(),
         message: !client.ready ? `客户端还没生成齐（缺 ${client.missing.join('、')}）`
           : !found ? '还没装 Electron：点「安装 Electron」'
-            : running ? `台球运行中（${running.mode === 'arena' ? '桌面球桌' : '小窗'}，pid ${running.pid}）`
-              : '待命：点「开小窗」或「桌面球桌」',
+            : running ? `台球运行中（桌面球桌，pid ${running.pid}）`
+              : '待命：点「桌面球桌」',
       }
     }
 
     // ---------- 路由（面板 call 用；都是无参 GET，不读请求体） ----------
     api.route('/status', () => status())
-    api.route('/open-small', () => open('small'))
-    api.route('/open-arena', () => open('arena'))
+    api.route('/open-arena', () => openArena())
     api.route('/close', () => stopProcess())
     api.route('/electron-install', async () => electronInstall())
 

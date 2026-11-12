@@ -1,6 +1,6 @@
 // modules/billiards/test/billiards.test.mjs —— 模块侧单测（不碰真 Electron、不联网）
 // 覆盖：定义与 module.json 对齐、客户端模板齐全、球面皮肤（素材包 → file:/// 地址表）、
-//       Electron 定位与环境变量、开小窗 / 桌面球桌 / 换模式 / 关掉的进程账目、面板可解析。
+//       Electron 定位与环境变量、开桌面球桌 / 已开着不重复起 / 关掉的进程账目、面板可解析。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -30,14 +30,14 @@ test('定义与 module.json 一致，市场页才不会显示两个版本号', (
 test('客户端模板齐全：入口 CLIENT_FILES 列了谁，lib/client/ 就得有什么', () => {
   const listed = readFileSync(join(DIR, 'index.mjs'), 'utf8').match(/const CLIENT_FILES = \[([\s\S]*?)\]/)[1]
   const names = [...listed.matchAll(/'([^']+)'/g)].map((m) => m[1])
-  assert.ok(names.length >= 6, 'CLIENT_FILES 解析失败')
+  assert.ok(names.length >= 4, 'CLIENT_FILES 解析失败')
   for (const name of names) assert.ok(existsSync(join(DIR, 'lib', 'client', name)), `缺 ${name}`)
 })
 
 test('panel.js 能按插件的方式解析（整文件即函数体）', () => {
   const source = readFileSync(join(DIR, 'panel.js'), 'utf8')
   assert.doesNotThrow(() => new Function('React', 'h', 'ui', 'call', source))
-  for (const path of ['/status', '/open-small', '/open-arena', '/close', '/electron-install']) {
+  for (const path of ['/status', '/open-arena', '/close', '/electron-install']) {
     assert.ok(source.includes(`'${path}'`), `面板少了 ${path}`)
   }
 })
@@ -156,10 +156,10 @@ function world({ pet = null, skins = true, withElectron = false, alivePids = [],
 test('路由挂齐，setup 就把客户端铺到数据目录（模板在模块目录里只读）', () => {
   const w = world()
   try {
-    for (const path of ['/status', '/open-small', '/open-arena', '/close', '/electron-install']) {
+    for (const path of ['/status', '/open-arena', '/close', '/electron-install']) {
       assert.ok(w.api.routes.has(path), `缺路由 ${path}`)
     }
-    for (const name of ['main.js', 'billiard.html', 'arena.html', 'billiards-rules.js', 'billiard-preload.js', 'arena-preload.js']) {
+    for (const name of ['main.js', 'arena.html', 'billiards-rules.js', 'arena-preload.js']) {
       assert.ok(existsSync(join(w.app, name)), `app/ 里缺 ${name}`)
     }
     assert.equal(JSON.parse(readFileSync(join(w.app, 'package.json'), 'utf8')).type, undefined, 'app/package.json 不能写 type')
@@ -171,21 +171,21 @@ test('路由挂齐，setup 就把客户端铺到数据目录（模板在模块�
   } finally { rmSync(w.root, { recursive: true, force: true }) }
 })
 
-test('没运行时不开进程：/open-small 只回提示', () => {
+test('没运行时不开进程：/open-arena 只回提示', () => {
   const w = world()
   try {
-    const r = w.api.routes.get('/open-small')()
+    const r = w.api.routes.get('/open-arena')()
     assert.equal(r.ok, false)
     assert.match(r.message, /还没装 Electron/)
     assert.equal(w.api.spawns.length, 0)
   } finally { rmSync(w.root, { recursive: true, force: true }) }
 })
 
-test('开小窗：进程账目、cwd、BILLIARDS_MODE 和摘掉的 ELECTRON_RUN_AS_NODE', () => {
+test('开桌面球桌：进程账目、cwd 和摘掉的 ELECTRON_RUN_AS_NODE', () => {
   process.env.ELECTRON_RUN_AS_NODE = '1'
   const w = world({ withElectron: true, alivePids: [4242] })
   try {
-    const r = w.api.routes.get('/open-small')()
+    const r = w.api.routes.get('/open-arena')()
     assert.equal(r.ok, true, r.message)
     assert.equal(r.pid, 4242)
     assert.equal(w.api.spawns.length, 1)
@@ -194,21 +194,14 @@ test('开小窗：进程账目、cwd、BILLIARDS_MODE 和摘掉的 ELECTRON_RUN_
     assert.equal(spawn.opts.cwd, w.app)
     assert.equal(spawn.opts.detached, true)
     assert.equal(spawn.opts.windowsHide, true)
-    assert.equal(spawn.opts.env.BILLIARDS_MODE, 'small')
     assert.equal('ELECTRON_RUN_AS_NODE' in spawn.opts.env, false)
     const rec = JSON.parse(readFileSync(join(w.dataRoot, 'billiards', 'process.json'), 'utf8'))
-    assert.deepEqual({ pid: rec.pid, mode: rec.mode }, { pid: 4242, mode: 'small' })
+    assert.equal(rec.pid, 4242)
     assert.equal(w.api.routes.get('/status')().running, true)
-    // 同模式再点一次：不重复起进程
-    const again = w.api.routes.get('/open-small')()
+    // 已经开着再点一次：不重复起进程（第二个 Electron 抢不到单实例锁，会自杀在窗口后面）
+    const again = w.api.routes.get('/open-arena')()
     assert.equal(again.alreadyRunning, true)
     assert.equal(w.api.spawns.length, 1)
-    // 换模式：先收旧的
-    const arena = w.api.routes.get('/open-arena')()
-    assert.equal(arena.ok, true, arena.message)
-    assert.deepEqual(w.api.kills, [4242])
-    assert.equal(w.api.spawns.length, 2)
-    assert.equal(w.api.spawns[1].opts.env.BILLIARDS_MODE, 'arena')
     assert.equal(w.api.routes.get('/close')().ok, true)
     assert.equal(existsSync(join(w.dataRoot, 'billiards', 'process.json')), false, '关掉后要清掉进程记录')
   } finally {
@@ -220,9 +213,9 @@ test('开小窗：进程账目、cwd、BILLIARDS_MODE 和摘掉的 ELECTRON_RUN_
 test('记录里的进程已经没了：当没在跑，并清掉这条记录', () => {
   const w = world({ withElectron: true, alivePids: [4242] })
   try {
-    w.api.routes.get('/open-small')()
+    w.api.routes.get('/open-arena')()
     // 直接把记录改成「进程不在了」：/close 应该说没在运行，而不是报错
-    writeFileSync(join(w.dataRoot, 'billiards', 'process.json'), JSON.stringify({ pid: 999999, mode: 'small', startedAt: 1 }))
+    writeFileSync(join(w.dataRoot, 'billiards', 'process.json'), JSON.stringify({ pid: 999999, startedAt: 1 }))
     const closed = w.api.routes.get('/close')()
     assert.equal(closed.ok, false)
     assert.match(closed.message, /没在运行/)
@@ -271,7 +264,7 @@ test('app/ 里的客户端被手改坏 / 缺文件：开台前按模板补回来
     const st = w.api.routes.get('/status')()
     assert.equal(st.client.ready, false, '缺文件要在状态里看得见，不能静默')
     assert.deepEqual(st.client.missing, ['arena.html'])
-    w.api.routes.get('/open-small')()
+    w.api.routes.get('/open-arena')()
     assert.ok(readFileSync(rule, 'utf8').includes('BilliardsRules'), '该用模板覆盖被改坏的副本')
     assert.ok(existsSync(join(w.app, 'arena.html')))
   } finally { rmSync(w.root, { recursive: true, force: true }) }

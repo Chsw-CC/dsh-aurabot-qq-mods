@@ -2,7 +2,7 @@
 
 桌宠（`pet`）里那台台球桌搬出来单独成了一个模块：拖白球出杆打八球，规则、物理、画面全在你这台机器上算。
 
-- **两种球桌**：**小窗**（右上角一副 780×560 的球桌，浮在别人窗口之上）/ **桌面球桌**（整个工作区当球桌，透明置顶，球桌以外照常点东西；这窗口不吃键盘，收工点 HUD 的「退出台球」）
+- **桌面球桌**：整个工作区当球桌，透明置顶，球桌以外照常点东西。这窗口不吃键盘（`focusable: false`），收工点 HUD 上的「退出台球」
 - **规则**：WPA 八球的一个子集 —— 开球 → 开放台面 → 打进定组 → 犯规（先碰错组 / 空杆 / 白球落袋）→ 自由球摆球 → 8 号定胜负。故意没做：指定袋、飞出台面、开球四颗碰库的严格线、故意犯规判负
 - **两个座位**：你 + 第二个玩家轮流拖，也可以让电脑接管第二个座位（新手/普通/高手三档出杆误差）
 - **球面**：装了桌宠就借它素材包的 idle 动画，每颗球都是一只游的小鲸鱼；没装就是普通色球，不影响打球
@@ -11,7 +11,7 @@
 
 Aurabot 插件 **1.2.0 及以上**，在面板「模块市场」安装后启用。
 
-画面是 Electron 窗口，所以**要有 Electron 运行时**。装好之后第一次点「开小窗」，状态卡会告诉你缺不缺：
+画面是 Electron 窗口，所以**要有 Electron 运行时**。装好之后第一次点「桌面球桌」，状态卡会告诉你缺不缺：
 
 1. 电脑上装过桌宠 → 直接借它那份 `electron.exe`，什么都不用下载；
 2. 没有 → 面板点一次「安装 Electron」（用本机 npm 装钉死的 45.1.0，走 npmmirror，只装一次）；
@@ -43,24 +43,23 @@ Aurabot 插件 **1.2.0 及以上**，在面板「模块市场」安装后启用�
 ## 文件
 
 ```
-index.mjs                  模块定义：状态 / 开小窗 / 桌面球桌 / 关掉 / 安装 Electron
-panel.js                   面板那四个按钮和状态卡
+index.mjs                  模块定义：状态 / 桌面球桌 / 关掉 / 安装 Electron
+panel.js                   面板上的按钮和状态卡
 lib/anims.mjs              素材包 → 球面地址表（纯函数）
 lib/electron.mjs           运行时定位、镜像、环境变量（纯函数）
 lib/client/main.js         Electron 主进程：只管开窗
-lib/client/billiard.html   小台球桌（物理 + HUD + 交互）
-lib/client/arena.html      桌面球桌（同一套引擎，透明点击穿透）
+lib/client/arena.html      桌面球桌（物理 + HUD + 交互）
 lib/client/billiards-rules.js  八球规则引擎（UMD，零依赖，浏览器和 node 都能跑）
-lib/client/*-preload.js    渲染页 ↔ 主进程的最小桥
+lib/client/arena-preload.js 渲染页 ↔ 主进程的最小桥
 ```
 
 ## 排查
 
 - **面板说「已打开」但屏幕上什么都没有**：客户端起来就自杀了。看 `modules-data/billiards/process.json` 里那个 pid 还在不在进程表里；不在就是主进程没抢到单实例锁——主进程把 app name 和 userData 都钉成 `aurabot-billiards`，专门避开桌宠（那份 `app/` 没有 `package.json`，默认名是 `Electron`，不钉死就抢同一把锁、共用同一份缓存）。手改过 `app/main.js` 里那两行的话改回来即可。
 - **状态卡说「客户端文件不全」**：`modules/pet` 那种手改坏不了这里 —— 模板在模块文件夹里，每次开台会按 sha1 补齐到 `app/`；还缺就是模块文件夹本身被删过，重装模块。
-- **窗口起来了但球不滚动 / 慢动作**：`setBackgroundThrottling(false)` 没生效，多半是窗口被完全挡住；换「桌面球桌」或把窗口挪开。
+- **球不滚动 / 慢动作**：`setBackgroundThrottling(false)` 没生效，多半是 `modules-data/billiards/app/main.js` 被手改过；重装模块就补回来了。
 - **球没有动画**：桌宠素材包不在 `modules-data/pet/packs/default-animation/`（或你把 `ballSkin` 设成了 `plain`）。状态卡「球面」那行写的是实际读到的段数。
-- **想自己验一局**：**小窗**按 <kbd>F12</kbd> 开 devtools，控制台里 `__autoGame()` 让两个电脑玩家不打指针跑完整局，`__dump()` 打出当前规则与球位。（桌面球桌那扇窗是 `focusable: false`，键盘事件进不去，取证请开小窗——它的退出键只有 HUD 上的按钮。）
+- **想自己验一局**：规则引擎有 30 条 node 单测（`test/billiards-rules.test.mjs`），`npm test` 一次跑完，不用开窗口。页面上还留着 `__autoGame()`（两个电脑玩家不打指针跑完整局）和 `__dump()`（当前规则与球位）两个 devtools 钩子，但这扇窗是 `focusable: false`，键盘事件进不去、也没有右键菜单，要用就得临时在 `app/main.js` 里加一句 `arenaWin.webContents.openDevTools()`。
 
 ## 来源与许可
 

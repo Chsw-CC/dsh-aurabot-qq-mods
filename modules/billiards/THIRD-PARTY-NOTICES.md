@@ -14,7 +14,7 @@
 
 | 本模块位置 | 形态来源 | 说明 |
 |---|---|---|
-| `lib/client/main.js` | `pet` 模块 `pet-client/main.js` 的 `openBilliard()` / `openArena()` | 窗口参数（右上角小窗尺寸、arena 全屏透明 + 点击穿透）、`setBackgroundThrottling(false)`、分离进程启动方式 |
+| `lib/client/main.js` | `pet` 模块 `pet-client/main.js` 的 `openArena()` | 窗口参数（全屏透明 + 点击穿透 + `focusable: false`）、`setBackgroundThrottling(false)`、分离进程启动方式 |
 | `lib/electron.mjs` | `pet/index.mjs` 的 Electron 安装与启动段 | `ELECTRON_RUN_AS_NODE` 必须删、npm-cli.js 的候选位置、`ELECTRON_MIRROR` 默认 npmmirror、版本钉 45.1.0 |
 
 ## 「大肥鱼」形象素材 —— 不在本模块包里（CC BY-NC-SA 4.0）
@@ -29,7 +29,7 @@
 
 ## 台球规则与物理
 
-`lib/client/billiards-rules.js`（WPA 八球子集）与两个页面里的碰撞 / 袋口 / 摩擦都是本模块自研，
+`lib/client/billiards-rules.js`（WPA 八球子集）与页面里的碰撞 / 袋口 / 摩擦都是本模块自研，
 没有使用任何第三方台球实现或库；页面里也没有外部脚本、字体、音频和图片请求。
 
 ## Electron
