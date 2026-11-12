@@ -64,7 +64,7 @@ export function speakerFailure(error) {
 export default {
   id: 'xiaoai-music',
   name: 'xiaoai music · 小爱音响接入',
-  version: '0.15.0',
+  version: '0.15.1',
   api: 1,
   description: '小爱音箱接入、歌曲与歌单播放、提醒及 AI 称呼同音词补足。',
   defaults: { networkInterface: '', speakerDevice: '', resourceRoot: '' },
@@ -420,7 +420,7 @@ async function setupRuntime(api) {
       catch (error) { return { ok: false, message: error.message }; }
     });
     api.route('/capabilities', async () => ({ ok: true,
-      module: 'xiaoai-music', version: '0.15.0',
+      module: 'xiaoai-music', version: '0.15.1',
       tools: [{ name: 'xiaoai_music', parameters: { type: 'object', properties: PLAYBACK_PROPERTIES, required: ['action'], additionalProperties: false } },
         { name: 'xiaoai_reminder', parameters: { type: 'object', properties: REMINDER_PROPERTIES, required: ['action'], additionalProperties: false } }],
       moduleCalls: { playback: "api.use('xiaoai-music').execute(args)", reminders: "api.use('xiaoai-music').remind(args)" },
