@@ -11,6 +11,8 @@
 
 两个功能默认关闭。试听和试画会发起真实服务请求，结果在面板显示。
 
+安装目录里的 [懒羊羊.wav](assets/懒羊羊.wav) 可以手动上传作为 MiMo 参考音频。分发许可见 [素材说明](assets/NOTICE.md)。
+
 ## 在 QQ 里使用
 
 | 入口 | 用法 |
@@ -32,7 +34,7 @@
 ## 数据与联网
 
 - 小米接口接收朗读文字、语速提示和参考音频。魔搭接口接收画面描述、模型、尺寸，以及该次明确选用的参考图。生成的图片经 Aurabot 的公网下载检查后读取。
-- API Key 和 Token 保存在 Aurabot 的模块设置，面板按密码字段处理。参考音频保存在 `modules-data/mimo-modelscope/reference/`。发布包只包含代码和说明。
+- API Key 和 Token 保存在 Aurabot 的模块设置，面板按密码字段处理。用户上传的参考音频保存在 `modules-data/mimo-modelscope/reference/`。
 
 [小米 MiMo TTS 文档](https://mimo.mi.com/docs/en-US/api/audio/tts-post) · [ModelScope](https://modelscope.cn/) · [Aurabot 模块 API](https://github.com/aureth-labs/dsh-aurabot-qq/blob/beta/src/modules/API.md)
 
