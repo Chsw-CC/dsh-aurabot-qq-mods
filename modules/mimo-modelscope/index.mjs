@@ -19,7 +19,7 @@ const textArg = (description) => ({ type: 'string', description })
 export default {
   id: 'mimo-modelscope',
   name: 'MiMo 语音与魔搭生图',
-  version: '1.0.0',
+  version: '1.0.1',
   api: 1,
   description: '小米 MiMo 音色克隆与魔搭多模型生图',
   panel: 'panel.js',
