@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import { readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises'
-import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { readdir, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { audioMime, createProviders, decodeReference, imageMime, modelChoices, MODEL_LIST, REFERENCE_LIMIT } from './lib/providers.mjs'
+import { createProviders, imageMime, modelChoices, MODEL_LIST, REFERENCE_LIMIT } from './lib/providers.mjs'
 import { localBindings } from './lib/local.mjs'
+import { referenceStore } from './lib/references.mjs'
 
 const MAX_UPLOAD_JSON = Math.ceil(REFERENCE_LIMIT / 3) * 4 + 4096
-const REFERENCE_NAME = /^ref-[a-f0-9-]{36}\.(wav|mp3)$/
 const VOICE_FILE = /^mimo-modelscope-[a-f0-9-]{36}\.wav$/
 const DAY = 24 * 60 * 60 * 1000
 
@@ -19,15 +19,19 @@ const textArg = (description) => ({ type: 'string', description })
 export default {
   id: 'mimo-modelscope',
   name: 'MiMo 语音与魔搭生图',
-  version: '1.0.1',
+  version: '1.0.2',
   api: 1,
   description: '小米 MiMo 音色克隆与魔搭多模型生图',
   panel: 'panel.js',
+  tab: 'modules',
+  navGroup: 'market',
   defaults: {
-    voiceEnabled: false,
+    voiceEnabled: true,
+    attachVoice: true,
     mimoKey: '',
     voiceSpeed: 'normal',
-    imageEnabled: false,
+    imageEnabled: true,
+    attachImage: true,
     modelScopeToken: '',
     imageModels: MODEL_LIST,
     imageDefaultModel: 'Qwen/Qwen-Image-2.1-Turbo',
@@ -51,23 +55,14 @@ export default {
     const { fetchImage } = api.lib('core/net.js')
     const { raw } = api.core.http
     const audioDir = api.dataDir('audio')
-    const referenceDir = api.dataDir('reference')
     mkdirSync(audioDir, { recursive: true })
-    mkdirSync(referenceDir, { recursive: true })
-
-    function referencePath(settings) {
-      return REFERENCE_NAME.test(settings.referenceFile || '') ? join(referenceDir, settings.referenceFile) : null
-    }
+    const references = referenceStore(api)
+    const voiceReady = (settings) => Boolean(settings.voiceEnabled && String(settings.mimoKey || '').trim() && references.status(settings).currentReference)
+    const imageReady = (settings) => Boolean(settings.imageEnabled && String(settings.modelScopeToken || '').trim() && modelChoices(settings).defaultModel)
 
     const providers = createProviders({
       signal,
-      readReference: async (settings) => {
-        const file = referencePath(settings)
-        const info = file && await stat(file).catch(() => null)
-        if (!info?.isFile()) throw new Error('请先上传一段 WAV 或 MP3 参考音频')
-        if (info.size > REFERENCE_LIMIT) throw new Error('参考音频超过 7 MB')
-        return readFile(file, { signal })
-      },
+      readReference: (settings) => references.read(settings, signal),
       downloadImage: (src, request, maxBytes) => fetchImage(src, {
         maxBytes, allowLocal: false, timeoutMs: 30_000,
         fetchImpl: (url, opts) => fetch(url, { ...opts, signal: AbortSignal.any([request, opts.signal]) }),
@@ -104,7 +99,7 @@ export default {
     const local = localBindings(api, {
       tts: ({ text }) => voiceFile(text, 55_000),
       image: ({ prompt, size, image }) => generate({ prompt, size, image: image ? Buffer.from(image, 'base64') : null }),
-    })
+    }, { tts: voiceReady, image: imageReady })
 
     function canSend(chat) {
       const cfg = api.config()
@@ -162,7 +157,7 @@ export default {
       if (!ownerChat(chat, level)) return []
       const settings = api.settings()
       const tools = []
-      if (settings.voiceEnabled && settings.mimoKey && referencePath(settings)) {
+      if (voiceReady(settings)) {
         tools.push(api.defineTool({
           name: 'mimo_say',
           description: '用 MiMo 音色把指定文字发成一条 QQ 语音',
@@ -209,32 +204,29 @@ export default {
       }
     }, panelAccess)
 
-    api.route('/status', async () => {
+    api.route('/status', () => {
       const settings = api.settings()
-      const reference = referencePath(settings)
-      const hasReference = Boolean(reference && (await stat(reference).catch(() => null))?.isFile())
+      const library = references.status(settings)
+      const bindings = local.status()
       return {
         ok: true,
-        voiceReady: Boolean(settings.voiceEnabled && settings.mimoKey && hasReference),
-        hasReference,
+        voiceReady: bindings.tts.ready,
+        hasReference: Boolean(library.currentReference),
+        ...library,
         ...modelChoices(settings),
-        local: local.status(),
+        local: bindings,
       }
     }, panelAccess)
 
-    post('/reference', ({ base64 }) => {
-      const bytes = decodeReference(base64)
-      const name = 'ref-' + randomUUID() + (audioMime(bytes) === 'audio/wav' ? '.wav' : '.mp3')
-      const file = join(referenceDir, name)
-      const previous = referencePath(api.settings())
-      writeFileSync(file, bytes, { flag: 'wx' })
-      try { api.saveSettings({ referenceFile: name }) } catch (error) {
-        unlinkSync(file)
-        throw error
-      }
-      if (previous) unlink(previous).catch(() => {})
-      return { ok: true, message: '参考音频已保存' }
+    post('/reference', (input) => {
+      references.upload(input)
+      return { ok: true, message: '已保存并使用这段参考音频' }
     }, MAX_UPLOAD_JSON)
+
+    post('/reference/select', ({ id }) => {
+      references.select(id)
+      return { ok: true, message: '参考音频已切换' }
+    })
 
     post('/preview-voice', async ({ text }) => {
       const bytes = await providers.synthesize(text, enabledSettings('voiceEnabled'))
@@ -246,16 +238,10 @@ export default {
     })
     post('/local', ({ slot, enabled }) => {
       if (typeof enabled !== 'boolean') throw new Error('请选择开启或关闭接管')
-      if (enabled && slot === 'tts') {
-        const settings = enabledSettings('voiceEnabled')
-        if (!settings.mimoKey || !referencePath(settings)) throw new Error('请先保存 MiMo API Key 并上传参考音频')
-      }
-      if (enabled && slot === 'image') {
-        const settings = enabledSettings('imageEnabled')
-        if (!settings.modelScopeToken || !modelChoices(settings).defaultModel) throw new Error('请先保存魔搭 Token 和模型列表')
-      }
-      local.set(slot, enabled)
-      return { ok: true, message: enabled ? '接管已启用' : '接管已关闭' }
+      const { active, ready } = local.set(slot, enabled)
+      if (!enabled) return { ok: true, message: '接管已关闭' }
+      if (active) return { ok: true, message: '接管已启用' }
+      return { ok: true, message: ready ? '接管尚未生效，请检查本地接口' : '已开启自动接管，配置完成后生效' }
     })
   },
 }
