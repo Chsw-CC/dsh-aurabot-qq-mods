@@ -69,10 +69,10 @@ const DEFAULTS = {
   forumHeadless: true,
 }
 
-function linesOf(s) {
+export function linesOf(s) {
   return String(s || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean)
 }
-function wordsOf(s) {
+export function wordsOf(s) {
   return String(s || '').split(/[,，、\n]+/).map((x) => x.trim()).filter(Boolean)
 }
 function regexOf(words, fallback) {
@@ -81,7 +81,7 @@ function regexOf(words, fallback) {
   const esc = list.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   try { return new RegExp('(' + esc.join('|') + ')', 'i') } catch { return /$^/ }
 }
-function feedsOf(cfg) {
+export function feedsOf(cfg) {
   const out = []
   for (const line of linesOf(cfg.feeds)) {
     const i = line.indexOf('|')
@@ -90,18 +90,29 @@ function feedsOf(cfg) {
   }
   return out
 }
-function decode(s) {
+export function decode(s) {
   return String(s || '')
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/<[^>]+>/g, ' ') // 先剥真实标签，再解实体，避免 &lt; 被误当标签
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
-    .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ').trim()
 }
-function decodeHtml(s) {
+export function decodeHtml(s) {
   return String(s || '').replace(/&amp;/g, '&').replace(/&#38;/g, '&').replace(/&quot;/g, '"')
 }
-function hostOf(url) {
+/** 把「1.2万」「3千」「1,234」这类计数转成数字。 */
+export function parseCount(s) {
+  const t = String(s || '').replace(/[,，]/g, '').trim()
+  const m = t.match(/^(\d+(?:\.\d+)?)(万|w|千|k)?$/i)
+  if (!m) return 0
+  const n = Number(m[1])
+  const unit = (m[2] || '').toLowerCase()
+  if (unit === '万' || unit === 'w') return Math.round(n * 10000)
+  if (unit === '千' || unit === 'k') return Math.round(n * 1000)
+  return Math.round(n)
+}
+export function hostOf(url) {
   try { return new URL(url).hostname.replace(/^www\./, '') } catch { return '' }
 }
 async function get(url, ms = 12000) {
@@ -109,7 +120,7 @@ async function get(url, ms = 12000) {
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   return r.text()
 }
-function parseFeed(xml, source) {
+export function parseFeed(xml, source) {
   const blocks = [...String(xml).matchAll(/<item[\s\S]*?<\/item>/gi)].map((m) => m[0])
   const out = []
   for (const b of blocks) {
@@ -124,7 +135,7 @@ function parseFeed(xml, source) {
   return out
 }
 /** Bing 新闻 RSS 的链接是 apiclick 跳转，把 url= 参数解出来才是发布方原链。 */
-function bingRealUrl(raw) {
+export function bingRealUrl(raw) {
   const link = decodeHtml(raw)
   const m = link.match(/[?&]url=([^&]+)/)
   if (!m) return link
@@ -142,16 +153,18 @@ async function bing(queries) {
   }
   return out
 }
+/** 知乎问题真实 ID：19 位雪花号在 JSON number 里会丢精度，只能从 url / card_id 里取字符串。 */
+export function zhihuRealId(target, cardId) {
+  const fromUrl = (String((target && target.url) || '').match(/questions\/(\d+)/) || [])[1]
+  const fromCard = (String(cardId || '').match(/^Q_(\d+)/) || [])[1]
+  return fromUrl || fromCard || String((target && target.id) || '')
+}
 async function zhihu() {
   const j = JSON.parse(await get('https://api.zhihu.com/topstory/hot-lists/total?limit=30'))
   return (j.data || [])
     .filter((d) => d?.target?.type === 'question')
     .map((d) => {
-      // target.id 是 JS number，19 位雪花 ID 会被浮点截断（末位丢精度），
-      // 真实 ID 在 target.url / card_id 里，用它拼才打得开
-      const fromUrl = (String(d.target.url || '').match(/questions\/(\d+)/) || [])[1]
-      const fromCard = (String(d.card_id || '').match(/^Q_(\d+)/) || [])[1]
-      const realId = fromUrl || fromCard || String(d.target.id || '')
+      const realId = zhihuRealId(d.target, d.card_id)
       return {
         title: d.target.title || '',
         url: `https://www.zhihu.com/question/${realId}`,
@@ -201,7 +214,7 @@ function uniq(list) {
 export default {
   id: 'ai-brief',
   name: 'AI 新闻推送',
-  version: '2.2.0',
+  version: '2.2.1',
   api: 1,
   description: '每天早晚 AI 简报（Bing 新闻 + 知乎热榜 + 热榜）+ 中午论坛速报（腾讯频道校园论坛热帖），带链接和她的一句吐槽',
   panel: 'panel.js',
@@ -313,16 +326,7 @@ export default {
       const r = await session.send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true })
       return r?.result?.result?.value
     }
-    function parseCount(s) {
-      const t = String(s || '').replace(/[,，]/g, '').trim()
-      const m = t.match(/^(\d+(?:\.\d+)?)(万|w|千|k)?$/i)
-      if (!m) return 0
-      const n = Number(m[1])
-      const unit = (m[2] || '').toLowerCase()
-      if (unit === '万' || unit === 'w') return Math.round(n * 10000)
-      if (unit === '千' || unit === 'k') return Math.round(n * 1000)
-      return Math.round(n)
-    }
+
     async function forumPosts() {
       const c = cfg()
       const url = String(c.forumUrl || '').trim()

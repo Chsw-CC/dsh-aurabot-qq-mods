@@ -98,3 +98,9 @@ ai-brief/
 ## 许可
 
 MIT License，欢迎 issue / PR。
+
+## 测试
+
+```sh
+node --test test/*.test.mjs
+```
