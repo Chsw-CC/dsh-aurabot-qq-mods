@@ -130,6 +130,23 @@ export default {
       return { ok: true, item: s.items[s.items.length - 1], captioned: Boolean(text) }
     }
 
+    async function replaceImage({ id, image }) {
+      const b64 = String(image || '').replace(/^data:[^,]+,/, '')
+      if (!b64) return { ok: false, message: '没有图片' }
+      if (b64.length > 6 * 1024 * 1024) return { ok: false, message: '图片太大了（base64 超过 6MB）' }
+      const s = load()
+      const it = itemOf(String(id || ''), s)
+      if (!it) return { ok: false, message: '没这件' }
+      const mediaType = mimeOf(b64)
+      mkdirSync(imgDir(), { recursive: true })
+      const fname = it.id + '-' + Date.now() + '.' + extOf(mediaType)
+      writeFileSync(join(imgDir(), fname), Buffer.from(b64, 'base64'))
+      it.image = fname
+      it.mediaType = mediaType
+      it.updatedAt = Date.now()
+      save(s)
+      return { ok: true, item: it, outfit: outfitText(s) }
+    }
     function updateItem({ id, name, desc }) {
       const s = load()
       const it = itemOf(String(id || ''), s)
@@ -246,6 +263,10 @@ export default {
     api.route('/add', async (req) => {
       const b = await api.core.http.body(req)
       return addItem(b)
+    })
+    api.route('/image/replace', async (req) => {
+      const b = await api.core.http.body(req)
+      return replaceImage(b || {})
     })
     api.route('/update', async (req) => {
       const b = await api.core.http.body(req)

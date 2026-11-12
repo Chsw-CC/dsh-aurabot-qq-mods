@@ -15,9 +15,11 @@ return function WardrobePage({ toast }) {
   const [baseDraft, setBaseDraft] = useState('')
   const [styleDraft, setStyleDraft] = useState('')
   const [draft, setDraft] = useState({})
+  const [replaceId, setReplaceId] = useState('')
+  const replaceRef = useRef(null)
   const fileRef = useRef(null)
 
-  const imgUrl = (id) => api + '/image/file?id=' + encodeURIComponent(id)
+  const imgUrl = (it) => api + '/image/file?id=' + encodeURIComponent(it.id) + '&t=' + (it.updatedAt || it.createdAt || 0)
   const prevUrl = (id) => api + '/preview/file?id=' + encodeURIComponent(id)
 
   const load = async () => {
@@ -79,6 +81,27 @@ return function WardrobePage({ toast }) {
     const r = await post('/appearance/save', { base: baseDraft, style: styleDraft })
     if (r && r.ok === false) { toast && toast(r.message || '没存上'); return }
     toast && toast('外观已保存')
+  }
+
+  const pickReplace = (id) => { setReplaceId(id); setTimeout(() => replaceRef.current && replaceRef.current.click(), 0) }
+  const onReplaceFile = async (e) => {
+    const f = e.target.files && e.target.files[0]
+    e.target.value = ''
+    const id = replaceId
+    if (!f || !id) return
+    setBusy(true)
+    try {
+      const b64 = await new Promise((resolve, reject) => {
+        const fr = new FileReader()
+        fr.onload = () => resolve(String(fr.result))
+        fr.onerror = reject
+        fr.readAsDataURL(f)
+      })
+      const r = await post('/image/replace', { id, image: b64 })
+      if (r && r.ok === false) { toast && toast(r.message || '没换上'); return }
+      await load()
+      toast && toast('已换图')
+    } finally { setBusy(false) }
   }
 
   const startEdit = (it) => setDraft({ ...draft, [it.id]: { name: it.name, desc: it.desc || '' } })
@@ -145,11 +168,13 @@ return function WardrobePage({ toast }) {
     const editing = Boolean(draft[it.id])
     if (editing) {
       return [
+        h(ui.Btn, { small: true, kind: 'ghost', key: 'r', onClick: () => pickReplace(it.id) }, '换图'),
         h(ui.Btn, { small: true, key: 's', onClick: () => saveEdit(it.id) }, '保存'),
         h(ui.Btn, { small: true, kind: 'ghost', key: 'c', onClick: () => cancelEdit(it.id) }, '取消'),
       ]
     }
     return [
+      h(ui.Btn, { small: true, kind: 'ghost', key: 'r', onClick: () => pickReplace(it.id) }, '换图'),
       h(ui.Btn, { small: true, kind: 'ghost', key: 'w', onClick: () => change(it.id) }, '穿上'),
       h(ui.Btn, { small: true, kind: 'ghost', key: 'e', onClick: () => startEdit(it) }, '改'),
       h(ui.Btn, { small: true, kind: 'ghost', key: 'd', onClick: () => delItem(it.id) }, '删'),
@@ -166,9 +191,9 @@ return function WardrobePage({ toast }) {
   h('div', { style: { flex: '0 0 ' + thumbW + 'px' } },
     it.image
       ? h('img', {
-        src: imgUrl(it.id),
+        src: imgUrl(it),
         title: '点开看大图',
-        onClick: () => window.open(imgUrl(it.id), '_blank'),
+        onClick: () => window.open(imgUrl(it), '_blank'),
         style: {
           width: thumbW, height: Math.round(thumbW * 1.55), objectFit: 'contain',
           borderRadius: 8, background: '#fafafa', border: '1px solid rgba(0,0,0,.04)', cursor: 'zoom-in', display: 'block',
@@ -185,6 +210,8 @@ return function WardrobePage({ toast }) {
 
   return h('div', { style: { ...cardGap, width: '100%' } },
     err ? h('div', { style: { color: '#c0392b', fontSize: 12 } }, err) : null,
+
+    h('input', { ref: replaceRef, type: 'file', accept: 'image/*', style: { display: 'none' }, onChange: onReplaceFile }),
 
     h(ui.Card, { title: '加一件衣服', desc: '上传参考图，自动写描述；或者自己写穿搭描述。' },
       h('div', { style: { display: 'flex', gap: 10, alignItems: 'flex-start' } },
