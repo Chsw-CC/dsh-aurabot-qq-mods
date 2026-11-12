@@ -1,0 +1,33 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+test('actual panel keeps AI suggestions separate until adopted and explicitly saved', async () => {
+ const slots=[];let cursor=0;const calls=[];
+ const React={useState(initial){const n=cursor++;if(!(n in slots))slots[n]=initial;return [slots[n],v=>{slots[n]=typeof v==='function'?v(slots[n]):v}]},useEffect(){},useRef(){return {current:null}}};
+ const h=(type,props,...children)=>({type,props:props||{},children:children.flat(Infinity)});
+ const ui=new Proxy({}, {get:(_,key)=>key});
+ const words=['小半','小办','小瓣','小拌','小绊','小扮','小版','晓伴','晓半','晓办'];
+ const call=async(path,body)=>{calls.push({path,body});return path.endsWith('/suggest')?{ok:true,primary:body.primary,names:words}:{ok:false}};
+ const Panel=new Function('React','h','ui','call',await readFile(new URL('../panel.js',import.meta.url),'utf8'))(React,h,ui,call);
+ let nodes;
+ function render(){cursor=0;nodes=[];const walk=x=>{if(!x||typeof x!=='object')return;nodes.push(x);x.children?.forEach(walk)};walk(Panel({}));}
+ const label=s=>nodes.find(n=>n.props['aria-label']===s);
+ const button=s=>nodes.find(n=>n.type==='Btn'&&n.children.includes(s));
+ render();assert.equal(nodes.some(n=>n.props.title==='家庭成员人设'),false);
+ assert.equal(nodes.some(n=>n.props.title==='小爱常驻入口'),false);
+ assert.equal(nodes.some(n=>n.props['aria-label']==='需先说你好才生效的称呼'),false);
+ assert.equal(nodes.some(n=>n.children.includes('开启常驻入口')),false);
+ assert.equal(nodes.filter(n=>n.props.right?.type==='Switch'&&n.props.right.props.title==='小爱音响接入开关').length,1);
+ assert.match(nodes.find(n=>n.props.label==='主要称呼').props.hint,/每次先说“小爱同学”/);
+ label('主要称呼').props.onChange({target:{value:'小伴'}});render();
+ await button('AI 补足同音词').props.onClick();render();
+ assert.equal(label('同音词与识别变体').props.value,'');
+ assert.equal(button('保存称呼').props.disabled,true);
+ assert.deepEqual(calls.map(x=>x.path),['/speaker/wake/suggest']);
+ button('采用候选到草稿').props.onClick();render();
+ assert.equal(label('同音词与识别变体').props.value.split('，').length,10);
+ label('同音词与识别变体').props.onChange({target:{value:words.join('，')+'，晓瓣'}});render();
+ await button('保存称呼').props.onClick();
+ const saved=calls.find(x=>x.path==='/speaker/wake/save');
+ assert.equal(saved.body.names[0],'小伴');assert.equal(saved.body.names.length,12); assert.deepEqual(saved.body.greetingNames,[]);
+});
