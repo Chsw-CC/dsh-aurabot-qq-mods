@@ -245,7 +245,7 @@ export default {
       const s = load()
       const outfit = outfitText(s)
       if (!outfit) return text
-      return String(text || '') + '\n\n【当前的穿着】\n' + outfit + '。'
+      return String(text || '') + '\n\n【当前的穿着】\n' + outfit + '。\n画自己的时候，这段穿着原样写进画面描述，别改写、别漏配饰。'
     })
     const sendImage = (res, buf, type) => {
       res.statusCode = 200
