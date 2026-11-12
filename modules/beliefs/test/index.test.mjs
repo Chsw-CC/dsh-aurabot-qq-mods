@@ -1,4 +1,4 @@
-﻿// 观点模块：元信息、增删查、核心上限、向量去重、语义匹配、prompt 注入、开关。
+// 观点模块：元信息、增删查、核心上限、向量去重、语义匹配、prompt 注入、开关。
 // 全部走假 api + 本地哈希向量；不联网、不读真实数据。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'

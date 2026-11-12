@@ -21,7 +21,8 @@ const POSES = {
   mirror: { name: '对镜自拍', text: '举着手机对镜自拍，手机挡住半张脸' },
 }
 
-const DEFAULT_BASE = '二十出头的女孩，中国长相，身高一米六出头，偏瘦，蓝黑色长发到腰，发尾褪成浅海蓝，头顶一撮压不下去的呆毛，圆圆的眼睛是深蓝色，皮肤很白'
+const DEFAULT_BASE = '蓝发少女，蓝色长卷发，发尾渐变成浅海蓝，头顶一撮翘起来的呆毛，一对深蓝色的鲸鱼耳朵，身后拖着一条鲸鱼尾巴，大眼睛，笑起来脸会红，皮肤白皙'
+const DEFAULT_OUTFIT = '蓝白配色女仆装，白色荷叶边头饰，围裙上绣着一只小鲸鱼'
 const DEFAULT_STYLE = '二次元插画风格，干净线条，柔和上色，白色背景'
 
 const mimeOf = (b64) => (b64.startsWith('/9j/') ? 'image/jpeg' : b64.startsWith('iVBOR') ? 'image/png' : b64.startsWith('UklGR') ? 'image/webp' : 'image/png')
@@ -59,6 +60,18 @@ export default {
     }
     const save = (s) => { mkdirSync(dir(), { recursive: true }); writeFileSync(file(), JSON.stringify(s, null, 2)) }
 
+    // 第一次跑的时候放一套默认女仆装，省得衣柜是空的
+    const MAID = { id: 'w_maid', name: '女仆装', kind: 'set', desc: DEFAULT_OUTFIT, image: '', mediaType: '', seeded: true }
+    function seedOnce() {
+      const s = load()
+      if (s.seeded) return
+      if (!(s.items || []).some((x) => x.id === MAID.id || x.name === MAID.name)) {
+        s.items = [...(s.items || []), { ...MAID, createdAt: Date.now() }]
+        if (!s.today || !s.today.set) s.today = { ...(s.today || {}), set: MAID.id }
+      }
+      s.seeded = true
+      save(s)
+    }
     function itemOf(id, s = load()) { return (s.items || []).find((x) => x.id === id) || null }
 
     function outfitText(s = load()) {
@@ -74,7 +87,7 @@ export default {
     function buildPrompt(poseKey, s = load()) {
       const base = String(s.base || '').trim() || DEFAULT_BASE
       const style = String(s.style || '').trim() || DEFAULT_STYLE
-      const outfit = outfitText(s)
+      const outfit = outfitText(s) || DEFAULT_OUTFIT
       const pose = (POSES[poseKey] || POSES.stand).text
       return [base, outfit ? '今天穿：' + outfit : '', pose, style].filter(Boolean).join('，')
     }
@@ -240,6 +253,8 @@ export default {
       res.setHeader?.('cache-control', 'no-store')
       res.end?.(buf)
     }
+    seedOnce()
+
     api.route('/list', async () => {
       const s = load()
       return {

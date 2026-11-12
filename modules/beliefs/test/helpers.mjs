@@ -1,4 +1,4 @@
-﻿// 观点模块测试用的假 api：路由 / 钩子 / 设置 / 临时数据目录都记下来，不联网。
+// 观点模块测试用的假 api：路由 / 钩子 / 设置 / 临时数据目录都记下来，不联网。
 // 嵌入请求由 mockFetch 短路成本地哈希向量，结果稳定、可复现。
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'

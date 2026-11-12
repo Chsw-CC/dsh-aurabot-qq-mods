@@ -28,7 +28,7 @@ test('/add 纯文字：只写描述也能存一套，且成为可选穿搭', asy
   assert.equal(r.item.desc, '白色T恤配牛仔短裤')
   assert.equal(r.item.image, '')
   const list = await env.call('/list')
-  assert.equal(list.items.length, 1)
+  assert.ok(list.items.some((x) => x.name === '白T牛仔'), '新加的那套要在列表里')
   assert.equal(list.poses.length, 6, '六个固定姿势')
 })
 
@@ -68,6 +68,7 @@ test('persona 钩子：选了穿搭就带上「当前的穿着」，没选就不
   const env = makeApi()
   t.after(env.cleanup)
   const base = '【你的样子】蓝黑长发。'
+  await env.call('/today', { set: '' })
   assert.equal(await env.runHook('persona', base), base, '没穿搭时原样返回')
   const a = await env.call('/add', { name: 'A', desc: '灰卫衣配牛仔裤' })
   await env.call('/today', { set: a.item.id })
@@ -114,7 +115,7 @@ test('/image/replace：换图后文件名变、描述不变', async (t) => {
   const a = await env.call('/add', { name: 'A', desc: '原描述' })
   await env.call('/image/replace', { id: a.item.id, image: PNG_1PX })
   const list = await env.call('/list')
-  const it = list.items[0]
+  const it = list.items.find((x) => x.id === a.item.id)
   assert.match(it.image, /-1\d{12}\.png$/, '新图文件名带时间戳')
   assert.equal(it.desc, '原描述', '换图不该改描述')
   assert.ok(it.updatedAt > 0)
@@ -129,15 +130,15 @@ test('/del：删掉后列表为空，今日穿搭也清掉', async (t) => {
   const d = await env.call('/del', { id: a.item.id })
   assert.equal(d.ok, true)
   const list = await env.call('/list')
-  assert.equal(list.items.length, 0)
-  assert.equal(list.outfit, '')
+  assert.ok(!list.items.some((x) => x.id === a.item.id), '删掉的那套不该还在')
+  assert.equal(list.outfit, '', '今日穿搭跟着清掉')
 })
 
 test('/list：返回默认外观与画风，面板直接用', async (t) => {
   const env = makeApi()
   t.after(env.cleanup)
   const list = await env.call('/list')
-  assert.ok(list.base.includes('蓝黑色长发'))
+  assert.ok(list.base.includes('鲸鱼耳朵'))
   assert.ok(list.style.includes('二次元'))
 })
 
@@ -148,7 +149,7 @@ test('/clear：清空衣柜和图片', async (t) => {
   await env.call('/clear', {})
   const list = await env.call('/list')
   assert.equal(list.items.length, 0)
-  const files = readdirSync(join(env.dir, 'images'))
+  const files = existsSync(join(env.dir, 'images')) ? readdirSync(join(env.dir, 'images')) : []
   assert.equal(files.length, 0, '图片也要删掉')
 })
 
@@ -162,4 +163,17 @@ test('生成记录：历史按时间倒序、最多 60 条', async (t) => {
   const hist = await env.call('/history')
   assert.equal(hist.list.length, 2)
   assert.ok(hist.list[0].at >= hist.list[1].at, '新的在前')
+})
+test('默认女仆装：第一次跑自动放一套，删掉后不再硬塞', async (t) => {
+  const env = makeApi()
+  t.after(env.cleanup)
+  const first = await env.call('/list')
+  const maid = first.items.find((x) => x.name === '女仆装')
+  assert.ok(maid, '默认要有一套女仆装')
+  assert.equal(maid.kind, 'set')
+  assert.ok(maid.desc.includes('女仆装'))
+  assert.equal(first.today.set, maid.id, '没有别的穿搭时默认穿它')
+  await env.call('/del', { id: maid.id })
+  const second = await env.call('/list')
+  assert.ok(!second.items.some((x) => x.name === '女仆装'), '删掉后不要自动再加回来')
 })
