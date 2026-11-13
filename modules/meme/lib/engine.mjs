@@ -11,6 +11,15 @@ export class Engine {
     this.dir = dir; this.runtimeDir = runtimeDir; this.extensionEnabled = extensionEnabled; this.timeout = timeout; this.maxQueue = maxQueue;
     this.queue = []; this.seq = 0; this.child = null; this.active = null; this.closed = false;
   }
+  spawnWorker(options) { return fork(fileURLToPath(new URL('./worker.mjs', import.meta.url)), [], options); }
+  fail(child, error, stop = false) {
+    if (this.child !== child) return;
+    this.child = null;
+    if (stop) stopWorker(child);
+    if (this.active) { clearTimeout(this.active.timer); this.active.reject(error); this.active = null; }
+    // Reject the pending batch once. A subsequent request may start a new worker.
+    for (const job of this.queue.splice(0)) job.reject(error);
+  }
   start() {
     if (this.child) return;
     const home = join(this.runtimeDir, 'node_modules', '.meme-runtime');
@@ -20,7 +29,7 @@ export class Engine {
     if (inventory.version !== '0.2.3' || !inventory.files?.length) throw new Error('离线资源版本不匹配，请重新安装');
     for (const file of inventory.files) if (!existsSync(join(home, file.path))) throw new Error(`缺少离线资源：${file.path}，请重新安装`);
     ensureEngineConfig(home);
-    const child = fork(fileURLToPath(new URL('./worker.mjs', import.meta.url)), [], {
+    const child = this.spawnWorker({
       execArgv: [], windowsHide: true, detached: process.platform !== 'win32', serialization: 'json',
       env: { ...process.env, MEME_RUNTIME_DIR: this.runtimeDir, MEME_EXTENSION_ENABLED: this.extensionEnabled ? '1' : '0', MEME_HOME: home, MEME_MODULE_DIR: this.dir, ELECTRON_RUN_AS_NODE: '1', RAYON_NUM_THREADS: '2' },
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
@@ -29,21 +38,15 @@ export class Engine {
     let stderr = '';
     child.stderr.on('data', b => { stderr = (stderr + b).slice(-1500); });
     child.on('message', r => {
-      if (this.active?.id !== r.id) return;
+      if (this.child !== child || this.active?.id !== r.id) return;
       const job = this.active; clearTimeout(job.timer); this.active = null;
       if (!r.error && typeof r.data?.extensionEnabled === 'boolean') this.extensionEnabled = r.data.extensionEnabled;
       r.error ? job.reject(r.publicMessage ? new UserError(r.publicMessage) : new Error(r.error)) : job.resolve(r.data);
       this.pump();
     });
-    const failed = error => {
-      if (this.child !== child) return;
-      this.child = null;
-      if (this.active) { clearTimeout(this.active.timer); this.active.reject(error); this.active = null; }
-      // Do not repeatedly respawn a broken native binary for every queued request.
-      for (const job of this.queue.splice(0)) job.reject(error);
-    };
-    child.on('error', failed);
-    child.on('exit', code => failed(new Error(`本地生成进程已退出 (${code}) ${stderr}`)));
+    child.on('error', error => this.fail(child, error, true));
+    child.on('disconnect', () => this.fail(child, new Error('本地生成进程连接已断开'), true));
+    child.on('exit', code => this.fail(child, new Error(`本地生成进程已退出 (${code}) ${stderr}`)));
   }
   call(op, args = {}) {
     if (this.closed) return Promise.reject(new UserError('模块已停止'));
@@ -58,11 +61,13 @@ export class Engine {
     job.timer = setTimeout(() => {
       if (this.active !== job) return;
       this.active = null; const child = this.child; this.child = null; stopWorker(child);
-      job.reject(new UserError('生成超过 45 秒，已取消；请减少图片大小或帧数'));
+      job.reject(new UserError(`生成超过 ${Math.ceil(this.timeout / 1000)} 秒，已取消；请减少图片大小或帧数`));
       this.pump();
     }, this.timeout);
     const { resolve, reject, timer, ...request } = job;
-    this.child.send(request, error => { if (error && this.active === job) { clearTimeout(timer); this.active = null; reject(error); stopWorker(this.child); } });
+    const child = this.child;
+    try { child.send(request, error => { if (error) this.fail(child, error, true); }); }
+    catch (error) { this.fail(child, error, true); }
   }
   dispose() {
     this.closed = true;

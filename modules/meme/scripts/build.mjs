@@ -14,7 +14,7 @@ export async function buildRelease(source=root) {
   for(const name of ['index.mjs','panel.js','module.json','package.json','README.md','LICENSE','THIRD-PARTY-NOTICES.md','lib','scripts','assets','docs']) {
     await cp(join(source,name),join(out,name),{recursive:true});
   }
-  await writeFile(join(out,'RELEASE.md'),'这是轻量安装器包。首次运行会自动下载固定版本的运行组件和素材，默认不安装 Python 扩展。\n运行时获取可执行依赖的分发方式仍需模块市场维护者审核，不代表已上架。\n');
+  await writeFile(join(out,'RELEASE.md'),'这是轻量安装器包。首次运行会自动下载固定版本的运行组件和素材，默认不安装 Python 扩展。\n市场可安装版本以官方发布目录为准。\n');
   return out;
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))console.log('构建完成：'+await buildRelease());

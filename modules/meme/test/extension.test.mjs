@@ -48,3 +48,15 @@ test('启动时扩展缺失不影响基础库，保留安全恢复提示',async(
   await h.manager.restore();assert.equal(h.manager.status().installed,false);
   assert.equal(h.manager.status().error,'扩展库未能加载，请重新安装。');assert.equal(h.saved.length,0);h.manager.dispose();
 });
+test('停止期间完成的挂载不再回写目录或配置',async()=>{
+ const h=harness(tmpdir());let release;h.manager.engine.call=()=>new Promise(r=>release=r);
+ h.manager.start(false);h.manager.dispose();release({items:['base'],extensionEnabled:false});await h.manager.task;
+ assert.deepEqual(h.catalog,[]);assert.deepEqual(h.saved,[]);
+});
+test('残缺或旧版扩展标记不视为可直接复用',async()=>{
+ const {cachedExtension}=await import('../lib/extension.mjs');const {mkdir}=await import('node:fs/promises');
+ const dir=await mkdtemp(join(tmpdir(),'meme-ext-cache-')),home=join(dir,'node_modules','.meme-python');
+ try{await mkdir(home,{recursive:true});await writeFile(join(home,'ready.json'),'{partial');assert.equal(cachedExtension(dir),false);
+ await writeFile(join(home,'python'),'fixture');await writeFile(join(home,'catalog.json'),'[{}]');await writeFile(join(home,'ready.json'),JSON.stringify({platform:`${process.platform}-${process.arch}`,executable:'python',revision:'old'}));assert.equal(cachedExtension(dir),false);
+ }finally{await rm(dir,{recursive:true,force:true});}
+});

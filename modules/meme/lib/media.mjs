@@ -1,6 +1,20 @@
 import { UserError } from './errors.mjs';
+const decodeCQ = s => s.replace(/&#44;/g, ',').replace(/&#91;/g, '[').replace(/&#93;/g, ']').replace(/&amp;/g, '&');
+export function messageSegments(msg) {
+  const source = msg.raw?.message;
+  if (Array.isArray(source)) return source;
+  if (typeof source !== 'string') return null;
+  const result = []; let end = 0;
+  for (const m of source.matchAll(/\[CQ:([a-z_]+)((?:,[^\]]*)?)\]/g)) {
+    if (m.index > end) result.push({type:'text',data:{text:decodeCQ(source.slice(end,m.index))}});
+    const data = Object.fromEntries(m[2].slice(1).split(',').filter(Boolean).map(field=>{const cut=field.indexOf('=');return [field.slice(0,cut),decodeCQ(field.slice(cut+1))];}));
+    result.push({type:m[1],data}); end = m.index + m[0].length;
+  }
+  if (end < source.length) result.push({type:'text',data:{text:decodeCQ(source.slice(end))}});
+  return result;
+}
 export function rawText(msg) {
-  const segments = msg.raw?.message;
+  const segments = messageSegments(msg);
   if (Array.isArray(segments)) return segments.filter(s => s.type === 'text').map(s => s.data?.text || '').join('').trim();
   return String(msg.text || '').replace(/\[(?:图片|表情包)\]/g, '').replace(/@\s*\d+/g, '').trim();
 }
@@ -21,14 +35,17 @@ export async function collectImages(api, msg, params, cache, allowAvatar = true)
     cache.set(id, { image, time: Date.now() });
     return image;
   }
-  const segments = [...(msg.images || []), ...(msg.stickers || [])];
+  const source = messageSegments(msg) || [];
+  const segments = source.filter(s => ['image','mface'].includes(s.type));
+  if (!segments.length) segments.push(...(msg.images || []), ...(msg.stickers || []));
   let quoted, quotedImages = [];
-  if (msg.replyId) {
-    quoted = await api.onebot('get_msg', { message_id: msg.replyId });
-    quotedImages = Array.isArray(quoted?.message) ? quoted.message.filter(s => ['image', 'mface'].includes(s.type)) : [];
+  const replyId = msg.replyId || source.find(s=>s.type==='reply')?.data?.id;
+  if (replyId && segments.length < params.maxImages) {
+    quoted = await api.onebot('get_msg', { message_id: replyId });
+    quotedImages = (messageSegments({raw:quoted}) || []).filter(s => ['image', 'mface'].includes(s.type));
     segments.push(...quotedImages);
   }
-  const targets = (msg.raw?.message || []).filter(s => s.type === 'at' && /^\d+$/.test(String(s.data?.qq)))
+  const targets = source.filter(s => s.type === 'at' && /^\d+$/.test(String(s.data?.qq)))
     // QQ replies may add @quoted-author automatically; the quoted picture is the input.
     .filter(s => !quotedImages.length || String(s.data.qq) !== String(quoted?.sender?.user_id))
     .map(s => ({ id: String(s.data.qq), name: s.data.name || String(s.data.qq) }));

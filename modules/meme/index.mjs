@@ -19,7 +19,7 @@ const HELP = `表情制作
 主人：#表情禁用 模板 / #表情启用 模板
 #表情别名 新词=模板 · #表情开 / #表情关`;
 export default {
-  id: 'meme', name: '表情制作', version: '1.3.3', api: 1,
+  id: 'meme', name: '表情制作', version: '1.3.5', api: 1,
   description: '用头像、图片或文字制作表情，支持预览和自定义触发词',
   panel: 'panel.js',
   defaults: { enabled: true, direct: false, groups: '', private: true, cooldown: 3, indexColumns: 5, avatar: true, disabled: [], favorites: [], aliases: {} },
@@ -87,8 +87,9 @@ export default {
       if (inFlight >= 6) throw new UserError('表情制作排队已满，请稍后再试');
       inFlight++;
       try {
-      const input = preview ? {} : parseInput(matched.rest || '', matched.item, matched.shortcut, msg.nickname || '你好');
+      const input = preview ? {options:matched.shortcut?.options || {}} : parseInput(matched.rest || '', matched.item, matched.shortcut, msg.nickname || '你好');
       const images = preview ? [] : await collectImages(api, msg, matched.item.params, avatarCache, settings().avatar !== false);
+      for (const [i, name] of (matched.shortcut?.names || []).entries()) if (images[i] && name) images[i] = {...images[i], name};
       const result = await engine.call(preview ? 'preview' : 'generate', { key: matched.item.key, images, ...input });
       await sendImage(msg, result);
       if (!preview && !msg.raw?.simulated) { stats[matched.item.key] = (Number(stats[matched.item.key]) || 0) + 1; clearTimeout(saveTimer); saveTimer = setTimeout(saveStats, 3000); }
@@ -156,7 +157,10 @@ export default {
       return true;
     }
     api.on('message', msg => handle(msg));
-    api.command({ name: '表情', aliases: ['meme'], desc: '表情制作：帮助、列表、模板名', run: async (arg, msg) => { await handle(msg, /^(帮助|列表|搜索|详情|预览|排行|状态|开|关|禁用|启用|别名)/.test(arg) ? '表情' + arg : '表情 ' + arg); return ''; } });
+    api.command({ name: '表情', aliases: ['meme'], desc: '表情制作：帮助、列表、模板名', run: async (arg, msg) => {
+      arg = (rawText(msg).match(/^[\/／](?:表情|meme)(?:\s+|$)([\s\S]*)$/iu)?.[1] ?? arg).trim();
+      await handle(msg, /^(帮助|列表图片|列表|搜索|详情|预览|排行|状态|开|关|禁用|启用|别名)(?:\s|$)/.test(arg) ? '表情' + arg : '表情 ' + arg); return '';
+    } });
     // Module routes need their own local-only gate (the host exempts /ext from its admin gate).
     function local(req) {
       const address = req.socket?.remoteAddress;
@@ -189,7 +193,8 @@ export default {
       try { return await engine.call('preview', { key: found.item.key }); }
       catch (e) { throw new UserError(reportFailure(e)); }
     });
-    api.onDispose(() => { disposed = true; bootstrap.dispose(); extension.dispose(); clearTimeout(saveTimer); engine.dispose(); saveStats(); avatarCache.clear(); });
+    function dispose() { if (disposed) return; disposed = true; bootstrap.dispose(); extension.dispose(); clearTimeout(saveTimer); engine.dispose(); saveStats(); avatarCache.clear(); }
+    api.onDispose(dispose);
     // One-time migration: preserve an existing installation; fresh base installs stay light.
     wanted = settings().extensionEnabled;
     if (typeof wanted !== 'boolean') {
@@ -200,6 +205,6 @@ export default {
       try {await load();if(wanted)await extension.restore();bootstrap.markReady();}
       catch(e) {error=e.message;api.log.error(e.stack || String(e));bootstrap.markFailed();}
     } else bootstrap.start();
-    return { status, catalog: () => items, handle, dispose: () => { if (!disposed) { bootstrap.dispose(); extension.dispose(); engine.dispose(); } } };
+    return { status, catalog: () => items, handle, dispose };
   },
 };
