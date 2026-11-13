@@ -15,6 +15,7 @@
   "minPluginVersion": "1.2.0",
   "requires": [],
   "capabilities": [
+    "network",
     "filesystem",
     "plugin-config",
     "plugin-internals"
