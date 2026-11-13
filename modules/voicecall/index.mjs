@@ -380,7 +380,7 @@ export default {
       const prompt = [
         '（这是一通刚挂断的电话，下面是你和主人的原话记录，识别可能有错字，按意思理解）',
         lines.slice(0, 4000),
-        '用一句话（第一人称、不超过 60 字）记下这通电话：聊了什么、他什么状态或心情、有没有约定或要记住的事。',
+        '用一句话（第一人称、不超过 90 字）记下这通电话：优先记具体的事——他做了什么、在哪、说了哪些关键信息、有没有约定或要记住的事；再带一句他的状态或心情。',
         '只输出这一句：不要引号、不要「记录：」这种前缀、不要 Markdown、不要 emoji、不要旁白。',
       ].join('\n')
       const r = await api.think(prompt, { title: '通话', timeoutMs: 60000, noTools: true })
@@ -407,7 +407,9 @@ export default {
       }
       let body
       if (gist) {
-        body = `通话（${span}）：${gist}`
+        // 光存概括，之后问「刚才聊了什么细节」时关键词对不上；带上几句原话才召回得动
+        const mine = logRows.filter((x) => x.who === 'master').map((x) => x.text).slice(-3)
+        body = `通话（${span}）：${gist}` + (mine.length ? '\n他的原话：' + mine.map((x) => `「${cut(x, 26)}」`).join('') : '')
       } else {
         const mine = logRows.filter((x) => x.who === 'master').map((x) => x.text).slice(-4)
         const hers = logRows.filter((x) => x.who === 'me').map((x) => x.text).slice(-3)
@@ -418,7 +420,7 @@ export default {
         ].filter(Boolean).join('；')
       }
       try {
-        const r = mem.add({ text: cut(body, 300), tags: ['通话'], importance: gist ? 0.6 : 0.5, source: 'tool', chatId: CALL_CHAT })
+        const r = mem.add({ text: cut(body, 300), tags: ['通话'], importance: gist ? 0.65 : 0.5, source: 'tool', chatId: CALL_CHAT })
         if (r && r.ok === false) {
           log.warn('通话记忆没写进去：' + (r.message || '被拒'))
           return { ok: false, why: r.message || '', wrote: 0 }
