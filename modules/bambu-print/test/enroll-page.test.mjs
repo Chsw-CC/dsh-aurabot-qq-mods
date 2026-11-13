@@ -152,6 +152,39 @@ test('页面：生存时间固定 10 分钟，不再有设置窗口；区域可�
   assert.equal(payload.exp - payload.iat, 600, '10 分钟 = 600 秒')
 })
 
+test('页面：结构符合最终形态（无用途卡片、主按钮是复制整条命令、hidden 真的生效）', async () => {
+  const html = await readIndex()
+  const css = await readFile(path.join(ENROLL_DIR, 'style.css'), 'utf8')
+
+  // 「这段是用来做什么的」整块已删除
+  assert.doesNotMatch(html, /这段是用来做什么的/, '不该再有用途说明卡片')
+  assert.doesNotMatch(html, /id="uses-card"/)
+  // 旧的「三种用法」文案也清掉了
+  assert.doesNotMatch(html, /三种用法/, '不该再提三种用法')
+
+  // 主按钮是「复制整条命令」，次要按钮是「只复制密文」
+  const primary = html.indexOf('class="primary" id="copy-command"')
+  const secondary = html.indexOf('class="secondary" id="copy"')
+  assert.ok(primary > 0, '主按钮应当是「复制整条命令」')
+  assert.ok(secondary > 0, '次要按钮应当是「只复制密文」')
+  assert.ok(primary < secondary, '主按钮要排在前面')
+
+  // .card 的 display:flex 会盖掉 [hidden]，CSS 必须显式补一条
+  assert.match(css, /\[hidden\]\s*\{[^}]*display:\s*none\s*!important/, 'CSS 要显式处理 [hidden]')
+  // 结果区默认隐藏
+  assert.match(html, /<section class="card result" id="result" hidden>/)
+
+  // 复制按钮在空文本框时置灰 + 空白时不报「复制失败」
+  assert.match(html, /function syncCopyButtons/, '要有按钮置灰逻辑')
+  assert.match(html, /还没有生成内容/, '空内容要给明确提示')
+  // 注释里可以提这个词，但 showCopied() 的实参里不能出现「复制失败」
+  const shown = [...html.matchAll(/showCopied\(([^)]*)\)/g)].map((m) => m[1]).join('\n')
+  assert.ok(!shown.includes('复制失败'), '用户可见提示里不该说「复制失败」：' + shown);
+
+  // 刚打开页面不该先报错
+  assert.match(html, /showErrors = state\.touched/, '未触碰表单时不显示错误')
+})
+
 // ------------------------------------------------------------------ 真浏览器端到端（可选）
 
 function findBrowser () {
