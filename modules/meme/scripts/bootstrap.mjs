@@ -1,3 +1,4 @@
+import { checkEnvironment } from '../lib/environment.mjs';
 import { mkdir, open, readFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +24,7 @@ export async function withRuntimeLock(root, work, lockName = '.base-install.lock
   try {return await work();} finally {await rm(lock,{force:true});}
 }
 export async function bootstrap(root,onProgress=()=>{}) {
+  await checkEnvironment({download:!hasBaseRuntime(root)});
   return withRuntimeLock(root,async()=>{
     if(hasBaseRuntime(root))return;
     await prepareDependencies(root,{onProgress,sourceRoot:fileURLToPath(new URL('..',import.meta.url))});

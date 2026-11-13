@@ -1,3 +1,4 @@
+import { checkEnvironment, environmentMessage, environmentHelp } from './environment.mjs';
 import { createInterface } from 'node:readline';
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -16,12 +17,12 @@ export function cachedExtension(dir) {
   } catch { return false; }
 }
 export class ExtensionManager {
-  constructor({ dir, runtimeDir = dir, engine, onCatalog, save, log, prepare }) {
-    Object.assign(this, { dir, runtimeDir, engine, onCatalog, save, log });
-    this.installed=false; this.count=0; this.busy=false; this.error=''; this.disposed=false; this.child=null; this.message='';this.received=0;this.operation='';
+  constructor({ dir, runtimeDir = dir, engine, onCatalog, save, log, prepare, check=checkEnvironment }) {
+    Object.assign(this, { dir, runtimeDir, engine, onCatalog, save, log, check });
+    this.installed=false; this.count=0; this.busy=false; this.error='';this.help=''; this.disposed=false; this.child=null; this.message='';this.received=0;this.operation='';
     this.prepare = prepare || (() => this.prepareFiles());
   }
-  status() { return { installed:this.installed, count:this.count, cached:cachedExtension(this.runtimeDir), busy:this.busy, error:this.error, message:this.message, received:this.received, operation:this.operation }; }
+  status() { return { installed:this.installed, count:this.count, cached:cachedExtension(this.runtimeDir), busy:this.busy, error:this.error, help:this.help, message:this.message, received:this.received, operation:this.operation }; }
   async mount(enabled) {
     if(this.disposed) throw new UserError('模块已停止');
     const result=await this.engine.call('extension',{enabled});
@@ -29,17 +30,17 @@ export class ExtensionManager {
     this.onCatalog(result); this.installed=!!result.extensionEnabled; this.count=result.extensionCount || 0;
   }
   async restore() {
-    try { await this.mount(true); }
-    catch(e) { this.log.warn('扩展库加载失败',e.stack || String(e)); this.error='扩展库未能加载，请重新安装。'; }
+    try { await this.check({extension:true}); if(!this.disposed){await this.mount(true);if(!this.disposed){this.error='';this.help='';}} }
+    catch(e) { if(this.disposed)return; this.log.warn('扩展库加载失败',e.stack || String(e)); this.error=environmentMessage(e,'扩展库未能加载，请重新安装。');this.help=environmentHelp(e); }
   }
   start(enabled) {
     if(this.disposed) throw new UserError('模块已停止');
     if(this.busy) throw new UserError('扩展库正在处理，请稍后');
-    this.busy=true; this.error='';this.operation=enabled?'install':'uninstall';this.message=enabled?'正在安装扩展库…':'正在卸载扩展库…';this.received=0;
+    this.busy=true; this.error='';this.help='';this.operation=enabled?'install':'uninstall';this.message=enabled?'正在安装扩展库…':'正在卸载扩展库…';this.received=0;
     this.task=this.change(enabled).catch(e=>{
       if(this.disposed) return;
       this.log.warn('扩展库操作失败', e.stack || String(e));
-      this.error=enabled?'安装未完成，请重试。':'卸载未完成，请重试。';
+      this.error=environmentMessage(e,enabled?'安装未完成，请重试。':'卸载未完成，请重试。');this.help=environmentHelp(e);
     }).finally(()=>{this.busy=false;});
     return this.status();
   }
@@ -53,6 +54,8 @@ export class ExtensionManager {
     catch(e) { await this.mount(previous); throw e; }
   }
   async prepareFiles() {
+    await this.check({extension:true,download:!cachedExtension(this.runtimeDir)});
+    if(this.disposed)return;
     if(cachedExtension(this.runtimeDir)) {
       await prepareSkiaData(join(this.runtimeDir,'node_modules','.meme-python'),`${process.platform}-${process.arch}`);
       return;

@@ -1,3 +1,4 @@
+import { checkEnvironment } from '../lib/environment.mjs';
 import { preparePythonRuntime } from './prepare-python-runtime.mjs';
 import { withRuntimeLock } from './bootstrap.mjs';
 import { cachedExtension } from '../lib/extension.mjs';
@@ -12,6 +13,7 @@ const run = promisify(execFile);
 const execute = (file, args, options={}) => new Promise((res,rej)=>{const p=spawn(file,args,{stdio:'inherit',windowsHide:true,...options});p.on('error',rej);p.on('exit',code=>code===0?res():rej(Error(`${file} 退出 ${code}`)));});
 const exists = p => stat(p).then(()=>true,()=>false);
 export async function preparePython(root,{onProgress=()=>{}}={}) {
+ await checkEnvironment({extension:true,download:!cachedExtension(root)});
  return withRuntimeLock(root, () => preparePythonFiles(root, onProgress), '.extension-install.lock');
 }
 async function preparePythonFiles(root,onProgress) {
