@@ -78,8 +78,14 @@ return function Panel({ settings, save, toast }) {
         : lan.ok
           ? h('div', null,
               h('p', { className: 'ab-small', style: { wordBreak: 'break-all' } }, lan.url),
+              h('p', { className: 'ab-small ab-muted' }, '链接里的 t= 是会话令牌，等于钥匙：别发群里，泄露了点「换新链接」'),
               h('div', { style: { display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' } },
                 h(ui.Btn, { onClick: () => copy(lan.url, '手机地址已复制，发到手机上打开') }, '复制手机地址'),
+                h(ui.Btn, {
+                  onClick: () => {
+                    call('/lan?reset=1').then((x) => { setLan(x); copy(x.url, '已换成新链接，旧链接作废') }).catch(() => {})
+                  },
+                }, '换新链接'),
               ),
               h('p', { className: 'ab-small ab-muted' },
                 '第一次打开会提示证书不受信任，点「高级 / 继续前往」就行（自签证书，只在这台电脑上生效）。'),

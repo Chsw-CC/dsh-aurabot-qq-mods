@@ -57,3 +57,32 @@ test('WAV 头长度和采样率写得对', () => {
   assert.equal(head.readUInt16LE(34), 16)
   assert.equal(head.readUInt32LE(40), 0xffffffff) // 长度未知，边下边播用
 })
+
+// ---- 局域网入口的安全默认值（改坏了会直接暴露插件 API，所以上锁）----
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+
+const MODULE_SRC = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'index.mjs'), 'utf8')
+
+test('局域网 HTTPS 默认关闭', () => {
+  assert.ok(MODULE_SRC.includes('lanHttps: false'), 'lanHttps 默认值必须是 false')
+  assert.ok(MODULE_SRC.includes('settings().lanHttps !== true'), '只有显式打开才允许起服务')
+})
+
+test('反代只放行通话模块自己的接口', () => {
+  const head = MODULE_SRC.indexOf('const ALLOW_PATHS = new Set([')
+  assert.ok(head > 0, '找不到 ALLOW_PATHS')
+  const body = MODULE_SRC.slice(MODULE_SRC.indexOf('[', head) + 1, MODULE_SRC.indexOf('])', head))
+  const paths = body.split(',').map((x) => x.trim().replace(/'/g, '')).filter(Boolean)
+  assert.equal(paths.length, 8, `白名单应恰好 8 个路径，实际 ${paths.length}`)
+  for (const one of paths) {
+    assert.ok(one.startsWith('/aurabot/api/ext/voicecall/'), '白名单越界：' + one)
+  }
+})
+
+test('反代必须校验会话令牌，且令牌不进上游 URL', () => {
+  assert.ok(MODULE_SRC.includes('got !== want'), '缺少令牌校验')
+  assert.ok(MODULE_SRC.includes("searchParams.delete('t')"), '转发前应摘掉 t= 参数')
+  assert.ok(MODULE_SRC.includes('HttpOnly; Secure; SameSite=Lax'), 'Cookie 应带 HttpOnly/Secure/SameSite')
+})

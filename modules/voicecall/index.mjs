@@ -59,7 +59,7 @@ export default {
     voice: 'zh-CN-XiaoyiNeural',
     rate: '',
     maxChars: 120,
-    lanHttps: true,
+    lanHttps: false,
     httpsPort: 8443,
     asrProvider: 'local',
     asrLang: 'zh',
@@ -97,7 +97,7 @@ export default {
     { key: 'ttsSampleRate', label: 'PCM 采样率', type: 'number', min: 8000, max: 48000, step: 1000, hint: 'OpenAI 兼容接口通常 24000，不确定就保持默认' },
     { key: 'ttsTemplate', label: '自定义合成模板（JSON）', type: 'textarea', hint: '只有嘴选「自定义 HTTP」才用。见 PROVIDERS.md 的示例' },
     { key: 'maxChars', label: '一次最多说多少字', type: 'number', min: 20, max: 500, step: 10, hint: '电话里话别太长，长了反而不像人' },
-    { key: 'lanHttps', label: '局域网 HTTPS（手机用）', type: 'switch', hint: '手机上要开麦克风必须走 https；只在家里的局域网用' },
+    { key: 'lanHttps', label: '局域网 HTTPS（手机用）', type: 'switch', hint: '默认关闭。打开后只放行通话模块自己的接口，且必须带会话令牌（面板「复制手机地址」里含令牌）；不需要手机通话就别开' },
     { key: 'httpsPort', label: '局域网 HTTPS 端口', type: 'number', min: 1024, max: 65535, step: 1, hint: '默认 8443，被占用就换一个' },
   ],
 
@@ -146,27 +146,112 @@ export default {
       if (m) hostPort = Number(m[1]) || hostPort
       return hostPort
     }
+    // ---- 手机入口的安全边界 ----
+    // 反代只做一件事：把「通话模块自己的 8 个接口」转给本机宿主，别的路径一律 404。
+    // 光靠 Origin 校验挡不住局域网里的其他人，所以再加一层会话令牌：
+    // 令牌在 dataDir 里随机生成，链接形如 /page?t=<令牌>，首次访问种成 HttpOnly Cookie。
+    const ALLOW_PATHS = new Set([
+      '/aurabot/api/ext/voicecall/page',
+      '/aurabot/api/ext/voicecall/state',
+      '/aurabot/api/ext/voicecall/fillers',
+      '/aurabot/api/ext/voicecall/filler',
+      '/aurabot/api/ext/voicecall/turn',
+      '/aurabot/api/ext/voicecall/turn/stream',
+      '/aurabot/api/ext/voicecall/say',
+      '/aurabot/api/ext/voicecall/hangup',
+    ])
+    const ALLOW_METHODS = new Set(['GET', 'POST'])
+    const COOKIE_NAME = 'vc_lan'
+
+    const tokenFile = join(dataDir, 'lan-token.txt')
+    let tokenCache = ''
+    const lanToken = (reset) => {
+      try {
+        if (!reset && tokenCache) return tokenCache
+        if (!reset && existsSync(tokenFile)) {
+          const t = readFileSync(tokenFile, 'utf8').trim()
+          if (t.length >= 32) { tokenCache = t; return t }
+        }
+        const t = randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '')
+        writeFileSync(tokenFile, t, 'utf8')
+        tokenCache = t
+        if (reset) log.info('手机访问令牌已重置，旧链接立即失效')
+        return t
+      } catch (error) {
+        log.warn('令牌存取失败：' + (error.message || error))
+        return tokenCache || ''
+      }
+    }
+
+    // 令牌猜错太多次就凉一会儿，别让人在局域网里慢慢试
+    let tokenFails = 0
+    let tokenCoolUntil = 0
+
+    const deny = (res, code, msg) => {
+      res.writeHead(code, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(msg)
+    }
+
+    const cookieToken = (req) => {
+      const raw = String((req.headers && req.headers.cookie) || '')
+      for (const part of raw.split(';')) {
+        const i = part.indexOf('=')
+        if (i < 0) continue
+        if (part.slice(0, i).trim() === COOKIE_NAME) return decodeURIComponent(part.slice(i + 1).trim())
+      }
+      return ''
+    }
+
     const proxyToHost = (req, res) => {
       const port = hostPort || Number(api?.dsh?.webServer?.port) || 0
-      if (!port) {
-        res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' })
-        res.end('还不知道 Aurabot 的端口：先在电脑上打开一次通话面板')
-        return
+      let url
+      try { url = new URL(req.url, 'https://lan.invalid') } catch (error) { return deny(res, 400, '地址不合法') }
+      const path = url.pathname
+
+      // 1) 路由白名单：只有通话模块自己的接口能过，插件的其它 API 一概不转
+      if (!ALLOW_PATHS.has(path)) return deny(res, 404, '这个地址不在通话模块的白名单里')
+      if (!ALLOW_METHODS.has(req.method || 'GET')) return deny(res, 405, '只支持 GET / POST')
+
+      // 2) 令牌：?t= 或 Cookie，二者其一
+      const now = Date.now()
+      if (now < tokenCoolUntil) return deny(res, 429, '试错次数太多，稍后再试')
+      const want = lanToken()
+      if (!want) return deny(res, 503, 'token 没生成出来，去面板看看日志')
+      const fromQuery = url.searchParams.get('t') || ''
+      const got = fromQuery || cookieToken(req)
+      if (got !== want) {
+        tokenFails += 1
+        if (tokenFails > 20) { tokenCoolUntil = now + 5 * 60_000; tokenFails = 0 }
+        return deny(res, 401, '访问令牌不对或已失效。请在电脑面板重新点「复制手机地址」，用带令牌的新链接打开。')
       }
-      // 手机浏览器 POST 会带 Origin: https://<本机局域网 IP>:<端口>，
-      // 而宿主只认自家 Origin → 403。页面本来就是从这台机器加载的（同源），
-      // 剥掉 Origin/Referer 不影响任何功能，只让校验放行。
+      tokenFails = 0
+
+      // 3) 转发时把令牌从 URL 里摘掉，别让它出现在宿主的访问日志里
+      url.searchParams.delete('t')
+      const search = url.searchParams.toString()
+      const target = path + (search ? '?' + search : '')
+
+      // 4) 手机浏览器 POST 会带 Origin: https://<局域网 IP>:<端口>，宿主只认自家 Origin → 403。
+      //    现在路径已经限定在通话模块的 8 个接口内，剥掉 Origin/Referer 最多只影响这几个接口，
+      //    碰不到插件的其它能力。
       const fwd = { ...req.headers, host: `127.0.0.1:${port}` }
       delete fwd.origin
       delete fwd.referer
       const up = httpRequest({
         host: '127.0.0.1',
         port,
-        path: req.url,
+        path: target,
         method: req.method,
         headers: fwd,
       }, (r) => {
-        res.writeHead(r.statusCode || 502, r.headers)
+        const headers = { ...r.headers }
+        // 5) 用 ?t= 打开页面时把令牌种成 HttpOnly Cookie，之后页面里的请求自动带上
+        if (fromQuery && path === '/aurabot/api/ext/voicecall/page') {
+          const prev = headers['set-cookie']
+          const mine = `${COOKIE_NAME}=${encodeURIComponent(want)}; Path=/aurabot/api/ext/voicecall; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`
+          headers['set-cookie'] = prev ? [].concat(prev, mine) : [mine]
+        }
+        res.writeHead(r.statusCode || 502, headers)
         r.pipe(res)
       })
       up.setTimeout(0)
@@ -203,7 +288,7 @@ export default {
 
     const startLan = () => {
       if (lanServer) return { ok: true, port: lanPort }
-      if (settings().lanHttps === false) return { ok: false, why: '设置里关掉了局域网 HTTPS' }
+      if (settings().lanHttps !== true) return { ok: false, why: '局域网 HTTPS 默认关闭，需要先在设置里打开' }
       const tls = ensureCert()
       if (!tls.ok) return { ok: false, why: tls.why }
       const want = Number(settings().httpsPort) || 8443
@@ -218,7 +303,7 @@ export default {
         })
         lanServer.listen(want, '0.0.0.0', () => {
           lanPort = want
-          log.info(`局域网 HTTPS 已开：https://${lanIp() || '127.0.0.1'}:${want}/aurabot/api/ext/voicecall/page`)
+          log.info(`局域网 HTTPS 已开（端口 ${want}，仅放行通话模块接口，需带会话令牌）；手机地址在面板「复制手机地址」取`)
         })
         return { ok: true, port: want }
       } catch (error) {
@@ -538,15 +623,20 @@ export default {
     // 手机用：局域网 https 地址（自签证书，第一次要在手机上点「继续访问」）
     api.route('/lan', async (req) => {
       learnHost(req)
+      const q = api.core.http.query(req)
+      const reset = String(q.reset || '') === '1'
       const s = startLan()
       const port = lanPort || Number(settings().httpsPort) || 8443
       const ip = lanIp()
+      // 地址里带会话令牌：没有它，同一个 Wi-Fi 下的别人也打不开、也发不了请求
+      const token = reset ? lanToken(true) : lanToken()
       return {
         ok: Boolean(lanServer),
         ip,
         port,
         https: Boolean(lanServer),
-        url: ip ? `https://${ip}:${port}/aurabot/api/ext/voicecall/page` : '',
+        url: ip && token ? `https://${ip}:${port}/aurabot/api/ext/voicecall/page?t=${token}` : '',
+        token: Boolean(token),
         why: s.why || '',
       }
     })
