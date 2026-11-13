@@ -33,7 +33,7 @@
 
 ## 存储
 
-`modules-data/little-notes/notes.json`，按 `chatId` 分本（私聊一本、每个群各一本），每本默认最多 500 条，超了丢最旧的。
+`modules-data/little-notes/notes.json`，按 `chatId` 分本（私聊一本、每个群各一本），每本默认最多 500 条，超了丢最旧的。**标了星（⭐）的条目不会被丢**——只有整本全是星标实在放不下时才丢最旧的星标；刚记下的那条永远不会被丢。
 
 ## 安全
 
