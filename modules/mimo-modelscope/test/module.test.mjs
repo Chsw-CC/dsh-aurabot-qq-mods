@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import definition from '../index.mjs'
 
 const id = definition.id
@@ -27,14 +27,15 @@ function wav(sample) {
   return file
 }
 
-function startModule(t) {
+function startModule(t, { settings = {}, prepare } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'mimo-modelscope-market-test-'))
   const dir = join(root, 'modules-data', id)
   mkdirSync(dir, { recursive: true })
   const cfg = {
     local: { tts: false, image: false },
-    ext: { [id]: { voiceEnabled: true, mimoKey: 'test-mimo', imageEnabled: true, modelScopeToken: 'test-scope' } },
+    ext: { [id]: { ...settings } },
   }
+  prepare?.(root, dir)
   const routes = new Map()
   const disposers = []
   const configListeners = []
@@ -44,12 +45,14 @@ function startModule(t) {
     rmSync(root, { recursive: true, force: true })
   })
   const api = {
+    dir: fileURLToPath(new URL('../', import.meta.url)),
     config: () => cfg,
     settings: () => ({ ...definition.defaults, ...cfg.ext[id] }),
     setConfig: (patch) => {
+      const before = { local: { ...cfg.local } }
       Object.assign(cfg.local, patch.local)
       Object.assign(cfg.ext[id], patch.ext?.[id])
-      for (const listener of configListeners) listener()
+      for (const listener of configListeners) listener(cfg, before)
     },
     saveSettings: (patch) => api.setConfig({ ext: { [id]: patch } }),
     dataDir: (...parts) => join(dir, ...parts),
@@ -81,35 +84,52 @@ function startModule(t) {
   return { api, root, stop, call }
 }
 
-test('参考音频由受保护的面板上传，保存失败保留旧文件，试听使用当前音频', async (t) => {
+test('参考音频可多份保存和切换，旧文件继续可用，写入失败时保留原选择', async (t) => {
   const first = wav(1)
   const replacement = wav(2)
   const result = wav(3)
+  let expected = replacement
   t.mock.method(globalThis, 'fetch', async (url, options) => {
     assert.equal(url, 'https://api.xiaomimimo.com/v1/chat/completions')
     assert.equal(options.headers.authorization, 'Bearer test-mimo')
-    assert.equal(JSON.parse(options.body).audio.voice, 'data:audio/wav;base64,' + replacement.toString('base64'))
+    assert.equal(JSON.parse(options.body).audio.voice, 'data:audio/wav;base64,' + expected.toString('base64'))
     return Response.json({ choices: [{ message: { audio: { data: result.toString('base64') } } }] })
   })
-  const { api, call } = startModule(t)
+  const legacy = 'ref-01bde710-af6a-4787-af84-f2c766f34e4c.wav'
+  const { api, call } = startModule(t, {
+    settings: { mimoKey: 'test-mimo', referenceFile: legacy },
+    prepare(_root, dir) {
+      mkdirSync(join(dir, 'reference'))
+      writeFileSync(join(dir, 'reference', legacy), first)
+    },
+  })
   const reference = api.dataDir('reference')
-  const upload = (bytes) => call('/reference', { base64: bytes.toString('base64') })
+  const upload = (bytes, name) => call('/reference', { base64: bytes.toString('base64'), name })
+  const select = (id) => call('/reference/select', { id })
 
+  const initial = await call('/status')
+  assert.deepEqual(initial.currentReference, { id: legacy, name: '之前上传的参考音频' })
+  assert.equal((await select('bundled')).ok, true)
+  assert.equal((await call('/status')).currentReference.name, '懒羊羊.wav')
+  expected = readFileSync(join(api.dir, 'assets', '懒羊羊.wav'))
+  assert.equal((await call('/preview-voice', { text: '晚安' })).ok, true)
+  expected = replacement
+  assert.equal((await select('../config.json')).ok, false)
   assert.equal((await call('/reference')).ok, false)
   assert.equal((await upload(Buffer.from('invalid audio'))).ok, false)
-  assert.deepEqual(readdirSync(reference), [])
-  assert.equal((await upload(first)).ok, true)
+  assert.deepEqual(readdirSync(reference), [legacy])
+  assert.equal((await upload(first, '第一次录音.wav')).ok, true)
   const before = api.settings().referenceFile
   assert.deepEqual(readFileSync(join(reference, before)), first)
 
   const save = api.saveSettings
   api.saveSettings = () => { throw new Error('模拟配置写入失败') }
   assert.equal((await upload(replacement)).ok, false)
-  assert.deepEqual(readdirSync(reference), [before])
+  assert.deepEqual(readdirSync(reference).sort(), [legacy, before].sort())
   assert.equal(api.settings().referenceFile, before)
   api.saveSettings = save
 
-  assert.equal((await upload(replacement)).ok, true)
+  assert.equal((await upload(replacement, 'C:\\音频\\第二次录音.wav')).ok, true)
   assert.notEqual(api.settings().referenceFile, before)
   assert.deepEqual(readFileSync(join(reference, api.settings().referenceFile)), replacement)
   assert.deepEqual(await call('/preview-voice', { text: '晚安' }), {
@@ -117,6 +137,12 @@ test('参考音频由受保护的面板上传，保存失败保留旧文件，�
   })
   const status = await call('/status')
   assert.equal(status.voiceReady, true)
+  assert.equal(status.currentReference.name, '第二次录音.wav')
+  assert.deepEqual(status.references.map(({ name }) => name), ['懒羊羊.wav', '之前上传的参考音频', '第一次录音.wav', '第二次录音.wav'])
+  assert.equal((await select(before)).ok, true)
+  assert.equal((await call('/status')).currentReference.name, '第一次录音.wav')
+  expected = first
+  assert.equal((await call('/preview-voice', { text: '晚安' })).ok, true)
   assert.ok(!JSON.stringify(status).includes('test-mimo'))
 })
 
@@ -142,20 +168,34 @@ test('内置语音和生图按需接管，脚本执行使用当前设置，停�
   const ttsPath = join(localDir, 'tts.mjs')
   const imagePath = join(localDir, 'image.mjs')
   const set = (slot, enabled) => call('/local', { slot, enabled })
+  const initial = await call('/status')
+  assert.deepEqual(initial.currentReference, { id: 'bundled', name: '懒羊羊.wav', bundled: true })
+  assert.deepEqual(initial.local, {
+    tts: { enabled: true, ready: false, active: false, conflict: false },
+    image: { enabled: true, ready: false, active: false, conflict: false },
+  })
   assert.equal(existsSync(ttsPath), false)
   assert.equal(existsSync(imagePath), false)
-  assert.equal((await set('tts', true)).ok, false)
-  assert.equal((await call('/reference', { base64: audio.toString('base64') })).ok, true)
   mkdirSync(localDir, { recursive: true })
   writeFileSync(ttsPath, '// 用户自己的语音脚本')
+  api.saveSettings({ mimoKey: 'test-mimo', modelScopeToken: 'test-scope' })
   assert.equal((await set('tts', true)).ok, false)
   assert.equal(readFileSync(ttsPath, 'utf8'), '// 用户自己的语音脚本')
+  assert.equal(api.config().local.tts, false)
+  assert.equal(api.config().local.image, true)
+  assert.equal(existsSync(imagePath), true)
   rmSync(ttsPath)
   assert.equal((await set('tts', true)).ok, true)
-  assert.equal((await set('image', true)).ok, true)
   assert.deepEqual((await call('/status')).local, {
-    tts: { active: true, conflict: false }, image: { active: true, conflict: false },
+    tts: { enabled: true, ready: true, active: true, conflict: false },
+    image: { enabled: true, ready: true, active: true, conflict: false },
   })
+  api.setConfig({ local: { tts: false } })
+  assert.equal(existsSync(ttsPath), false)
+  assert.equal((await call('/status')).local.tts.enabled, false)
+  api.saveSettings({ voiceSpeed: 'slow' })
+  assert.equal(existsSync(ttsPath), false)
+  assert.equal((await set('tts', true)).ok, true)
   api.setConfig({ ext: { [id]: { voiceEnabled: false } } })
   assert.equal(existsSync(ttsPath), false)
   assert.equal(existsSync(imagePath), true)
