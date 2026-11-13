@@ -1,0 +1,64 @@
+# 把「离线登录页」发布到 GitHub Pages。
+#
+# 只发布 modules/bambu-print/assets/enroll/ 这一个目录，别的源码一律不上 Pages：
+# 那个目录是纯静态的（没有构建、没有依赖、不发任何网络请求），正好适合公开托管。
+#
+# 发布后地址：https://<用户名>.github.io/<仓库名>/
+# 机器人那边用设置项 enrollBaseUrl 指过去，或者把 lib/envelope.mjs 的 DEFAULT_ENROLL_BASE 改成它。
+
+name: Pages (bambu-print 登录页)
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'modules/bambu-print/assets/enroll/**'
+      - '.github/workflows/pages-bambu-enroll.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-bambu-enroll
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验静态页（没有远程依赖、没有本地存储）
+        run: |
+          set -e
+          cd modules/bambu-print/assets/enroll
+          for f in index.html bbx.js enroll-form.js style.css; do
+            test -f "$f" || { echo "缺少 $f"; exit 1; }
+          done
+          # 页面本身不许请求外部域名（ckeditor/统计/字体都不行）
+          if grep -Eq 'src="https?://|href="https?://' index.html; then
+            echo "index.html 里有远程资源"; exit 1
+          fi
+          # 不许把用户输入留在本机
+          if grep -Eq 'localStorage|sessionStorage' index.html bbx.js enroll-form.js; then
+            echo "页面里有本地存储"; exit 1
+          fi
+          echo "静态页检查通过"
+
+      # 自动开启 Pages（仓库还没启用时也能跑通）；没有管理员权限时忽略，改由人工在设置里开
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: modules/bambu-print/assets/enroll
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

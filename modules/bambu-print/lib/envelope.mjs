@@ -28,12 +28,15 @@ import {
 } from '../assets/enroll/bbx.js'
 
 /**
- * 内置默认登录网页地址。
+ * 内置默认登录网页地址（由 .github/workflows/pages-bambu-enroll.yml 发布）。
+ *
+ * 注意：这是**这个仓库**的地址。别人 fork 之后应当把设置项 enrollBaseUrl 改成
+ * 自己那份（否则用户点开的是别人的页面 —— 页面只能加密，偷不到私钥，但能偷用户输入）。
  * 用户 fork 之后应该在设置项 enrollBaseUrl 里改成自己部署的那份——
  * 内置这份只有仓库维护者能改，别人 fork 出来的机器人如果还用这个地址，
  * 点开的就是别人的页面（页面只能加密，偷不到私钥，但能偷用户在页面里输的明文）。
  */
-export const DEFAULT_ENROLL_BASE = 'https://accomplish07zrh-eng.github.io/dsh-aurabot-qq-mods/bambu-print/enroll/'
+export const DEFAULT_ENROLL_BASE = 'https://cdcp998.github.io/dsh-aurabot-qq-mods/'
 
 /** 时钟偏移容忍（秒）：两边机器时间不可能完全一致。 */
 const SKEW_SEC = 120
