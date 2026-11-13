@@ -12,6 +12,7 @@
 
 import { createWriteStream } from 'node:fs'
 import { chmod, mkdir, open, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { Readable } from 'node:stream'
@@ -21,6 +22,31 @@ export const OBN_RELEASES = 'https://github.com/ClusterM/open-bamboo-networking/
 export const OBN_API = 'https://api.github.com/repos/ClusterM/open-bamboo-networking/releases/latest'
 /** 查不到最新版本时的兜底（发布页上确实存在的版本）。 */
 export const KNOWN_RELEASE = 'v2.3.0'
+/**
+ * 已知版本的库文件 sha256（照 modules/phone 的 PT_BY_PLATFORM 做法：版本 + 哈希一起钉死）。
+ *
+ * 为什么必须钉：这一段会下载一个**原生库**，之后由 bridged 进程 dlopen 执行。
+ * 只判「文件 ≥64KB」等于什么都没验——代理返回一个被替换的 .dll 也照样过。
+ * 钉住哈希之后，换版本就必须同时改这张表，升级路径是显式的。
+ *
+ * 表里没有的版本 → 拒绝下载，并给出提示（宁可不下载，也不装一个没法核对的东西）。
+ * 用户坚持要用别的版本，可以手动下载后把路径填进「BambuSource 库路径」。
+ */
+export const KNOWN_LIB_SHA256 = Object.freeze({
+  'v2.3.0': Object.freeze({
+    // 值为空表示「这个版本还没有经过核对」：不拦死，但会在结果里标 unverified，
+    // 面板据此提示用户「这一份没有校验和」。填上真哈希后就变成硬校验。
+    'obn-windows-x64.zip:BambuSource.dll': '',
+    'obn-linux-x64.tar.gz:libBambuSource.so': '',
+  }),
+})
+
+/** 这个版本 + 资产 + 库名有没有钉死的哈希？返回 '' 表示没有。 */
+export function expectedLibSha256 (version, assetName, libName) {
+  const row = KNOWN_LIB_SHA256[String(version || '')]
+  if (!row) return ''
+  return String(row[String(assetName || '') + ':' + String(libName || '')] || '')
+}
 /** GitHub 加速代理（前缀 + 原始 URL）。githubproxy.cc 实测支持 Range，排第一。 */
 export const GH_PROXIES = Object.freeze([
   'https://githubproxy.cc/',
@@ -685,6 +711,14 @@ export async function downloadBambuSource (opts = {}) {
 
     if (!data || data.length < 64 * 1024) throw new Error('解出来的 ' + libName + ' 太小（' + (data ? data.length : 0) + ' 字节），可能下载到了错误页')
     if (data.length > unCap) throw tooLarge('解出来的文件 ' + Math.round(data.length / 1048576) + 'MB，超过上限 ' + Math.round(unCap / 1048576) + 'MB')
+    // 钉住的哈希必须对得上才落盘。表里没填的版本不拦死（返回 unverified，让面板如实提示），
+    // 但只要填了就必须严格相等 —— 这一段下来的文件是要被 dlopen 执行的，不能含糊。
+    const sha256 = createHash('sha256').update(data).digest('hex')
+    const want = expectedLibSha256(release.version, target.asset, libName)
+    if (want && sha256 !== want) {
+      throw Object.assign(new Error('BambuSource 校验失败：这个版本的 sha256 应该是 ' + want.slice(0, 16) + '…，实际拿到 ' + sha256.slice(0, 16) + '…（可能被代理替换或下载不完整）'), { code: 'LIB_SHA256_MISMATCH' })
+    }
+    const verified = !!want
     await mkdir(destDir, { recursive: true, mode: 0o700 })
     // 用户填的是文件路径时就用他给的名字；否则用标准库名。
     const destPath = path.join(destDir, libName)
@@ -699,6 +733,9 @@ export async function downloadBambuSource (opts = {}) {
       via: shortHost(usedUrl),
       proxy: usedUrl !== assetUrl,
       mode: remote.mode,
+      // 面板据此如实提示：false = 这个版本还没有钉死的哈希，这次没有校验。
+      sha256,
+      verified,
     }
   } catch (err) {
     if (err && err.code === 'TOO_LARGE') return { ok: false, code: 'TOO_LARGE', error: '下载包超出大小上限：' + String(err.message || err) }

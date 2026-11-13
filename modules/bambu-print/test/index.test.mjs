@@ -781,13 +781,23 @@ test('面板 /tutk/download：注入下载成功 → 返回路径/版本/是否�
     let asked = null
     api.__bambuTestHooks.downloadBambuSource = async (opts) => {
       asked = opts
-      return { ok: true, path: path.join(bridgeDir, libName), bytes: 5606400, version: 'v2.3.0', via: 'githubproxy.cc', proxy: true, mode: 'range' }
+      return { ok: true, path: path.join(bridgeDir, libName), bytes: 5606400, version: 'v2.3.0', via: 'githubproxy.cc', proxy: true, mode: 'range', sha256: 'a'.repeat(64), verified: true }
     }
+
+    // 这条路由会写盘、写下东西还会被 dlopen，所以要主人解锁才能用。
+    const locked = await route(api, '/tutk/download', {})
+    assert.equal(locked.ok, false)
+    assert.equal(locked.code, 'LOCKED', '未解锁主人不能触发下载')
+    assert.equal(asked, null, '被拦下时不应该真的去下载')
+
+    await setupUser(api, OWNER)
     const r = await route(api, '/tutk/download', {})
     assert.equal(r.ok, true)
-    assert.equal(asked.destDir, bridgeDir, '默认放到桥同目录')
+    // 默认落到数据目录，不写进模块目录：插件盯着模块目录，一改就热重载、解锁会话被清空。
+    assert.equal(asked.destDir, path.join(api.dataDir(), 'bambusource'), '默认落到数据目录而不是模块目录')
     assert.equal(r.version, 'v2.3.0')
     assert.equal(r.proxy, true)
+    assert.equal(r.verified, true, '有钉死哈希时要如实回报已校验')
     assert.equal(r.ready, true, '库放好后自检应通过')
     assert.equal(JSON.stringify(r).includes(CLOUD_TOKEN), false)
 

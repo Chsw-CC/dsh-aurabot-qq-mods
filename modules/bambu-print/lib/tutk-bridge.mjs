@@ -1,7 +1,7 @@
 // lib/tutk-bridge.mjs —— 调用我们自己的 C 桥（assets/tutk-bridge/bambu-tutk-bridge[.exe]）抓 TUTK 帧。
 //
-// 它和 lib/tutk-probe.mjs 做同一件事（URL 只进临时文件 → 抓样本 → H.264 交给 ffmpeg），
-// 区别只是可执行文件不同：
+// 它和用户自带的桥（设置里换的那个）做同一件事（URL 只进临时文件 → 抓样本 →
+// H.264 交给 ffmpeg），区别只是可执行文件不同：
 //   * 本模块自带的 bambu-tutk-bridge：单文件 C，运行时动态加载用户已安装的
 //     BambuSource.dll / libBambuSource.so（也就是 OBN 产物），不需要 .NET / Node / npm。
 //   * 自定义桥（用户在设置里换的）：可能是沿用旧约定的程序 —— stdin 一行 JSON
@@ -10,7 +10,7 @@
 //     （退出码 1/2 + usage 提示，或没产出样本，或程序退出码 64/70/78 之类），自动回退到旧协议。
 //     注意：旧协议只能把 URL 写进 stdin（仍然不进 argv），但对方的输出上限 / 脱敏由对方决定。
 //
-// 安全约定与 tutk-probe.mjs 完全一致：凭据只写进 0600 临时文件、不进 argv、错误文本脱敏。
+// 安全约定：凭据只写进 0600 临时文件、不进 argv、错误文本脱敏。
 
 import { createHash } from 'node:crypto'
 import { spawn as nodeSpawn } from 'node:child_process'

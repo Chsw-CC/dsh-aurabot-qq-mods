@@ -7,7 +7,7 @@ import path from 'node:path'
 import { deflateRawSync, gunzipSync, gzipSync } from 'node:zlib'
 import {
   downloadBambuSource, isCnLikely, orderUrls, parseTarEntries, parseZipCentralDirectory,
-  resolveDestDir, targetFor,
+  resolveDestDir, targetFor, expectedLibSha256, KNOWN_LIB_SHA256,
   GH_PROXIES, KNOWN_RELEASE, MAX_ASSET_BYTES, OBN_RELEASES,
 } from '../lib/tutk-lib.mjs'
 
@@ -300,6 +300,34 @@ test('parseZipCentralDirectory / parseTarEntries 只认目录项', () => {
 })
 
 /* ---------------- review 修复的回归用例 ---------------- */
+
+// 这一段下载下来的是**原生库**，之后要被 dlopen 执行；只判「≥64KB」等于没验。
+// 照 modules/phone 的 PT_BY_PLATFORM 做法：版本 + 哈希一起钉死。
+test('BambuSource 哈希钉版：查表正确，且正常下载会把算出的 sha256 带回来', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'tutk-sha-'))
+  try {
+    // 键是「资产名:库名」；表里没有的版本 / 条目一律返回 ''
+    assert.equal(expectedLibSha256('v0.0.1-nope', 'obn-windows-x64.zip', 'BambuSource.dll'), '', '不认识的版本没有钉哈希')
+    assert.equal(expectedLibSha256(KNOWN_RELEASE, 'obn-windows-x64.zip', 'BambuSource.dll'), '', '已知版本有一行，但这一条目前还没填哈希')
+    assert.ok(KNOWN_LIB_SHA256[KNOWN_RELEASE], '已知版本要在表里有一行')
+    // 表是冻结的：升级版本必须改代码，不能在运行时被悄悄替换
+    assert.equal(Object.isFrozen(KNOWN_LIB_SHA256), true)
+    assert.equal(Object.isFrozen(KNOWN_LIB_SHA256[KNOWN_RELEASE]), true)
+
+    const zip = makeZip([{ name: 'obn-windows-x64/lib/v02.09.01/BambuSource.dll', data: DLL }])
+    const f = fakeFetch([
+      { match: 'https://api.github.com', body: RELEASE_JSON },
+      { match: 'https://dl.example/obn-windows-x64.zip', body: zip },
+    ])
+    const r = await downloadBambuSource({ destDir: dir, platform: 'win32', cn: false, fetchImpl: f.impl })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    // 没钉哈希的版本：照常落盘，但要如实回报「未校验」和实际哈希
+    const { createHash } = await import('node:crypto')
+    const want = createHash('sha256').update(DLL).digest('hex')
+    assert.equal(r.sha256, want, '结果要带上实际算出来的 sha256（钉表时照着填）')
+    assert.equal(r.verified, false, '表里没填哈希时必须如实说没校验，不能假装验过')
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
 
 test('resolveDestDir：库文件路径当文件名，目录照旧当目录（P2-3）', () => {
   // 面板把 tutkLibPath 描述成「库文件路径」：不能它再当目录拼一次标准库名
@@ -623,4 +651,3 @@ test('gzip 解压也有上限：maxUncompressedBytes 生效（P2/P3-1）', async
     assert.equal(r.code, 'TOO_LARGE', JSON.stringify(r))
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
-

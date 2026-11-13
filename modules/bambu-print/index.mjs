@@ -2205,8 +2205,14 @@ export default {
 
     // 面板：一键下载并放置 BambuSource 库（云端画面唯一的外部依赖）。
     // 国内网络自动先走 GitHub 加速代理，失败回退直连；只下载、不碰任何用户秘密。
+    //
+    // 这条路由要写盘、写下去的东西又会被 dlopen 执行，所以和别的面板写操作一样上锁：
+    // 必须主人、且主人当前是解锁状态。解锁状态本身就代表「本机这台 Aurabot 的主人确认过」。
     api.route('/tutk/download', async (req) => {
       await ready()
+      const owner = ownerQQOf()
+      if (!owner) return { ok: false, code: 'NO_OWNER', message: '还没确定主人是谁，先完成初始化' }
+      if (!(await ensureOwnerSession())) return { ok: false, code: 'LOCKED', message: '先解锁主人再说：这个按钮会下载一个之后会被加载执行的原生库，不能匿名触发。' }
       const b = await body(req)
       const configured = String(b.dir || api.settings().tutkLibPath || '').trim()
       const bridgePath = String(api.settings().tutkBridgePath || '').trim() || defaultBridgePath(api.dir)
@@ -2214,7 +2220,14 @@ export default {
       // 但下载器要的是目录。这里按形状判定：看起来像文件（.so/.dll/.dylib 或就是标准库名）
       // 就取它的父目录，否则当目录用 —— 否则配置 /opt/libBambuSource.so 会写到
       // /opt/libBambuSource.so/libBambuSource.so（review P2-3）。
-      const resolved = resolveDestDir(configured || path.dirname(bridgePath), BAMBUSOURCE_FILE)
+      //
+      // 没配置时**不要**写进模块目录（以前就是写进 assets/tutk-bridge/）：插件会盯着模块
+      // 目录的文件数与 mtime，一有变化就热重载模块，内存里的解锁会话随之清空 ——
+      // 用户点完下载、刚解锁的主人就被锁回去了。上游的 aura-mimo 也写着
+      // 「可变数据写 api.dataDir()，模块目录保持静态」。所以默认落到数据目录，
+      // 再用下面的 libPath 把它交给抓帧桥（桥本身不动）。
+      const defaultLibDir = path.join(api.dataDir(), 'bambusource')
+      const resolved = resolveDestDir(configured || defaultLibDir, BAMBUSOURCE_FILE)
       const destDir = resolved.dir
       if (!destDir) return { ok: false, code: 'NO_DIR', message: '找不到放库的目录，请先在设置里填「BambuSource 库路径」（填目录，或填完整的库文件路径）' }
       const cn = typeof b.cn === 'boolean' ? b.cn : undefined
@@ -2230,7 +2243,12 @@ export default {
         await audit('', 'tutk-download', false, result.code || 'FAILED')
         return { ok: false, code: result.code || 'FAILED', message: result.error + '（命令：/打印机 帮助 里没有这一步，是面板按钮）' }
       }
-      await audit('', 'tutk-download', true, (result.version || '') + ' ' + (result.bytes || 0) + 'B')
+      // 落盘位置变了（不再写进模块目录），把库路径记进设置，抓帧时才能找到它。
+      // 只在这个文件确实是我们刚下下来的那份时才写，避免把用户的显式配置覆盖掉。
+      if (!String(api.settings().tutkLibPath || '').trim()) {
+        try { api.saveSettings({ tutkLibPath: result.path }) } catch { /* 设置存不下不影响这次下载 */ }
+      }
+      await audit('', 'tutk-download', true, (result.version || '') + ' ' + (result.bytes || 0) + 'B' + (result.verified === false ? ' (no sha256)' : ''))
       const status = await checkBridgeBinary(bridgePath, { libPath: result.path })
       return {
         ok: true,
@@ -2240,6 +2258,10 @@ export default {
         via: result.via,
         proxy: result.proxy === true,
         cn: cn === undefined ? isCnLikely({}) : cn,
+        // 这个版本的 sha256 在表里还是空的 → 如实告诉面板「这次没有校验」，
+        // 别让用户以为下载下来的东西一定验过。
+        verified: result.verified === true,
+        sha256: result.sha256 || '',
         ready: status.ok === true && status.libOk === true,
       }
     })

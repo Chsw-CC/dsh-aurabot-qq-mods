@@ -318,9 +318,19 @@ export function formatChoiceList(printers) -> string                        // �
 ## 6. lib/mqtt.mjs
 
 最小 MQTT 3.1.1 客户端（只依赖 node:tls / node:net），Bambu 局域网使用：
-host 打印机 IP，port 8883，username `bblp`，password = 访问码，TLS 自签名（rejectUnauthorized:false，
-可通过 `tlsFingerprint` 固定证书 sha256）。云端使用 mqtt.bambulab.com:8883，username `u_<uid>`，
-password = access token。
+host 打印机 IP，port 8883，username `bblp`，password = 访问码，TLS 自签名。
+
+**对端校验是 fail-closed，不是 `rejectUnauthorized:false`：**
+
+- **局域网**：第一次只握手读证书（TOFU 学习），之后每次都用学到的证书当 `ca` 锚点、
+  `rejectUnauthorized: true`，同时核对指纹。**没有锚点时根本不发访问码**——
+  `tlsOptionsFor()` 在带凭据的连接前会抛 `CERT_UNPINNED` / fail-closed，
+  不存在「先连上试试」或「用老字段降级」的分支。
+- **云端**：走 Node 默认的系统 CA + 主机名校验，从不覆盖 `checkServerIdentity`，
+  也忽略 target 上带来的 CA / pin 降级字段。
+
+（早期版本确实写过 `rejectUnauthorized:false` + `tlsFingerprint` 兜底，那是历史实现，
+现已被上面的 fail-closed 取代。）
 
 ```js
 export function encodeRemainingLength(n) -> Buffer
@@ -333,7 +343,7 @@ export function encodeDisconnect() -> Buffer
 export function decodePacket(buf) -> { type, flags, body, consumed } | null   // 不完整返回 null
 export function parsePublish(body) -> { topic, payload }                      // QoS0/1
 export function createMqttClient({ host, port = 8883, username, password, clientId,
-  keepalive = 60, rejectUnauthorized = false, tlsFingerprint = '', connectTimeoutMs = 8000,
+  keepalive = 60, ca = [], checkServerIdentity = undefined, connectTimeoutMs = 8000,
   log = console, connect = null }) -> client
 ```
 
@@ -356,7 +366,7 @@ export function createPrinterManager({ log = console, now = Date.now, clientFact
 
 方法：
 - `async status(target, { timeoutMs = 6000, force = false })`
-  target = `{ mode:'lan'|'cloud', host, port, serial, accessCode?, accessToken?, uid?, region?, tlsFingerprint? }`
+  target = `{ mode:'lan'|'cloud', host, port, serial, accessCode?, accessToken?, uid?, region?, caAnchors? }`
   返回 `{ ok:true, status, receivedAt, stale } | { ok:false, error }`。
 - `async command(target, action, params)`，action：
   `pause | resume | stop | light | speed | temperature | gcode | home | pushall | raw`。
@@ -378,15 +388,15 @@ export function createPrinterManager({ log = console, now = Date.now, clientFact
 - pushall: `{pushing:{command:'pushall',version:1,push_target:1}}`
 - raw: 调用方给完整 payload 对象（仅内部/测试）
 命令发布后最多等 2.5 秒回执（同 sequence_id 且 result 字段）；超时返回 ok:true, acked:false。
-TLS 自签名是已知风险，README 必须写明；`tlsFingerprint` 可固定证书 sha256（十六进制，
-不含冒号，大小写不敏感）。
+TLS 自签名是已知风险，README 必须写明；局域网连接用**学到的证书做锚点 + 指纹固定**
+（见上面 fail-closed 那段），不存在关掉校验再靠 `tlsFingerprint` 兜底的路径。
 
 ## 8. lib/camera.mjs
 
 ```js
 export function buildAuthPacket(username, accessCode) -> Buffer   // 80 字节
 export async function captureFrame({ host, port = 6000, accessCode, username = 'bblp',
-  timeoutMs = 15000, rejectUnauthorized = false, connect = null }) -> Buffer  // 返回 JPEG
+  ca = [], timeoutMs = 15000, connect = null }) -> Buffer  // 返回 JPEG；没有 ca 锚点直接 CAMERA_UNPINNED
 ```
 - 协议：TLS 连接 6000，发 80 字节认证包（0x40, 0x3000, 0, 0 各 4B LE；username 32B 补 0；
   accessCode 32B 补 0）；读 16 字节头（前 3 字节小端 payload 长度），再读 payload，

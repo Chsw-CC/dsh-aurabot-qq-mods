@@ -18,7 +18,7 @@
 - **局域网 TLS 用打印机自签名证书，分两条链路、保护强度不同。** 云端证书走系统 CA + 主机名校验；局域网是**先学后固定（TOFU）**：
   - **MQTT（8883，状态与控制）**：第一次连接只握手读证书、一个字节都不发；之后每次都用它当锚点 + 指纹严格校验。**没固定过证书就不发访问码**（直接失败并提示先固定），不会"先连上试试"。
   - **摄像头 MJPEG（6000）**：同样先学后用，**没锚点就拒绝抓拍**。
-  - **RTSPS（322，X1/H2/P2S/X2D 的画面）**：这条链路 ffmpeg 无法做证书 pin，所以**不验证对端身份**——它要求"打印机所在局域网本机可信"这个前提。见下方「安全边界」一节。
+  - **RTSPS（322，X1/H2/P2S/X2D 的画面）**：ffmpeg 的 RTSP 输入既不接受自定义 CA、也没有 pin 选项，所以这条链路的校验**放在启动 ffmpeg 之前**——先自己跟 :322 握手取证书，和固定过的指纹比对，不一致就直接失败，**ffmpeg 根本不会启动**（访问码连 stdin 都没进过）。首次仍是 TOFU 语义，要彻底排除只能带外核对指纹。见下方「安全边界」一节。
 - **云端画面（TUTK）需要一份 BambuSource 库。** 本模块不自己实现 DTLS/AV/H.264：它自带一个预编译的抓帧桥，在运行时加载 OBN 的 `BambuSource`（`src/camera/tutk/` 那套完整实现）。库没放好时会如实报错并给出下载地址，不会假装拍到了。
 
 - **多用户模式开关**（默认开）：开着时每个 QQ 各绑各的打印机、互相看不到，别人可以用授权共享。**关掉就是单用户模式**——只服务主人一个人：其他人的命令、群聊消息、模型工具一律静默不响应（连「只给主人用」都不回，免得暴露这儿有个只服务主人的机器人）。适合只给自己用、不想让别人碰到的情况。
@@ -48,7 +48,7 @@
 
 - **准入跟着 Aurabot 自己的白名单走**：能跟她私聊的人 / 被她放进群白名单的群，才能用本模块；模块**不再单独维护私聊名单或群名单**（避免两处配置打架）。
 - **私聊**：用户操作自己的打印机；对方授权后，直接就能操作被授权的打印机。
-- **局域网 TLS 不跳过校验（MQTT 与 MJPEG）**：打印机用的是自签名证书，第一次连接自动学习并固定指纹，之后每次都用它当锚点严格校验；证书一变就拒绝，主人确认是自己换了固件后再 `/打印机 证书 信任`（这两个命令只给主人）。**没固定过证书时不会发送访问码**——不是"先连上试试"。RTSPS(:322) 画面链路是例外，见「安全边界」。
+- **局域网 TLS 不跳过校验（MQTT 与 MJPEG）**：打印机用的是自签名证书，第一次连接自动学习并固定指纹，之后每次都用它当锚点严格校验；证书一变就拒绝，主人确认是自己换了固件后再 `/打印机 证书 信任`（这两个命令只给主人）。**没固定过证书时不会发送访问码**——不是"先连上试试"。RTSPS(:322) 用的是另一套做法：不在 ffmpeg 里校验，而是在启动 ffmpeg **之前**核对证书指纹，见「安全边界」。
 - **群聊**：群必须在 Aurabot 的群白名单里；提问者必须有绑定（或别人给他的授权）。全局群模式 `off` / `status` / `control`，但**绑定者本人可以覆盖自己那台**：私聊 `/打印机 群权限 只读|控制|关闭|跟随`，以及单独控制拍照、群内显示文件名。
 - **群聊默认脱敏**：只显示进度、已打印 / 剩余时间、层数、温度；文件名显示「文件：已脱敏」，项目名永远不显示。只有绑定者本人、他自己开了「群内显示文件名」、模块设置也允许时才显示文件名。
 - **绑定 / 解绑 / 登录 / 安全码 / 授权 / 接口 / 群权限**：只允许私聊。
@@ -188,14 +188,22 @@ Bambu 云端实时画面走 ThroughTek Kalay（IOTC/AV）P2P：云端铸 `ttcode
 | 地址 | 什么时候连 | 传什么 |
 |---|---|---|
 | `api.bambulab.com`、`api.bambulab.cn` | 你用 Bambu 账号登录、同步设备、铸 TUTK 凭据 | 你的 Bambu 账号密码（仅登录那一次）、token |
+| `bambulab.com`、`bambulab.cn`（网页域） | 只有开两步验证时：取 CSRF、提交 2FA | 登录会话 cookie 与该次 2FA 验证码 |
 | `us.mqtt.bambulab.com`、`eu.mqtt.bambulab.com`、`cn.mqtt.bambulab.com`（8883） | 走云端接口看状态 / 控制 | 该用户的云端 token |
 | 打印机局域网 IP（8883 MQTT / 6000 MJPEG / 322 RTSPS） | 主人绑定局域网后 | 局域网访问码；画面走本机 `ffmpeg` |
-| 同网段 UDP 2021（SSDP） | 面板点「搜索局域网打印机」 | 只有一个发现请求，不带凭据 |
-| 打印机所在局域网内的 TUTK P2P | 走云端画面抓帧 | 云端铸的 ttcode（经 0600 临时文件交给桥） |
-| `api.github.com`、`github.com`、`codeload.github.com` | 只有你点「下载 BambuSource 库」 | 一个匿名 GET，不带你的任何账号信息 |
+| `239.255.255.250` 的 UDP 1990 / 打印机 UDP 2021 | 面板点「搜索局域网打印机」 | 一个组播发现请求，不带凭据 |
+| TUTK 的 P2P / 中继（ThroughTek 的公网 rendezvous，:3478） | 走云端画面抓帧 | 云端铸的 ttcode（经 0600 临时文件交给桥） |
+| `api.github.com`、`github.com`、`release-assets.githubusercontent.com` | 只有你点「下载 BambuSource 库」 | 一个匿名 GET，不带你的任何账号信息 |
 | `githubproxy.cc`、`ghfast.top`、`ghproxy.net`、`gh-proxy.com` | 同上，但只在你本机判断为国内网络、或直连失败时 | 同上；请求的是 GitHub 的同一个文件 URL |
 
-关于下载这一条要说明白：它**不是**在无人值守时偷偷拉东西。必须由主人/用户在面板上点那个按钮才会发生，下载内容是 OBN 发布的 `BambuSource` 库文件（`BambuSource.dll` / `libBambuSource.so`），落盘位置是模块自己的 `assets/tutk-bridge/` 目录。模块自带的抓帧桥会在运行时 `LoadLibrary` / `dlopen` 这个库。不想要这条链路可以完全不点这个按钮——局域网画面和所有控制功能都不依赖它。
+两处容易写错的细节，按实际实现记在这里：
+
+- 下载地址是从 `api.github.com` 取 release 里的 `browser_download_url`，那个 URL 会被 GitHub **302 跳转到 `release-assets.githubusercontent.com`**，跳转是跟随的（`redirect: 'follow'`）。不走 `codeload.github.com`。
+- **TUTK 不是纯局域网**：IOTC 打洞失败时会走 ThroughTek 的公网 rendezvous / 中继（:3478）。画面数据的走向取决于打洞是否成功，这一点 OBN 的实现自己决定，模块只把 ttcode 交给桥。
+
+关于下载这一条要说明白：它**不是**在无人值守时偷偷拉东西。必须由**已解锁的主人**在面板上点那个按钮才会发生（未解锁会被拒，返回 `LOCKED`）。下载内容是 OBN 发布的 `BambuSource` 库文件（`BambuSource.dll` / `libBambuSource.so`），**默认落到数据目录 `modules-data/bambu-print/bambusource/`，不写进模块目录**（插件会盯着模块目录，一改就热重载，内存里的解锁会话会被清空）。模块自带的抓帧桥随后在运行时 `LoadLibrary` / `dlopen` 这个库。不想要这条链路可以完全不点这个按钮——局域网画面和所有控制功能都不依赖它。
+
+库文件名和版本是**钉死**的：`lib/tutk-lib.mjs` 的 `KNOWN_LIB_SHA256` 按「版本 + 资产 + 库名」记 sha256，下完先核对再落盘，对不上直接丢弃。表里还没填哈希的版本会照常下载，但结果里 `verified` 为 `false`，面板会如实提示「这一份没有校验和」——不会假装验过。
 
 ## 设置项与生效时机
 
@@ -215,7 +223,7 @@ Bambu 云端实时画面走 ThroughTek Kalay（IOTC/AV）P2P：云端铸 `ttcode
 | `requestTimeoutMs` | 整数 | 6000 | 2000~20000 毫秒 |
 | `selectedTtlMinutes` | 整数 | 10 | 1~60 分钟 |
 | `tutkBridgePath` | 文本 | 空 | 留空用模块自带的桥 |
-| `tutkLibPath` | 文本 | 空 | 留空在桥旁边自动找 |
+| `tutkLibPath` | 文本 | 空 | 留空则依次找：面板下载时自动记下的路径、桥同目录 |
 | `tutkTimeoutMs` | 整数 | 20000 | 3000~60000 毫秒 |
 
 生效时机：**点页面底部「保存设置」那一刻**一次性落盘并立即生效（解锁有效期在每次解锁前再同步一次保险箱，不用重启模块）。启动时还会做两件事：把 `active` 对齐成真实开关状态（老版本只存过 `enabled`），以及把历史遗留的越界值按上表归一化一次，之后磁盘上的值就是实际生效的值。
@@ -258,4 +266,8 @@ Bambu 云端实时画面走 ThroughTek Kalay（IOTC/AV）P2P：云端铸 `ttcode
 
 ## 许可
 
-MIT。协议实现参考 [open-bamboo-networking](https://github.com/ClusterM/open-bamboo-networking)（AGPL-3.0）与 [OpenBambuAPI](https://github.com/Doridian/OpenBambuAPI)。本模块**不打包、不链接、不复制** OBN 的代码：自带的 `bambu-tutk-bridge` 是独立 MIT 程序，只在运行时动态加载你本机安装的 `libBambuSource`。Bambu Lab / Bambu Studio 是各自所有者的商标，本项目与其无隶属关系。
+MIT。协议实现参考 [open-bamboo-networking](https://github.com/ClusterM/open-bamboo-networking)（AGPL-3.0）与 [OpenBambuAPI](https://github.com/Doridian/OpenBambuAPI)。
+
+本模块**不随包分发 OBN 的任何代码**：仓库里只有 MIT 的 `bambu-tutk-bridge.c` 及其编译产物（都在 `assets/tutk-bridge/`，第三方来源与哈希见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)）。OBN 的 `BambuSource` 库由用户自己获取（面板按钮或手动下载），模块在运行时用 `dlopen` / `LoadLibrary` **动态链接**用户本机那一份 —— 这里如实说成「动态链接」，不是「不链接」。模块本身不复制、不静态链接、不重新分发那个库。
+
+Bambu Lab / Bambu Studio 是各自所有者的商标，本项目与其无隶属关系。
