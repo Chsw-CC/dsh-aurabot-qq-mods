@@ -122,7 +122,12 @@ function resolveBase (value) {
   return clean
 }
 
-/** 信封用途：有账号 → 登录；有新的安全码 → 改码；否则只解锁（顺序不能变）。 */
+/**
+ * 信封用途：有账号 → 登录；有新的安全码 → 改码；否则按「解锁」处理（顺序不能变）。
+ *
+ * 安全码取消之后实际只剩 login 有意义；unlock / changecode 保留给
+ * 「旧的安全码格式记录做一次性迁移」那条路径，旧页面生成的信封仍然能认。
+ */
 function kindOf (body) {
   if (body.account) return 'login'
   if (body.newCode) return 'changecode'

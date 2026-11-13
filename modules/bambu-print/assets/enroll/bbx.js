@@ -164,7 +164,8 @@ export function encodeBody (input = {}) {
   const account = bytesOf(input.account, MAX_ACCOUNT, '账号')
   const password = bytesOf(input.password, MAX_PASSWORD, '密码')
   const newCode = bytesOf(input.newCode, MAX_CODE, '新安全码')
-  if (!code.length) throw new EnvelopeError('NO_CODE', '信封里没有安全码')
+  // 安全码已经取消：这段字段现在只是「可选的旧口令」（迁移旧记录时才用），不再必填。
+  // 格式不变，所以已经发出去的旧页面仍然能生成能被解开的新信封。
   if (Boolean(account.length) !== Boolean(password.length)) {
     throw new EnvelopeError('BAD_PAYLOAD', '账号和密码必须同时填或同时留空')
   }
@@ -233,7 +234,7 @@ export function decodeBody (bytes) {
   if (hasAccount !== Boolean(flags & 2)) throw new EnvelopeError('BAD_PAYLOAD', '信封标记和内容不一致')
   if (hasNew !== Boolean(flags & 4)) throw new EnvelopeError('BAD_PAYLOAD', '信封标记和内容不一致')
   if (hasAccount !== hasPassword) throw new EnvelopeError('BAD_PAYLOAD', '账号和密码必须同时有或同时没有')
-  if (!code) throw new EnvelopeError('NO_CODE', '信封里没有安全码')
+  // 同 encodeBody：安全码不再必填
   if (hasAccount && hasNew) throw new EnvelopeError('BAD_PAYLOAD', '登录和改安全码不能装在同一个信封里')
   if (!(exp > iat)) throw new EnvelopeError('BAD_PAYLOAD', '信封的时间范围不正确')
   if (!(ttlMin >= 1 && ttlMin <= MAX_TTL_MIN)) throw new EnvelopeError('BAD_PAYLOAD', '生存时间超出范围')

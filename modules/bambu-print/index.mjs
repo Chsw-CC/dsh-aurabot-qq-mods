@@ -1111,11 +1111,25 @@ export default {
         return envelopeErrorText(code)
       }
       try {
-        if (opened.kind !== want) {
-          await audit(who.userId, 'envelope', false, 'kind-mismatch')
-          return '这段信封是用来「' + kindLabel(opened.kind) + '」的，不是「' + kindLabel(want) + '」。'
+        // 用途要和内容一致：带账号的信封是登录，不带账号的是「只建号/只解锁」。
+        // 以前还有「改安全码」和「解锁」两种用途，安全码取消后只剩迁移用的旧格式，
+        // 不再接受从命令入口投递，所以这里只区分「要不要登录云端」。
+        void want
+        // 不带账号的信封 = 只建号 / 只解锁，不碰云端。
+        // 这是有用的：只想绑局域网打印机（主人）或只想先把账号建好的人，
+        // 不需要为此登录 Bambu 云端。
+        if (opened.kind !== 'login') {
+          if (!vault.hasUser(who.userId)) {
+            await vault.register(who.userId)
+            await audit(who.userId, 'register', true, 'envelope')
+            return '账号已建好，可以开始用了（比如绑定局域网打印机）。'
+          }
+          if (vault.needsMigration(who.userId)) {
+            return '你这条记录还是旧的安全码格式：发 /打印机 改安全码，在网页里填一次旧安全码即可。'
+          }
+          await ensureSession(who.userId)
+          return '这条记录不需要迁移，直接就能用。'
         }
-        if (want !== 'login') return null
 
         // 登录：建号（幂等）+ 迁移检查 + 云端登录
         if (!vault.hasUser(who.userId)) {
@@ -1231,55 +1245,52 @@ export default {
       }
 
       if (/^(解锁|unlock)$/.test(head)) {
-        if (msg.kind !== 'private') return '安全码只能在私聊里发，群里发我也不会用。'
-        const code = rest
-        if (!code) return '用法：/打印机 解锁 <安全码>（第一次绑定安全码时设的）'
-        try {
-          applyLockMinutes()
-          const r = await vault.unlock(who.userId, code)
-          await audit(who.userId, 'unlock', true, '', who.userId)
-          return '已解锁，有效期 ' + lockSpanText(r.until - now()) + '。'
-        } catch (error) {
-          await audit(who.userId, 'unlock', false, error.code || 'BAD_CODE')
-          return '解锁失败：' + explain(error)
+        // 安全码已经取消：不再需要解锁。保留这条命令只为给还记着旧用法的人一句明确答复。
+        if (msg.kind !== 'private') return '这个操作只能在私聊里做。'
+        if (!vault.hasUser(who.userId)) {
+          return '你还没有绑定打印机。第一次用请发 /打印机 登录，在网页里填 Bambu 账号 + 密码。'
         }
+        if (vault.needsMigration(who.userId)) {
+          return '你这条记录还是旧的安全码格式：发 /打印机 改安全码，在网页里填一次旧安全码即可，之后不用再输。'
+        }
+        return '不用解锁了：安全码已经取消，你的凭据由这台机器的本机主密钥保管，直接就能用。'
       }
 
       if (/^(锁定|lock)$/.test(head)) {
         vault.lock(who.userId)
         await audit(who.userId, 'lock', true)
-        return '已锁定，本机内存里的密钥清掉了。'
+        return '已清掉内存里的缓存密钥。下次用会自动恢复（本机主密钥还在）。'
       }
 
       if (/^(设置安全码|设安全码|register)$/.test(head)) {
-        if (msg.kind !== 'private') return '安全码只能在私聊里设置，群里发我也不会用。'
-        if (!rest) return '用法：/打印机 设置安全码 <至少 8 位，纯数字至少 10 位>'
-        try {
-          if (vault.hasUser(who.userId)) return '你已经设过安全码了。要换用「/打印机 改安全码 <旧> <新>」；忘了只能让主人清空你的数据重来。'
-          applyLockMinutes()
-          await vault.register(who.userId, rest)
-          const r = await vault.unlock(who.userId, rest)
-          await audit(who.userId, 'register', true)
-          return '好了，安全码已设置并解锁 ' + lockSpanText(r.until - now()) + '。\n' +
-            '这个安全码是你全部打印机秘密的唯一钥匙：我、主人都看不到，忘了只能清空重绑。\n' +
-            '下一步：/打印机 登录 <Bambu 账号> <密码>'
-        } catch (error) {
-          await audit(who.userId, 'register', false, error.code || 'BAD_INPUT')
-          return '设置失败：' + explain(error)
-        }
+        // 安全码取消后这条命令没有意义了；明确引导到唯一正确的入口。
+        return [
+          '安全码已经取消，不用再设置：',
+          '· 第一次用：直接 /打印机 登录，在网页里填 Bambu 账号 + 密码（网页在本地加密，不进聊天）',
+          '· 你的凭据由这台机器的本机主密钥保管，不需要你记任何码',
+        ].join('\n')
       }
 
       if (/^(改安全码|改码|changecode)$/.test(head)) {
-        if (msg.kind !== 'private') return '只能在私聊里改安全码。'
-        const [oldCode, newCode] = rest.split(/\s+/)
-        if (!oldCode || !newCode) return '用法：/打印机 改安全码 <旧安全码> <新安全码>'
+        // 现在只剩一个用途：把「旧的安全码格式」记录迁移过来。
+        if (msg.kind !== 'private') return '只能在私聊里做。'
+        if (!vault.hasUser(who.userId)) return '你还没有绑定打印机：先 /打印机 登录。'
+        if (!vault.needsMigration(who.userId)) {
+          return '安全码已经取消了，不需要改码；直接 /打印机 登录 就行。'
+        }
+        const oldCode = rest.trim()
+        if (!oldCode) {
+          return '这条记录是旧的安全码格式，迁移需要原来的安全码：/打印机 改安全码 <旧安全码>'
+        }
         try {
-          await vault.changeCode(who.userId, oldCode, newCode)
-          await audit(who.userId, 'changecode', true)
-          return '安全码已更换（绑定数据不用重绑）。'
+          const r = await vault.migrateFromCode(who.userId, oldCode)
+          await audit(who.userId, 'migrate', true, r.migrated ? 'migrated' : 'noop')
+          return r.migrated
+            ? '已迁移到本机主密钥：以后不需要任何安全码了。'
+            : '这条记录本来就不需要迁移。'
         } catch (error) {
-          await audit(who.userId, 'changecode', false, error.code || 'BAD_CODE')
-          return '更换失败：' + explain(error)
+          await audit(who.userId, 'migrate', false, error.code || 'BAD_CODE')
+          return '迁移失败：' + explain(error)
         }
       }
 

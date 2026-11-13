@@ -84,7 +84,8 @@ test('bbx：body 编码/解析往返，三种用途的 kind 由字段决定', ()
 
 test('bbx：非法组合在编码阶段就被拒（不是等到解密后才发现）', () => {
   const base = { ttlMin: 10, iat: 1000, exp: 1600, region: 'us' }
-  assert.throws(() => encodeBody({ ...base }), /安全码/, '没有安全码')
+  // 安全码取消后不再是必填项：空安全码也能编码（只建号/只解锁）
+  assert.doesNotThrow(() => encodeBody({ ...base }), '不带安全码是合法的')
   assert.throws(() => encodeBody({ ...base, code: CODE, account: ACCOUNT }), /同时/, '有账号没密码')
   assert.throws(() => encodeBody({ ...base, code: CODE, account: ACCOUNT, password: PASSWORD, newCode: NEW_CODE }), /不能装在同一个/, '登录+改码')
   assert.throws(() => encodeBody({ ...base, code: CODE, ttlMin: 0 }), /生存时间/, 'ttl 0')

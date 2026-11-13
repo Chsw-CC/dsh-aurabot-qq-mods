@@ -179,10 +179,33 @@ const runningReport = () => ({
   },
 })
 
-/** 给某个用户设置安全码并解锁（面板/命令两条路径都走真实 vault）。 */
+/** 造一段真实信封（用 /enroll 拿到的公钥加密，和网页上跑的是同一份实现）。 */
+async function makeEnvelope (api, fields) {
+  const bbx = await import('../assets/enroll/bbx.js')
+  const r = await route(api, '/enroll')
+  assert.equal(r.ok, true, '拿到公钥应当成功：' + JSON.stringify(r))
+  const nowSec = Math.floor(Date.now() / 1000)
+  const ttlMin = Number.isFinite(fields.ttlMin) ? fields.ttlMin : 10
+  return bbx.sealEnvelope(r.publicKey, {
+    code: fields.code === undefined ? SECRET : fields.code,
+    account: fields.account || '',
+    password: fields.password || '',
+    newCode: fields.newCode || '',
+    ttlMin,
+    iat: Number.isFinite(fields.iat) ? fields.iat : nowSec,
+    exp: Number.isFinite(fields.exp) ? fields.exp : nowSec + ttlMin * 60,
+    region: fields.region || 'cn',
+  })
+}
+
+/** 建号 + 解锁（走真实信封：一个信封同时完成建号和云端登录）。 */
 async function setupUser (api, qq, { owner = false } = {}) {
   const over = { userId: qq, chatId: 'private:' + qq }
-  await say(api, '/打印机 设置安全码 ' + SECRET, over)
+  // 只建号（不带账号的信封）：多数用例随后会自己再决定走云端还是局域网
+  const env = await makeEnvelope(api, {})
+  await say(api, '/打印机 登录 ' + env, over)
+  const reply = lastText(api)
+  assert.match(reply, /账号已建好|直接就能用/, '建号应当成功：' + reply)
   return { api, qq, over }
 }
 
@@ -732,12 +755,14 @@ test('回复里不再出现撤回相关文案，也不再调 delete_msg', async 
     await say(api, '/打印机 设置安全码 ' + SECRET)
     const regText = lastText(api)
     assert.doesNotMatch(regText, /撤回/, '设置安全码的回复里不该提撤回：' + regText)
-    assert.equal(regText.includes(SECRET), false, '回复里不能回显安全码')
+    assert.equal(regText.includes(SECRET), false, '回复里不能回显那段明文')
+    assert.match(regText, /安全码已经取消/, '旧命令要明确说明已经取消')
 
-    await say(api, '/打印机 解锁 ' + SECRET)
+    await setupUser(api, USER)
+    await say(api, '/打印机 解锁', { userId: USER, chatId: 'private:' + USER })
     const unlockText = lastText(api)
     assert.doesNotMatch(unlockText, /撤回/, '解锁的回复里不该提撤回：' + unlockText)
-    assert.match(unlockText, /已解锁/)
+    assert.match(unlockText, /不用解锁|直接就能用/, '要告诉用户已经不需要解锁：' + unlockText)
 
     assert.equal(api.__onebot.filter((c) => c.action === 'delete_msg').length, 0, '不该再调用撤回接口')
   } finally { await rm(dir, { recursive: true, force: true }) }
