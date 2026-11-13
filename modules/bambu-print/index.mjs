@@ -1153,7 +1153,6 @@ export default {
           opened.account = ''
           opened.password = ''
           opened.code = ''
-          opened.newCode = ''
           opened = null
         }
       }

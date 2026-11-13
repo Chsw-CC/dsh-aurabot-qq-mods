@@ -190,7 +190,6 @@ async function makeEnvelope (api, fields) {
     code: fields.code === undefined ? SECRET : fields.code,
     account: fields.account || '',
     password: fields.password || '',
-    newCode: fields.newCode || '',
     ttlMin,
     iat: Number.isFinite(fields.iat) ? fields.iat : nowSec,
     exp: Number.isFinite(fields.exp) ? fields.exp : nowSec + ttlMin * 60,
