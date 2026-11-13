@@ -8,7 +8,7 @@
 // 所以模组自己开一个局域网端口（默认 7788），同时托管 app 的界面和接口。
 // 安全边界：接口全要配对密钥；消息只能注入主人私聊，不能发给别人、不能操作群。
 
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { join, extname, normalize, sep } from 'node:path'
 import { homedir, networkInterfaces, tmpdir } from 'node:os'
@@ -394,7 +394,7 @@ const MIME = {
 export default {
   id: 'pocket',
   name: '口袋aurabot',
-  version: '1.4.0',
+  version: '1.4.1',
   api: 1,
   description: '把她的对话流接进手机 app：app 消息走她原生流程（记忆、心情、表情包、语音、模组全在），回复与主动搭话实时推回手机；记忆与 QQ 端共用一套。',
   category: 'platform',
@@ -404,7 +404,7 @@ export default {
   minPluginVersion: '1.2.0',
   requires: [],
   capabilities: ['filesystem', 'plugin-config', 'plugin-internals', 'network'],
-  defaults: { enabled: true, token: '', port: DEFAULT_PORT, tone: 'ocean' },
+  defaults: { enabled: false, token: '', port: DEFAULT_PORT, tone: 'ocean' },
   panel: 'panel.js',
   settings: [
     { key: 'enabled', label: '启用手机接口', type: 'switch', hint: '关掉后 app 连不上（QQ 端不受影响）' },
@@ -420,7 +420,7 @@ export default {
     const appDir = existsSync(join(base, 'assets', 'app', 'index.html')) ? join(base, 'assets', 'app') : join(base, 'app')
     const cfg = () => api.config()
     const s = () => api.settings()
-    const on = () => s().enabled !== false
+    const on = () => s().enabled === true // 默认关，面板里手动开
     const port = () => Number(s().port) || DEFAULT_PORT
     const tone = () => {
       const t = String(s().tone || '')
@@ -603,11 +603,10 @@ export default {
     // ---- 统一的操作层：面板接口和手机服务都调这里 ----
     const ops = {
       health: () => ({
+        // 只给探活需要的最小信息：人格名/主人名等不算敏感但也没必要出现在免鉴权接口里
         ok: true,
         app: 'pocket',
-        version: '1.4.0',
-        persona: String(cfg().persona?.current || ''),
-        owner: String(cfg().ownerName || '主人'),
+        version: '1.4.1',
         tone: tone(),
       }),
       state: () => {
@@ -720,6 +719,34 @@ export default {
       } catch {}
       return undefined
     }
+    // 密钥比较用常量时间：两边先哈希到定长，防时序侧信道
+    function safeEqual(given, want) {
+      try {
+        const h = (v) => createHash('sha256').update(String(v)).digest()
+        return !!want && timingSafeEqual(h(given), h(want))
+      } catch {
+        return false
+      }
+    }
+    // 密钥失败限流：同一来源 60 秒内错 10 次，接下来直接 429
+    const FAIL_WIN = 60_000
+    const FAIL_MAX = 10
+    const fails = new Map()
+    const failKeyOf = (req) => String(req.socket?.remoteAddress || '?')
+    function rateLimited(req) {
+      const now = Date.now()
+      const k = failKeyOf(req)
+      const arr = (fails.get(k) || []).filter((t) => now - t < FAIL_WIN)
+      fails.set(k, arr)
+      return arr.length >= FAIL_MAX
+    }
+    function noteFail(req) {
+      const k = failKeyOf(req)
+      const arr = fails.get(k) || []
+      arr.push(Date.now())
+      fails.set(k, arr)
+    }
+    const clearFails = (req) => fails.delete(failKeyOf(req))
     function guard(req, res) {
       if (!on()) {
         deny(res, 403, '手机接口关着')
@@ -727,10 +754,12 @@ export default {
       }
       const want = tokenOf()
       const given = String(req.headers?.['x-phone-token'] || urlOf(req).searchParams.get('token') || '')
-      if (!want || given !== want) {
+      if (!want || !safeEqual(given, want)) {
+        noteFail(req)
         deny(res, 401, '密钥不对')
         return false
       }
+      clearFails(req)
       return true
     }
     async function bodyOf(req) {
@@ -970,7 +999,7 @@ export default {
     function authed(req, url) {
       const want = tokenOf()
       const given = String(req.headers['x-pocket-token'] || req.headers['x-phone-token'] || url.searchParams.get('token') || '')
-      return !!want && given === want
+      return safeEqual(given, want)
     }
 
     /** 静态文件：只认 app 目录里的东西，别想跳出去 */
@@ -1012,7 +1041,12 @@ export default {
         return json(res, 200, { ...ops.health(), port: listening || port() })
       }
       if (!on()) return json(res, 403, { ok: false, message: '手机接口关着' })
-      if (!authed(req, url)) return json(res, 401, { ok: false, message: '密钥不对' })
+      if (rateLimited(req)) return json(res, 429, { ok: false, message: '失败次数太多，请一分钟后再试' })
+      if (!authed(req, url)) {
+        noteFail(req)
+        return json(res, 401, { ok: false, message: '密钥不对' })
+      }
+      clearFails(req)
 
       const route = p.slice(5)
       try {
@@ -1087,7 +1121,9 @@ export default {
           listening = p
           listenErr = ''
           const addrs = lanAddresses()
-          api.log.info(`口袋已开：http://${addrs[0] || '127.0.0.1'}:${p}（密钥 ${tokenOf()}）`)
+          const t = tokenOf()
+          // 日志脱敏：只露前两位，别把配对密钥写进日志
+          api.log.info(`口袋已开：http://${addrs[0] || '127.0.0.1'}:${p}（密钥 ${t ? t.slice(0, 2) + '****' : '未生成'}，完整密钥见面板）`)
         })
       }
       try {
