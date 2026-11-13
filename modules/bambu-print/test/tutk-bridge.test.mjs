@@ -211,8 +211,11 @@ test('抓帧前给桥补执行位：从 0644 装进来的桥也能跑（zip 丢�
     await chmod(bridge, 0o644)
     assert.equal(((await stat(bridge)).mode & 0o111), 0, '前置条件：装进来时没有执行位')
 
+    // captureViaBridge 会把自己的临时目录整个删掉（这里连 bridge 一起），
+    // 所以给它单独开一个目录，别把桥放进去——否则下面 stat 会 ENOENT。
+    const work = await mkdtemp(path.join(os.tmpdir(), 'tutk-bridge-work-'))
     const plan = fakeSpawn(async () => ({ code: 1, stderr: 'no samples' }))
-    await captureViaBridge({ url: URL, bridgePath: bridge, dir, spawnImpl: plan.impl })
+    await captureViaBridge({ url: URL, bridgePath: bridge, dir: work, spawnImpl: plan.impl })
     // 平台不是 win32 才会去补；测试机若不是 Linux 就跳过这条断言
     if (process.platform !== 'win32') {
       assert.notEqual(((await stat(bridge)).mode & 0o111), 0, '抓帧前应该补上执行位')

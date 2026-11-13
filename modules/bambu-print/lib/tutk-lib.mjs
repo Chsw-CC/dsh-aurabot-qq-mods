@@ -98,14 +98,19 @@ export function resolveDestDir (destDir, fileName) {
   if (!raw) return { dir: '', fileName: std }
   if (/[\\/]$/.test(raw)) return { dir: raw, fileName: std }
   const trimmed = raw.replace(/[\\/]+$/, '')
-  const base = path.basename(trimmed)
-  const ext = path.extname(base).toLowerCase()
+  // 两种分隔符都认：用户可能把 Windows 路径粘到别的机器上，或者反过来。
+  // 只用 path.basename 的话，Linux 上 'C:\mods\x.dll' 会被当成一个普通文件名，
+  // 目录和扩展名都取不出来（path 模块只认本平台的 sep）。
+  // 目录部分按用户写的样子原样保留（不换分隔符）：用户填 'C:\mods' 就还给他 'C:\mods'。
+  const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  const base = cut >= 0 ? trimmed.slice(cut + 1) : trimmed
+  const dirRaw = cut >= 0 ? trimmed.slice(0, cut) : ''
+  const ext = base.includes('.') ? '.' + base.split('.').pop().toLowerCase() : ''
   const looksLikeFile = LIB_EXTS.has(ext) || (base !== '' && std !== '' && base.toLowerCase() === std.toLowerCase())
   if (!looksLikeFile) return { dir: raw, fileName: std }
   // 只有文件名、没有目录（`libBambuSource.so`）：交给调用方报错，别悄悄写进进程 cwd。
-  const dir = path.dirname(trimmed)
-  if (!dir || dir === '.' || dir === '') return { dir: '', fileName: base }
-  return { dir, fileName: base }
+  if (!dirRaw || dirRaw === '.') return { dir: '', fileName: base }
+  return { dir: dirRaw, fileName: base }
 }
 
 /** 粗略判断是不是国内网络（只看本地时区/语言，不发探测请求）。 */
