@@ -9,13 +9,16 @@
 // 安全边界：接口全要配对密钥；消息只能注入主人私聊，不能发给别人、不能操作群。
 
 import { randomBytes } from 'node:crypto'
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { join, extname, normalize, sep } from 'node:path'
-import { networkInterfaces } from 'node:os'
+import { networkInterfaces, tmpdir } from 'node:os'
 import { createServer } from 'node:http'
+import { spawn } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
 
 const RING_MAX = 500
 const DEFAULT_PORT = 7788
+const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
 // 测试钩子
 export const hooks = {}
@@ -35,6 +38,90 @@ const PET_DEFAULT = { satiety: 62, mood: 78, intimacy: 8, fedTimes: 0, lastTick:
 
 // 基础色调：图标人物和界面一起换（app 端有同名配色，这里只存 key）
 const TONES = ['ocean', 'sakura', 'mint', 'grape', 'sunset', 'moon', 'abyss', 'rose']
+
+// ---------- 图片 / 语音的字节处理（app 收发媒体用） ----------
+
+function sniffMime(buf) {
+  const b = buf || Buffer.alloc(0)
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8) return 'image/jpeg'
+  if (b.length > 8 && b[0] === 0x89 && b[1] === 0x50) return 'image/png'
+  if (b.length > 6 && b.slice(0, 3).toString('latin1') === 'GIF') return 'image/gif'
+  if (b.length > 12 && b.slice(0, 4).toString('latin1') === 'RIFF' && b.slice(8, 12).toString('latin1') === 'WAVE') return 'audio/wav'
+  if (b.length > 12 && b.slice(0, 4).toString('latin1') === 'OggS') return 'audio/ogg'
+  if (b.length > 12 && b.slice(0, 4).toString('latin1') === '\x1aE\xdf\xa3') return 'audio/webm'
+  if (b.length > 2 && b[0] === 0x23 && b[1] === 0x21) return 'text/plain'
+  return 'application/octet-stream'
+}
+
+/** app 发来的图：dataURL / 裸 base64 / base64:// 都收，解出 Buffer（超限或不是图返回 null） */
+function decodeImage(img) {
+  let s = String(img || '').trim()
+  if (!s) return null
+  const m = s.match(/^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i)
+  const b64 = m ? m[2] : s.startsWith('base64://') ? s.slice(9) : s
+  if (!/^[A-Za-z0-9+/=\s]+$/.test(b64) || b64.replace(/\s/g, '').length < 64) return null
+  let buf
+  try { buf = Buffer.from(b64.replace(/\s/g, ''), 'base64') } catch { return null }
+  if (!buf.length || buf.length > MAX_MEDIA_BYTES) return null
+  const mime = sniffMime(buf)
+  if (!mime.startsWith('image/')) return null
+  return { buf, mime }
+}
+
+/** 发送钩子里的媒体段 → { buf, mime }：base64:// / file:// / 本地路径 / http 都试一遍 */
+async function mediaBytesOf(data) {
+  const d = data || {}
+  const tries = [d.url, d.file, d.path].filter((x) => typeof x === 'string' && x.trim())
+  for (const src of tries) {
+    try {
+      const s = src.trim()
+      if (s.startsWith('base64://')) {
+        const buf = Buffer.from(s.slice(9), 'base64')
+        if (buf.length && buf.length <= MAX_MEDIA_BYTES) return { buf, mime: sniffMime(buf) }
+        continue
+      }
+      const local = s.startsWith('file://') ? new URL(s).pathname.replace(/^\/([A-Za-z]:\/)/, '$1') : /^([A-Za-z]:[\\/]|\/)/.test(s) ? s : ''
+      if (local && existsSync(local) && statSync(local).isFile()) {
+        const buf = readFileSync(local)
+        if (buf.length <= MAX_MEDIA_BYTES) return { buf, mime: sniffMime(buf) }
+        continue
+      }
+      if (/^https?:\/\//i.test(s)) {
+        const r = await fetch(s, { signal: AbortSignal.timeout(15000) })
+        if (!r.ok) continue
+        const ab = await r.arrayBuffer()
+        if (ab.byteLength && ab.byteLength <= MAX_MEDIA_BYTES) return { buf: Buffer.from(ab), mime: r.headers.get('content-type')?.split(';')[0] || sniffMime(Buffer.from(ab)) }
+      }
+    } catch {}
+  }
+  return null
+}
+
+/** ffmpeg 把 webm/opus（浏览器 MediaRecorder）转 16k 单声道 wav，给 DSH 语音识别用 */
+function toWav16k(inputBuf) {
+  return new Promise((resolve, reject) => {
+    const dir = join(tmpdir(), 'pocket-asr')
+    mkdirSync(dir, { recursive: true })
+    const src = join(dir, `in-${Date.now()}-${randomBytes(3).toString('hex')}.bin`)
+    const dst = join(dir, `out-${Date.now()}-${randomBytes(3).toString('hex')}.wav`)
+    writeFileSync(src, inputBuf)
+    const clean = () => { try { unlinkSync(src) } catch {} ; try { unlinkSync(dst) } catch {} }
+    const p = spawn('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', src, '-ac', '1', '-ar', '16000', '-sample_fmt', 's16', dst], { windowsHide: true })
+    let err = ''
+    p.stderr?.on('data', (c) => { err += c })
+    p.on('error', () => { clean(); reject(new Error('本机没有 ffmpeg（装一下：winget install Gyan.FFmpeg）')) })
+    p.on('close', (code) => {
+      try {
+        if (code === 0 && existsSync(dst)) {
+          const wav = readFileSync(dst)
+          resolve(wav)
+        } else {
+          reject(new Error('录音转码失败 ' + (err || `exit ${code}`).slice(0, 120)))
+        }
+      } finally { clean() }
+    })
+  })
+}
 
 function readPet(dir) {
   try {
@@ -71,27 +158,158 @@ function tickPet(dir, now = Date.now()) {
   return p
 }
 
-function petState(dir) {
-  const p = tickPet(dir)
-  const d = new Date()
-  return {
-    satiety: Math.round(p.satiety),
-    mood: Math.round(p.mood),
-    intimacy: Math.round(p.intimacy),
-    fedTimes: p.fedTimes || 0,
-    hungry: p.satiety < 30,
-    sleepy: d.getHours() >= 23 || d.getHours() < 6,
-    foods: Object.entries(FOODS).map(([id, f]) => ({ id, name: f.name })),
+const pct = (v) => Math.max(0, Math.min(100, Math.round(Number(v) || 0)))
+
+// ---------- 自定义头像（用户从相册挑的那张） ----------
+
+const MAX_AVATAR_BYTES = 6 * 1024 * 1024
+
+function avatarFile(dir) {
+  return join(dir, 'avatar.bin')
+}
+
+function readAvatar(dir) {
+  try {
+    const p = avatarFile(dir)
+    if (!existsSync(p)) return null
+    const buf = readFileSync(p)
+    if (!buf.length) return null
+    let mime = 'image/jpeg'
+    const meta = join(dir, 'avatar.meta.json')
+    if (existsSync(meta)) {
+      try {
+        mime = String(JSON.parse(readFileSync(meta, 'utf8')).mime || mime)
+      } catch {}
+    }
+    return { buf, mime }
+  } catch {
+    return null
   }
 }
 
-function petInteract(dir, action, foodId) {
+function saveAvatar(dir, dataUrl) {
+  const s = String(dataUrl || '').trim()
+  const m = s.match(/^data:(image\/(?:png|jpe?g|webp|gif));base64,([\s\S]+)$/i)
+  let mime = ''
+  let b64 = ''
+  if (m) {
+    mime = m[1].toLowerCase().replace('image/jpg', 'image/jpeg')
+    b64 = m[2]
+  } else if (/^[A-Za-z0-9+/=\s]+$/.test(s) && s.length > 64) {
+    mime = 'image/jpeg' // 只给 base64 也行，按 jpeg 存
+    b64 = s
+  } else {
+    return { ok: false, message: '这张读不出来，换一张试试' }
+  }
+  let buf
+  try {
+    buf = Buffer.from(b64.replace(/\s/g, ''), 'base64')
+  } catch {
+    return { ok: false, message: '这张读不出来，换一张试试' }
+  }
+  if (!buf.length) return { ok: false, message: '图是空的' }
+  if (buf.length > MAX_AVATAR_BYTES) return { ok: false, message: '图太大了（压到 6MB 以内）' }
+  try {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(avatarFile(dir), buf)
+    writeFileSync(join(dir, 'avatar.meta.json'), JSON.stringify({ mime, at: Date.now(), size: buf.length }, null, 2), 'utf8')
+    return { ok: true, size: buf.length, mime }
+  } catch (e) {
+    return { ok: false, message: '存不下来：' + (e?.message || e) }
+  }
+}
+
+function clearAvatar(dir) {
+  try {
+    unlinkSync(avatarFile(dir))
+  } catch {}
+  try {
+    unlinkSync(join(dir, 'avatar.meta.json'))
+  } catch {}
+  return { ok: true }
+}
+
+/** 读 mood 模组当下的心情（0-100）；模组不在跑就返回 null */
+function moodNow(host) {
+  try {
+    const raw = host?.use?.('mood')?.state?.()
+    if (typeof raw === 'number') return pct(raw)
+    const v = Number(raw?.value ?? raw?.mood)
+    return Number.isFinite(v) ? pct(v) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 小窝的状态栏。
+ * 装了 aurabot「喂食」模组就用它的真实数值（饱食 = 100-饥饿、亲密度 = 好感度），
+ * 这样 app 里看到的就是面板上那份，喂食/饿肚子两边同步；没装才退回 pocket 自己那套。
+ */
+function petState(dir, host) {
+  const d = new Date()
+  const sleepy = d.getHours() >= 23 || d.getHours() < 6
+  const foods = Object.entries(FOODS).map(([id, f]) => ({ id, name: f.name }))
+  const f = host?.use?.('feed')
+  if (f && typeof f.hunger === 'function') {
+    let hunger = 0
+    let aff = 0
+    let fed = 0
+    try {
+      hunger = Number(f.hunger()) || 0
+      const s = f.state?.() || {}
+      aff = Number(s.affection) || 0
+      const today = new Date().toDateString()
+      fed = (Array.isArray(s.log) ? s.log : []).filter((r) => r.source === '投喂' && new Date(r.at).toDateString() === today).length
+    } catch {}
+    return {
+      satiety: pct(100 - hunger),
+      mood: moodNow(host) ?? pct(100 - hunger),
+      intimacy: pct(aff),
+      fedTimes: fed,
+      hungry: hunger >= 70,
+      sleepy,
+      foods,
+      from: 'feed', // app 可以据此提示「和 aurabot 面板同步」
+    }
+  }
+  const p = tickPet(dir)
+  return {
+    satiety: pct(p.satiety),
+    mood: moodNow(host) ?? pct(p.mood),
+    intimacy: pct(p.intimacy),
+    fedTimes: p.fedTimes || 0,
+    hungry: p.satiety < 30,
+    sleepy,
+    foods,
+    from: 'local',
+  }
+}
+
+function petInteract(dir, action, foodId, host) {
   const p = tickPet(dir)
   const now = Date.now()
+  const feed = host?.use?.('feed')
+  const mood = host?.use?.('mood')
+
   if (action === 'feed') {
-    if (p.satiety >= 96) return { ok: false, refused: true, reply: '吃不下了 真的 再喂要撑死了' }
-    if (now - (p.lastFeedAt || 0) < 20_000) return { ok: false, refused: true, reply: '刚吃过 你养小猪呢' }
     const food = FOODS[foodId] || FOODS.rice
+    if (now - (p.lastFeedAt || 0) < 20_000) return { ok: false, refused: true, reply: '刚吃过 你养小猪呢' }
+    // 有喂食模组就用它的：它会同时算饥饿曲线、记饭点、掉心情、写记忆、加好感
+    if (feed && typeof feed.feed === 'function') {
+      let r = null
+      try {
+        r = feed.feed({ food: food.name, portion: '一份', source: '投喂' })
+      } catch (e) {
+        r = { ok: false, error: e?.message || String(e) }
+      }
+      if (!r || r.ok === false) return { ok: false, refused: true, reply: String(r?.error || '现在吃不下') }
+      p.lastFeedAt = now
+      p.lastTick = now
+      writePet(dir, p)
+      return { ok: true, reply: food.line, event: `主人喂了我${food.name}`, from: 'feed', satiety: r.satiety }
+    }
+    if (p.satiety >= 96) return { ok: false, refused: true, reply: '吃不下了 真的 再喂要撑死了' }
     p.satiety = Math.min(100, p.satiety + food.satiety)
     p.mood = Math.min(100, p.mood + food.mood)
     p.intimacy = Math.min(100, (p.intimacy || 0) + food.intimacy)
@@ -99,18 +317,27 @@ function petInteract(dir, action, foodId) {
     p.lastFeedAt = now
     p.lastTick = now
     writePet(dir, p)
-    return { ok: true, reply: food.line, event: `主人喂了我${food.name}` }
+    return { ok: true, reply: food.line, event: `主人喂了我${food.name}`, from: 'local' }
   }
+
   if (action === 'pet') {
     if (now - (p.lastPetAt || 0) < 8_000) return { ok: false, refused: true, reply: '摸够了没啊' }
+    // 心情推到 mood 模组，aurabot 面板上的心情曲线也跟着动
+    try {
+      mood?.nudge?.(3, '主人摸了摸我的头')
+    } catch {}
     p.mood = Math.min(100, p.mood + 3)
     p.intimacy = Math.min(100, (p.intimacy || 0) + 0.4)
     p.lastPetAt = now
     p.lastTick = now
     writePet(dir, p)
-    return { ok: true, reply: p.mood > 70 ? '嗯…再摸一下' : '别摸头 头发乱了', event: '主人摸了摸我的头' }
+    return { ok: true, reply: (moodNow(host) ?? p.mood) > 70 ? '嗯…再摸一下' : '别摸头 头发乱了', event: '主人摸了摸我的头' }
   }
+
   if (action === 'play') {
+    try {
+      mood?.nudge?.(5, '主人陪我玩了一会儿')
+    } catch {}
     p.mood = Math.min(100, p.mood + 5)
     p.satiety = Math.max(0, p.satiety - 4)
     p.intimacy = Math.min(100, (p.intimacy || 0) + 0.8)
@@ -118,6 +345,7 @@ function petInteract(dir, action, foodId) {
     writePet(dir, p)
     return { ok: true, reply: '玩一会儿嘛 我尾巴都甩起来了', event: '主人陪我玩了一会儿' }
   }
+
   return { ok: false, reply: '？' }
 }
 
@@ -125,15 +353,25 @@ function petInteract(dir, action, foodId) {
 
 function lanAddresses() {
   const out = []
+  const v6 = []
   try {
     for (const list of Object.values(networkInterfaces())) {
       for (const ni of list || []) {
-        if (ni.family !== 'IPv4' || ni.internal) continue
-        if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ni.address)) out.push(ni.address)
+        if (ni.internal) continue
+        if (ni.family === 'IPv4') {
+          // 内网段 + Tailscale 网段（100.64.0.0/10）
+          if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ni.address)) out.push(ni.address)
+          else if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ni.address)) out.push(ni.address)
+        } else if (ni.family === 'IPv6') {
+          const a = String(ni.address).split('%')[0]
+          // 只收公网可路由的（2xxx / 3xxx 段）：fe80 是链路本地、fc/fd 是内网，都没法从外面连
+          if (/^[23][0-9a-f]{3}:/i.test(a)) v6.push(a)
+        }
       }
     }
   } catch {}
-  return [...new Set(out)]
+  // 局域网 IPv4 排前面（在家扫码配对最稳），公网 IPv6 跟在后面供出外网使用
+  return [...new Set([...out, ...v6.map((a) => `[${a}]`)])]
 }
 
 const MIME = {
@@ -155,8 +393,8 @@ const MIME = {
 
 export default {
   id: 'pocket',
-  name: '口袋',
-  version: '1.1.0',
+  name: '口袋aurabot',
+  version: '1.3.0',
   api: 1,
   description: '把她的对话流接进手机 app：app 消息走她原生流程（记忆、心情、表情包、语音、模组全在），回复与主动搭话实时推回手机；记忆与 QQ 端共用一套。',
   category: 'platform',
@@ -220,10 +458,37 @@ export default {
     })
     api.on('onebot/state', (st) => pushEvent('qq-state', { state: String(st || '') }))
 
-    // ---- 注入一条主人私聊消息 ----
-    function inject(text) {
+    // 她发出去的图片 / 表情包 / 语音条 → 抓原始段转 base64 推给 app
+    // （文字仍走上面的 activity 事件；这里只补媒体。干跑/总开关关着时按没发算。）
+    api.on('send', async (message, info) => {
+      if (!on()) return
+      const c = cfg()
+      if (c.dryRun) return
+      if (String(info?.chatId || '') !== ownerChat()) return
+      const list = Array.isArray(message) ? message : []
+      for (const seg of list) {
+        const t = seg?.type
+        if (t === 'image' || t === 'mface') {
+          const m = await mediaBytesOf(seg?.data)
+          if (m && m.mime.startsWith('image/')) {
+            pushEvent('her-media', { kind: 'image', mime: m.mime, data: m.buf.toString('base64'), text: String(seg?.data?.summary || '') })
+          }
+        } else if (t === 'record') {
+          const m = await mediaBytesOf(seg?.data)
+          if (m) pushEvent('her-media', { kind: 'voice', mime: m.mime.startsWith('audio/') ? m.mime : 'audio/wav', data: m.buf.toString('base64') })
+        }
+      }
+      return undefined // 只观察，不改写
+    })
+
+    // ---- 注入一条主人私聊消息（可带一张图，app 端已压缩成 base64） ----
+    function inject(text, image) {
       const clean = String(text || '').trim().slice(0, 4000)
-      if (!clean) return { ok: false, message: '要说点什么' }
+      const img = decodeImage(image)
+      if (!clean && !img) return { ok: false, message: '要说点什么（或发张图）' }
+      const segs = []
+      if (img) segs.push({ type: 'image', data: { file: 'base64://' + img.buf.toString('base64') } })
+      if (clean) segs.push({ type: 'text', data: { text: clean } })
       const hub = api.core?.hub
       const ev = {
         time: Math.floor(Date.now() / 1000),
@@ -233,18 +498,80 @@ export default {
         sub_type: 'friend',
         user_id: Number(ownerQQ()) || 0,
         message_id: 'pocket-' + Date.now() + '-' + randomBytes(2).toString('hex'),
-        raw_message: clean,
-        message: [{ type: 'text', data: { text: clean } }],
+        raw_message: (img ? '[图片]' : '') + clean,
+        message: segs,
         sender: { user_id: Number(ownerQQ()) || 0, nickname: String(cfg().ownerName || '主人') },
       }
-      const my = pushEvent('me', { text: clean })
+      const shown = (img ? '[图片]' : '') + (clean && img ? ' ' + clean : clean)
+      const my = pushEvent('me', { text: shown })
       if (hub && typeof hub.onMessage === 'function') {
         Promise.resolve(hub.onMessage(ev)).catch((e) => api.log.warn('注入消息出错：', e?.message || e))
         return { ok: true, via: 'hub', seq: my }
       }
       // 兜底：hub 拿不到时直接让她想（带人格和记忆），回复走 activity 照样推给 app
-      api.think(`${clean}\n（这句话来自主人的手机 app，回给他，但不要在 QQ 上发）`).catch((e) => api.log.warn('think 出错：', e?.message || e))
+      const said = img ? `${clean ? clean + '（还发了一张图）' : '（发来一张图，纯图片没有字）'}` : clean
+      api.think(`${said}\n（这句话来自主人的手机 app，回给他，但不要在 QQ 上发）`).catch((e) => api.log.warn('think 出错：', e?.message || e))
       return { ok: true, via: 'think', seq: my }
+    }
+
+    // ---- 主人发语音条：录音转 16k wav → DSH 自带识别 → 按 QQ 端同样的「[语音] 文字」注入 ----
+    async function voiceNote(audio) {
+      let buf = null
+      try {
+        const s = String(audio || '').trim()
+        const b64 = s.startsWith('data:') ? s.slice(s.indexOf(',') + 1) : s.startsWith('base64://') ? s.slice(9) : s
+        if (b64 && /^[A-Za-z0-9+/=\s]+$/.test(b64)) buf = Buffer.from(b64.replace(/\s/g, ''), 'base64')
+      } catch {}
+      if (!buf || !buf.length) return { ok: false, message: '没收到录音' }
+      if (buf.length > MAX_MEDIA_BYTES) return { ok: false, message: '录音太大了' }
+      // 识别回退链：DSH 语音输入（SenseVoice）→ voicecall 配的识别服务（本地 faster-whisper / OpenAI 兼容）
+      let text = ''
+      const stt = api.dsh?.get?.('speechToText')
+      if (stt && typeof stt.resolve === 'function' && typeof stt.transcribe === 'function') {
+        try {
+          const wav = await toWav16k(buf)
+          const spec = stt.resolve({ audio: new Uint8Array(wav) })
+          const r = await stt.transcribe(spec, AbortSignal.timeout(120000))
+          text = String(typeof r === 'string' ? r : r?.text || r?.transcript || '').trim()
+        } catch (e) {
+          api.log.debug('DSH 语音识别失败，试 voicecall 的：', e?.message || e)
+        }
+      }
+      if (!text) {
+        try {
+          const prov = await import(pathToFileURL(join(api.dir, '..', 'voicecall', 'lib', 'providers.mjs')).href)
+          const vcSettings = (api.config().ext || {}).voicecall || {}
+          const ac = prov.asrConfig(vcSettings)
+          const probe = await prov.probeStt(ac)
+          if (!probe.ready) return { ok: false, message: '识别服务没就绪：' + probe.why + '（也可以在 DSH 面板开启「语音输入」）' }
+          const wav = await toWav16k(buf)
+          const r = await prov.transcribe(ac, wav)
+          text = String(r?.text || '').trim()
+        } catch (e) {
+          return { ok: false, message: '没听清：' + (e?.message || e) }
+        }
+      }
+      if (!text) return { ok: false, message: '识别出来是空的（说话太短？）' }
+      pushEvent('me', { text: `[语音] ${text}` })
+      const hub = api.core?.hub
+      if (hub && typeof hub.onMessage === 'function') {
+        const ev = {
+          time: Math.floor(Date.now() / 1000),
+          self_id: Number(cfg().botQQ) || 0,
+          post_type: 'message',
+          message_type: 'private',
+          sub_type: 'friend',
+          user_id: Number(ownerQQ()) || 0,
+          message_id: 'pocket-voice-' + Date.now(),
+          raw_message: `[语音] ${text}`,
+          message: [{ type: 'text', data: { text: `[语音] ${text}` } }],
+          sender: { user_id: Number(ownerQQ()) || 0, nickname: String(cfg().ownerName || '主人') },
+        }
+        Promise.resolve(hub.onMessage(ev)).catch((e) => api.log.warn('注入语音出错：', e?.message || e))
+        return { ok: true, text }
+      }
+      api.think(`[主人发来一条语音，说的是] ${text}\n（这句话来自主人的手机 app，回给他，但不要在 QQ 上发）`).catch(() => {})
+      return { ok: true, text }
     }
 
     // ---- 聊天历史（她自己的 chatlog） ----
@@ -278,7 +605,7 @@ export default {
       health: () => ({
         ok: true,
         app: 'pocket',
-        version: '1.1.0',
+        version: '1.3.0',
         persona: String(cfg().persona?.current || ''),
         owner: String(cfg().ownerName || '主人'),
         tone: tone(),
@@ -299,20 +626,21 @@ export default {
           mood: mv != null ? mv : ms ? Number(ms.value ?? ms.mood ?? 0) : null,
           moodLabel: String((ms?.label) || (m?.label ? m.label() : '')),
           memoryCount: api.use('memory')?.list?.()?.length ?? null,
-          pet: petState(dir),
+          pet: petState(dir, api),
         }
       },
       events: (after) => ({ ok: true, seq, list: ring.filter((e) => e.seq > Number(after || 0)).slice(0, 200) }),
       history: (days) => ({ ok: true, list: readHistory(days) }),
-      message: (text) => inject(text),
+      message: (text, image) => inject(text, image),
+      voiceNote: (audio) => voiceNote(audio),
       pet: (action, food) => {
-        const r = petInteract(dir, String(action || ''), String(food || 'rice'))
+        const r = petInteract(dir, String(action || ''), String(food || 'rice'), api)
         if (r.ok && r.event) {
           try {
             api.use('memory')?.addEvent?.({ text: r.event, source: 'event' })
           } catch {}
         }
-        return { ...r, state: petState(dir) }
+        return { ...r, state: petState(dir, api) }
       },
       moments: async () => {
         let list = []
@@ -345,6 +673,13 @@ export default {
           } catch {}
         }
         return { ok: true, skin: defaultSkin(persona), builtin: true, tone: tone() }
+      },
+      /** 换她的形象（用户从相册挑的图） */
+      setAvatar: (image) => saveAvatar(dir, image),
+      clearAvatar: () => clearAvatar(dir),
+      avatarInfo: () => {
+        const a = readAvatar(dir)
+        return { ok: true, custom: Boolean(a), size: a ? a.buf.length : 0, mime: a ? a.mime : null }
       },
       setTone: (t) => {
         const clean = String(t || '').trim()
@@ -418,11 +753,21 @@ export default {
     api.route('/message', async (req, res) => {
       if (!guard(req, res)) return
       try {
-        return ops.message((await bodyOf(req)).text)
+        const b = await bodyOf(req)
+        return ops.message(b.text, b.image)
       } catch (e) {
         return deny(res, 400, e.message)
       }
     })
+    api.route('/voice-note', async (req, res) => {
+      if (!guard(req, res)) return
+      try {
+        return await ops.voiceNote((await bodyOf(req)).audio)
+      } catch (e) {
+        return deny(res, 400, e.message)
+      }
+    })
+    // 临时诊断路由已移除
     api.route('/pet', async (req, res) => {
       if (!guard(req, res)) return
       try {
@@ -474,7 +819,7 @@ export default {
       let size = 0
       for await (const c of req) {
         size += c.length
-        if (size > 6 * 1024 * 1024) throw new Error('太大了')
+        if (size > 16 * 1024 * 1024) throw new Error('太大了')
         chunks.push(c)
       }
       if (!chunks.length) return {}
@@ -496,15 +841,21 @@ export default {
     function serveStatic(res, pathname) {
       const rel = decodeURIComponent(pathname === '/' ? '/index.html' : pathname)
       const full = normalize(join(appDir, rel))
+      const noStore = { 'cache-control': 'no-store' } // 界面随模组更新，别让 WebView 缓存旧版
+      // 用户自己换过形象：这一张顶掉内置的，顶栏/空间/小窝一次全换
+      if (rel === '/icons/avatar.png') {
+        const custom = readAvatar(dir)
+        if (custom) return send(res, 200, custom.buf, custom.mime, noStore)
+      }
       if (!full.startsWith(normalize(appDir + sep)) && full !== normalize(appDir)) return send(res, 403, 'nope', 'text/plain')
       if (!existsSync(full) || !statSync(full).isFile()) {
         // 单页应用：找不到文件就回首页
         const idx = join(appDir, 'index.html')
-        if (existsSync(idx)) return send(res, 200, readFileSync(idx), MIME['.html'])
+        if (existsSync(idx)) return send(res, 200, readFileSync(idx), MIME['.html'], noStore)
         return send(res, 404, 'app 没装好（缺 app/index.html）', 'text/plain; charset=utf-8')
       }
       const type = MIME[extname(full).toLowerCase()] || 'application/octet-stream'
-      return send(res, 200, readFileSync(full), type)
+      return send(res, 200, readFileSync(full), type, noStore)
     }
 
     async function handle(req, res) {
@@ -534,6 +885,13 @@ export default {
         if (route === 'history') return json(res, 200, ops.history(Number(url.searchParams.get('days') || 3) || 3))
         if (route === 'moments') return json(res, 200, await ops.moments())
         if (route === 'skin') return json(res, 200, ops.skin())
+        if (route === 'avatar') {
+          if (req.method === 'DELETE') return json(res, 200, ops.clearAvatar())
+          if (req.method === 'GET') return json(res, 200, ops.avatarInfo())
+          if (req.method !== 'POST') return json(res, 405, { ok: false, message: '要 POST' })
+          const b = await readBody(req)
+          return json(res, 200, ops.setAvatar(b.image))
+        }
         if (route === 'tone') {
           if (req.method === 'POST') {
             const b = await readBody(req)
@@ -544,7 +902,12 @@ export default {
         if (route === 'message') {
           if (req.method !== 'POST') return json(res, 405, { ok: false, message: '要 POST' })
           const b = await readBody(req)
-          return json(res, 200, ops.message(b.text))
+          return json(res, 200, ops.message(b.text, b.image))
+        }
+        if (route === 'voice-note') {
+          if (req.method !== 'POST') return json(res, 405, { ok: false, message: '要 POST' })
+          const b = await readBody(req)
+          return json(res, 200, await ops.voiceNote(b.audio))
         }
         if (route === 'pet') {
           if (req.method !== 'POST') return json(res, 405, { ok: false, message: '要 POST' })
@@ -582,7 +945,8 @@ export default {
           if (e?.code === 'EADDRINUSE' && left > 0) return tryListen(p + 1, left - 1)
           api.log.warn(`口袋服务起不来（端口 ${p}）：${listenErr}`)
         })
-        srv.listen(p, '0.0.0.0', () => {
+        // 不指定 host = 监听 ::（IPv6 双栈），这样 IPv4 和公网 IPv6 都能进 —— 在外 4G/5G 直连靠的就是 IPv6
+        srv.listen(p, () => {
           server = srv
           listening = p
           listenErr = ''
@@ -618,7 +982,7 @@ export default {
       error: listenErr,
     })
 
-    hooks.__test = { inject, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle }
+    hooks.__test = { inject, voiceNote, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime }
   },
 }
 

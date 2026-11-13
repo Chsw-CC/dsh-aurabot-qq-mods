@@ -249,6 +249,91 @@ test('自带服务：静态文件越界被拦', async () => {
   assert.notEqual(res.code, 200)
 })
 
+// ---------- 图片 / 语音 / emoji（emoji 本身就是文字，走原路） ----------
+
+const PNG_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+
+test('图片解码：dataURL / 裸 base64 收，非图和超限拒', () => {
+  assert.ok(T.decodeImage('data:image/png;base64,' + PNG_1PX.toString('base64')), 'dataURL 应该收')
+  assert.ok(T.decodeImage(PNG_1PX.toString('base64')), '裸 base64 应该收')
+  assert.equal(T.decodeImage('not-base64!!'), null)
+  assert.equal(T.decodeImage(''), null)
+  const fake = Buffer.from('A'.repeat(13 * 1024 * 1024)).toString('base64')
+  assert.equal(T.decodeImage(fake), null, '超过上限应该拒')
+  const txt = Buffer.from('hello world this is plain text not an image at all ok').toString('base64')
+  assert.equal(T.decodeImage(txt), null, '纯文本 base64 不是图')
+})
+
+test('发图：注入消息带图片段（图在前字在后）', () => {
+  hubCalls.length = 0
+  const r = T.inject('你看这个', 'data:image/png;base64,' + PNG_1PX.toString('base64'))
+  assert.equal(r.ok, true)
+  assert.equal(hubCalls.length, 1)
+  const segs = hubCalls[0].message
+  assert.equal(segs.length, 2)
+  assert.equal(segs[0].type, 'image')
+  assert.ok(segs[0].data.file.startsWith('base64://'))
+  assert.equal(segs[1].type, 'text')
+  assert.equal(segs[1].data.text, '你看这个')
+  // 纯图没字也能发
+  hubCalls.length = 0
+  const r2 = T.inject('', PNG_1PX.toString('base64'))
+  assert.equal(r2.ok, true)
+  assert.equal(hubCalls[0].message.length, 1)
+  // 空的什么都没有 → 拒
+  assert.equal(T.inject('', '').ok, false)
+})
+
+test('她发图给主人：send 钩子抓 image 段推 her-media 事件', async () => {
+  const token = T.tokenOf()
+  const before = T.ring().length
+  const sendFns = listeners.send || []
+  assert.ok(sendFns.length, '应该注册了 send 钩子')
+  for (const fn of sendFns) {
+    await fn(
+      [{ type: 'text', data: { text: '看这个' } }, { type: 'image', data: { file: 'base64://' + PNG_1PX.toString('base64') } }],
+      { chatId: `private:${OWNER}` }
+    )
+  }
+  const events = T.ring().slice(before)
+  const media = events.filter((e) => e.type === 'her-media')
+  assert.equal(media.length, 1)
+  assert.equal(media[0].kind, 'image')
+  assert.equal(media[0].mime, 'image/png')
+  assert.ok(media[0].data.length > 50)
+  // 发给别人的不抓
+  const b2 = T.ring().length
+  for (const fn of sendFns) await fn([{ type: 'image', data: { file: 'base64://' + PNG_1PX.toString('base64') } }], { chatId: 'private:other' })
+  assert.equal(T.ring().length, b2, '别人的聊天不应该推事件')
+  // 文字段不重复推（文字走 activity）
+  const b3 = T.ring().length
+  for (const fn of sendFns) await fn([{ type: 'text', data: { text: '只是文字' } }], { chatId: `private:${OWNER}` })
+  assert.equal(T.ring().length, b3, '纯文字不推媒体事件')
+  // 干跑模式按没发算
+  settingsState.enabled = true
+})
+
+test('语音条：DSH 没开识别时明确报错；开了就转文字注入', async () => {
+  const fake = 'T2xhaFNIUlVMQUhVUmFIVVJs' // 随便一段 base64（不是真音频，会走到 stt 检查或转码失败）
+  const r1 = await T.voiceNote(fake)
+  // 测试环境 dsh 没配 → 应该报「没开语音输入」
+  assert.equal(r1.ok, false)
+  assert.match(r1.message, /语音输入|ffmpeg|听清/)
+  assert.equal((await T.voiceNote('')).ok, false)
+})
+
+test('her-media 语音事件：record 段转 base64 推给 app', async () => {
+  // 构造一个假 wav（RIFF 头）
+  const wav = Buffer.concat([Buffer.from('RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00'), Buffer.alloc(28)])
+  const sendFns = listeners.send || []
+  const before = T.ring().length
+  for (const fn of sendFns) await fn([{ type: 'record', data: { file: 'base64://' + wav.toString('base64') } }], { chatId: `private:${OWNER}` })
+  const events = T.ring().slice(before)
+  const media = events.filter((e) => e.type === 'her-media' && e.kind === 'voice')
+  assert.equal(media.length, 1)
+  assert.equal(media[0].mime, 'audio/wav')
+})
+
 function mockRes() {
   return { code: 0, type: '', chunks: [], writeHead(c, h) { this.code = c; this.type = h && h['content-type'] }, end(b) { if (b) this.chunks.push(b) } }
 }

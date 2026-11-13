@@ -9,7 +9,14 @@ const LS = {
 }
 
 const S = {
-  host: localStorage.getItem(LS.host) || '',
+  // 过一遍 normalizeHost：老版本存的是 192.168.1.5:7788 这种没协议的，升级后自动补成 http://…
+  hosts: String(localStorage.getItem(LS.host) || '')
+    .split(/[,，;；\s]+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((x) => normalizeHost(x))
+    .filter(Boolean),
+  host: '',
   token: localStorage.getItem(LS.token) || '',
   tone: localStorage.getItem(LS.tone) || DEFAULT_TONE,
   toneLocal: localStorage.getItem(LS.toneLocal) === '1',
@@ -20,8 +27,12 @@ const S = {
   online: true,
   state: null,
   playing: null,
+  img: null, // 待发送的图片 { dataUrl, b64 }
+  recording: false,
+  recStart: 0,
   playingText: '',
 }
+S.host = S.hosts[0] || ''
 
 const $ = (sel) => document.querySelector(sel)
 const $$ = (sel) => [...document.querySelectorAll(sel)]
@@ -33,10 +44,12 @@ function takeFromUrl() {
   const token = h.get('token') || q.get('token')
   const host = h.get('host') || q.get('host')
   if (host) {
-    const clean = normalizeHost(host)
-    if (clean) {
+    const list = hostList(host)
+    if (list.length) {
+      const clean = list.join(',')
       localStorage.setItem(LS.host, clean)
-      S.host = clean
+      S.hosts = list
+      S.host = list[0]
     }
   }
   if (token) {
@@ -50,39 +63,93 @@ function takeFromUrl() {
   }
 }
 
+/**
+ * 把用户填的东西变成完整 origin（含协议），比如：
+ *   192.168.1.5            → http://192.168.1.5:7788
+ *   100.88.1.2:7788        → http://100.88.1.2:7788
+ *   [240e:3b0::12]:7788    → http://[240e:3b0::12]:7788   （IPv6 直连，手机 4G/5G 也能通）
+ *   https://pocket.xx.com  → https://pocket.xx.com        （Cloudflare Tunnel 之类给的域名）
+ */
 function normalizeHost(v) {
   let s = String(v || '').trim()
   if (!s) return ''
-  s = s.replace(/^https?:\/\//i, '').replace(/\/+$/, '')
-  if (!/:\d+$/.test(s)) s += ':7788'
-  return s
+  let scheme = ''
+  const m = s.match(/^(https?):\/\//i)
+  if (m) {
+    scheme = m[1].toLowerCase()
+    s = s.slice(m[0].length)
+  }
+  s = s.replace(/\/+$/, '')
+  if (!s) return ''
+  // 裸 IPv6（冒号两个以上又没方括号）→ 补方括号
+  if (!s.startsWith('[') && (s.match(/:/g) || []).length >= 2) s = '[' + s + ']'
+  const hasPort = /^\[[^\]]+\]:\d+$/.test(s) || /^[^[\]]+:\d+$/.test(s)
+  // https 域名（Cloudflare Tunnel 之类）走 443，不加端口；其余默认补 7788
+  if (!hasPort && scheme !== 'https') s += ':7788'
+  return `${scheme || 'http'}://${s}`
 }
 
-const base = () => (S.host ? `http://${S.host}` : location.origin)
+/** 地址框里的多个地址（逗号/空格隔开）→ 数组；家里填局域网地址，外面填 IPv6 / 域名 / Tailscale，全都填上就自动挑能通的 */
+function hostList(v) {
+  return String(v || '')
+    .split(/[,，;；\s]+/)
+    .map((x) => normalizeHost(x))
+    .filter(Boolean)
+}
+
+/** S.host 存的是完整 origin，直接用 */
+const base = () => (S.host ? S.host.replace(/\/+$/, '') : location.origin)
+
+/** 当前地址连不上时，挨个试其它候选，谁通用谁（家里 WiFi ↔ 外面 4G/5G 自动切换） */
+async function switchHost() {
+  for (const cand of S.hosts) {
+    if (cand === S.host) continue
+    try {
+      const r = await fetch(`${cand}/api/health`, { signal: AbortSignal.timeout(5000) })
+      if (r.ok) {
+        S.host = cand
+        S.hosts = [cand, ...S.hosts.filter((x) => x !== cand)]
+        localStorage.setItem(LS.host, S.hosts.join(','))
+        return true
+      }
+    } catch {}
+  }
+  return false
+}
 
 async function api(path, { method = 'GET', body, timeout = 15000 } = {}) {
-  const ctl = new AbortController()
-  const timer = setTimeout(() => ctl.abort(), timeout)
-  try {
-    const res = await fetch(base() + path, {
-      method,
-      signal: ctl.signal,
-      headers: {
-        'x-pocket-token': S.token,
-        ...(body ? { 'content-type': 'application/json' } : {}),
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    })
-    if (res.status === 401) {
-      const e = new Error('密钥不对')
-      e.code = 401
-      throw e
+  const one = async () => {
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), timeout)
+    try {
+      const res = await fetch(base() + path, {
+        method,
+        signal: ctl.signal,
+        headers: {
+          'x-pocket-token': S.token,
+          ...(body ? { 'content-type': 'application/json' } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      })
+      if (res.status === 401) {
+        const e = new Error('密钥不对')
+        e.code = 401
+        throw e
+      }
+      const ct = res.headers.get('content-type') || ''
+      if (!ct.includes('json')) return res
+      return await res.json()
+    } finally {
+      clearTimeout(timer)
     }
-    const ct = res.headers.get('content-type') || ''
-    if (!ct.includes('json')) return res
-    return await res.json()
-  } finally {
-    clearTimeout(timer)
+  }
+  try {
+    return await one()
+  } catch (e) {
+    // 网络不通（不是密钥错）：先换个地址试一次，还在家/在外网不同地址间自动切换
+    if (e.code === 401) throw e
+    if (S.hosts.length > 1 && (await switchHost())) return await one()
+    throw e
   }
 }
 
@@ -141,13 +208,13 @@ function dayLabel(ts) {
   return `${d.getMonth() + 1} 月 ${d.getDate()} 日`
 }
 
-/** 她的话里可能带 <voice> / <sticker:名字> / [沉默]，拆干净 */
+/** 她的话里可能带 <voice> / <sticker:名字> / [voice] 占位 / [沉默]，拆干净 */
 function parseReply(text) {
   let t = String(text || '')
   const hasVoice = /<voice>/i.test(t)
   t = t.replace(/<voice>[\s\S]*?<\/voice>/gi, '').replace(/<\/?voice>/gi, '')
   t = t.replace(/<sticker:[^>]*>/gi, '')
-  t = t.replace(/\[(sticker|表情)\]/gi, '')
+  t = t.replace(/\[(sticker|表情|voice)\]/gi, '')
   t = t.replace(/\[沉默\]/g, '')
   return { text: t.trim(), hasVoice }
 }
@@ -161,7 +228,7 @@ function scrollBottom(force) {
   if (force || nearBottom()) requestAnimationFrame(() => (el.scrollTop = el.scrollHeight))
 }
 
-function addMsg({ who, text, at, voice }, { animate = true } = {}) {
+function addMsg({ who, text, at, voice, image, audio, audioMime }, { animate = true } = {}) {
   const list = $('#chat-list')
   const el = document.createElement('div')
   el.className = 'msg ' + (who === 'me' ? 'me' : 'her')
@@ -174,8 +241,22 @@ function addMsg({ who, text, at, voice }, { animate = true } = {}) {
   }
   const b = document.createElement('div')
   b.className = 'bubble'
-  b.appendChild(document.createTextNode(text))
-  if (voice && who !== 'me') {
+  if (image) {
+    const im = document.createElement('img')
+    im.className = 'bubble-img'
+    im.src = image
+    im.alt = '图片'
+    im.onclick = () => window.open(image, '_blank')
+    b.appendChild(im)
+  }
+  if (text) b.appendChild(document.createTextNode(text))
+  if (audio) {
+    const vb = document.createElement('button')
+    vb.className = 'voice-btn'
+    vb.textContent = '▶ 语音条'
+    vb.onclick = () => playBlob(b, vb, audio)
+    b.appendChild(vb)
+  } else if (voice && who !== 'me') {
     const vb = document.createElement('button')
     vb.className = 'voice-btn'
     vb.textContent = '🔊 听她说'
@@ -225,17 +306,20 @@ async function loadHistory() {
 async function send() {
   const input = $('#chat-input')
   const text = input.value.trim()
-  if (!text) return
+  const img = S.img
+  if (!text && !img) return
   input.value = ''
   autoGrow()
+  clearImgPreview()
+  $('#emoji-panel').hidden = true // 发出去了就把面板收起来
   const at = Date.now()
-  addMsg({ who: 'me', text, at })
-  S.msgs.push({ who: 'me', text, at })
+  addMsg({ who: 'me', text, image: img && img.dataUrl, at })
+  S.msgs.push({ who: 'me', text: text || (img ? '[图片]' : ''), at })
   scrollBottom(true)
   S.pending = at
   $('#typing').hidden = false
   try {
-    const r = await api('/api/message', { method: 'POST', body: { text } })
+    const r = await api('/api/message', { method: 'POST', body: { text, image: img ? img.b64 : undefined }, timeout: 30000 })
     if (r && r.ok === false) throw new Error(r.message || '发不出去')
   } catch (e) {
     S.pending = 0
@@ -288,6 +372,101 @@ async function playVoice(bubbleEl, text) {
   }
 }
 
+/** 屏幕下方的浮动提示（设置页也能看见，不像聊天里的系统气泡） */
+let toastTimer = 0
+function toast(text) {
+  let el = $('#toast')
+  if (!el) {
+    el = document.createElement('div')
+    el.id = 'toast'
+    el.className = 'toast glass'
+    $('#app').appendChild(el)
+  }
+  el.textContent = text
+  el.classList.add('on')
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => el.classList.remove('on'), 2200)
+}
+
+// ---------- 换她的形象（从相册） ----------
+function pickAvatar() {
+  $('#avatar-file').click()
+}
+
+async function onAvatarPicked(e) {
+  const f = e.target.files && e.target.files[0]
+  e.target.value = ''
+  if (!f) return
+  toast('正在处理这张图…')
+  try {
+    const r = await compressAvatar(f)
+    const res = await api('/api/avatar', { method: 'POST', body: { image: r.dataUrl }, timeout: 60000 })
+    if (!res || res.ok === false) throw new Error((res && res.message) || '没换成功')
+    refreshAvatars()
+    toast('形象换好啦')
+  } catch (err) {
+    toast('这张换不了：' + (err.message || err))
+  }
+}
+
+/** 压到 1024px、转 jpeg：图片不会太大，透明 PNG 铺白底免得变黑 */
+function compressAvatar(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    const url = URL.createObjectURL(file)
+    img.onload = () => {
+      try {
+        const MAX = 1024
+        let w = img.naturalWidth
+        let h = img.naturalHeight
+        if (!w || !h) throw new Error('读不到尺寸')
+        if (Math.max(w, h) > MAX) {
+          const k = MAX / Math.max(w, h)
+          w = Math.round(w * k)
+          h = Math.round(h * k)
+        }
+        const c = document.createElement('canvas')
+        c.width = w
+        c.height = h
+        const g = c.getContext('2d')
+        g.fillStyle = '#ffffff'
+        g.fillRect(0, 0, w, h)
+        g.drawImage(img, 0, 0, w, h)
+        URL.revokeObjectURL(url)
+        resolve({ dataUrl: c.toDataURL('image/jpeg', 0.9) })
+      } catch (err) {
+        URL.revokeObjectURL(url)
+        reject(err)
+      }
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('不是能读的图片'))
+    }
+    img.src = url
+  })
+}
+
+/** 换完给所有头像加个时间戳，绕过缓存 */
+function refreshAvatars() {
+  const v = Date.now()
+  for (const im of $$('img')) {
+    const s = im.getAttribute('src') || ''
+    if (s.indexOf('icons/avatar.png') === 0) im.src = 'icons/avatar.png?v=' + v
+  }
+}
+
+async function resetAvatar() {
+  try {
+    const res = await api('/api/avatar', { method: 'DELETE' })
+    if (!res || res.ok === false) throw new Error((res && res.message) || '没恢复成')
+    refreshAvatars()
+    toast('换回默认形象了')
+  } catch (e) {
+    toast('没恢复成：' + (e.message || e))
+  }
+}
+
 function addSysToast(text) {
   const el = document.createElement('div')
   el.className = 'day-divider'
@@ -295,6 +474,234 @@ function addSysToast(text) {
   $('#chat-list').appendChild(el)
   scrollBottom()
   setTimeout(() => el.remove(), 6000)
+}
+
+// ---------- 发图片 ----------
+function pickImage() { $('#chat-file').click() }
+
+function onFilePicked(e) {
+  const f = e.target.files && e.target.files[0]
+  e.target.value = ''
+  if (!f) return
+  compressImage(f)
+    .then((r) => {
+      S.img = r
+      const im = $('#img-preview-img')
+      im.src = r.dataUrl
+      $('#img-preview-size').textContent = kb(r.b64.length) + ' · 点发送一起发出去'
+      $('#img-preview').hidden = false
+      scrollBottom(true) // 预览条占了一块高度，把最后一条消息顶上去
+    })
+    .catch((err) => addSysToast('图片读不出来：' + (err.message || err)))
+}
+
+const kb = (b64len) => {
+  const n = Math.round((b64len * 3) / 4 / 1024)
+  return n > 1024 ? (n / 1024).toFixed(1) + ' MB' : n + ' KB'
+}
+
+/** 压到 1280px / jpeg 0.85，手机照片也不会超过几百 KB */
+function compressImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    const url = URL.createObjectURL(file)
+    img.onload = () => {
+      try {
+        const MAX = 1280
+        let w = img.naturalWidth, h = img.naturalHeight
+        if (Math.max(w, h) > MAX) {
+          const k = MAX / Math.max(w, h)
+          w = Math.round(w * k)
+          h = Math.round(h * k)
+        }
+        const c = document.createElement('canvas')
+        c.width = w
+        c.height = h
+        c.getContext('2d').drawImage(img, 0, 0, w, h)
+        const dataUrl = c.toDataURL('image/jpeg', 0.85)
+        URL.revokeObjectURL(url)
+        resolve({ dataUrl, b64: dataUrl.slice(dataUrl.indexOf(',') + 1) })
+      } catch (err) {
+        URL.revokeObjectURL(url)
+        reject(err)
+      }
+    }
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('不是能读的图')) }
+    img.src = url
+  })
+}
+
+function clearImgPreview() {
+  S.img = null
+  $('#img-preview').hidden = true
+  $('#img-preview-img').removeAttribute('src')
+  scrollBottom(true)
+}
+
+// ---------- 语音条（按住说话） ----------
+let rec = null
+// 装在手机里时，网页跑在 http://192.168.x.x 这种非安全上下文上，没有 getUserMedia，
+// 所以优先用安卓壳里的原生录音（PocketMic），浏览器里再回退到 MediaRecorder。
+const NATIVE_MIC = !!(window.PocketMic && typeof window.PocketMic.start === 'function')
+
+function nativeMicStart() {
+  let onDone = null
+  window.__pocketMicDone = (b64) => {
+    const fn = onDone
+    onDone = null
+    if (fn) fn(String(b64 || ''))
+  }
+  let r = 'ok'
+  try {
+    r = String(window.PocketMic.start() || '')
+  } catch (e) {
+    r = String((e && e.message) || e)
+  }
+  if (r !== 'ok') {
+    delete window.__pocketMicDone
+    return { error: r }
+  }
+  return {
+    wait: (cb) => {
+      onDone = cb
+    }
+  }
+}
+
+function b64ToBuf(b64) {
+  const s = atob(b64)
+  const u = new Uint8Array(s.length)
+  for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i)
+  return u.buffer
+}
+
+async function startRec() {
+  if (S.recording || rec) return
+  if (NATIVE_MIC) {
+    const h = nativeMicStart()
+    if (h.error) {
+      addSysToast('拿不到麦克风：' + h.error)
+      return
+    }
+    rec = { native: true, onDone: h.wait }
+    S.recording = true
+    S.recStart = Date.now()
+    $('#rec-indicator').hidden = false
+    $('#chat-mic').classList.add('recording')
+    if (navigator.vibrate) navigator.vibrate(12)
+    return
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const mr = new MediaRecorder(stream)
+    mr._stream = stream // 太短的录音要自己关麦，onstop 会被摘掉
+    const chunks = []
+    mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data) }
+    mr.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop())
+      const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' })
+      blob.arrayBuffer().then((ab) => sendVoiceNote(ab, blob.type)).catch(() => {})
+    }
+    mr.start()
+    rec = mr
+    S.recording = true
+    S.recStart = Date.now()
+    $('#rec-indicator').hidden = false
+    $('#chat-mic').classList.add('recording')
+    if (navigator.vibrate) navigator.vibrate(12)
+  } catch {
+    addSysToast('拿不到麦克风（检查权限）')
+  }
+}
+
+function stopRec() {
+  if (!rec) return
+  $('#rec-indicator').hidden = true
+  $('#chat-mic').classList.remove('recording')
+  S.recording = false
+  const mr = rec
+  const dur = Date.now() - (S.recStart || 0)
+  rec = null
+  S.recStart = 0
+
+  if (mr.native) {
+    if (dur < 700) {
+      try { window.PocketMic.cancel() } catch {}
+      delete window.__pocketMicDone
+      addSysToast('按住话筒别松手，说完再松开')
+      return
+    }
+    mr.onDone((b64) => {
+      if (!b64) {
+        addSysToast('这条语音没录上，再试一次')
+        return
+      }
+      sendVoiceNote(b64ToBuf(b64), 'audio/mp4')
+    })
+    try { window.PocketMic.stop() } catch {}
+    return
+  }
+
+  if (dur < 700) {
+    // 误触：不往外发，自己把麦克风关掉
+    mr.onstop = null
+    mr.ondataavailable = null
+    try { mr.stop() } catch {}
+    try { mr._stream && mr._stream.getTracks().forEach((t) => t.stop()) } catch {}
+    addSysToast('按住话筒别松手，说完再松开')
+    return
+  }
+  try { mr.stop() } catch {}
+}
+
+async function sendVoiceNote(ab, mime) {
+  const m = mime || 'audio/webm'
+  const b64 = bufToB64(ab)
+  const at = Date.now()
+  addMsg({ who: 'me', text: '', audio: 'data:' + m + ';base64,' + b64, audioMime: m, at })
+  S.msgs.push({ who: 'me', text: '[语音]', at })
+  scrollBottom(true)
+  try {
+    const r = await api('/api/voice-note', { method: 'POST', body: { audio: b64 }, timeout: 150000 })
+    if (r && r.ok === false) addSysToast(r.message || '她没听清这条语音')
+  } catch (e) {
+    addSysToast('语音没送到：' + (e.message || e))
+  }
+}
+
+function bufToB64(buf) {
+  const u = new Uint8Array(buf)
+  let s = ''
+  for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000))
+  return btoa(s)
+}
+
+// ---------- emoji 面板（emoji 就是文字，走同一条消息） ----------
+const EMOJIS = '😀 😁 😂 🤣 😊 😍 🥰 😘 😜 🤪 😎 🥳 😭 😢 😡 🤬 😱 😴 🤤 🥺 😏 🤔 🤗 🙈 🐶 🐱 🐟 🍚 🍜 🍰 🧋 🍦 🌊 🌙 ⭐ 💕 💖 💘 ✨ 🌸 🍀'.split(/\s+/).filter(Boolean)
+
+function buildEmoji() {
+  const panel = $('#emoji-panel')
+  panel.innerHTML = ''
+  for (const em of EMOJIS) {
+    const b = document.createElement('button')
+    b.className = 'emoji-item'
+    b.textContent = em
+    b.onclick = () => {
+      insertAtCursor(em)
+      panel.hidden = true
+    }
+    panel.appendChild(b)
+  }
+}
+
+function insertAtCursor(t) {
+  const el = $('#chat-input')
+  const st = el.selectionStart ?? el.value.length
+  const en = el.selectionEnd ?? st
+  el.value = el.value.slice(0, st) + t + el.value.slice(en)
+  el.selectionStart = el.selectionEnd = st + t.length
+  el.focus()
+  autoGrow()
 }
 
 // 轮询她的话
@@ -311,6 +718,15 @@ async function poll() {
         S.pending = 0
         $('#typing').hidden = true
         pushMsg({ who: 'her', text: p.text, at: e.at, voice: p.hasVoice })
+      } else if (e.type === 'her-media') {
+        // 她发的图片 / 表情包 / 语音条（send 钩子抓的原始段）
+        S.pending = 0
+        $('#typing').hidden = true
+        if (e.kind === 'image' && e.data) {
+          pushMsg({ who: 'her', text: e.text || '', image: `data:${e.mime || 'image/png'};base64,${e.data}`, at: e.at })
+        } else if (e.kind === 'voice' && e.data) {
+          pushMsg({ who: 'her', text: '', audio: `data:${e.mime || 'audio/wav'};base64,${e.data}`, audioMime: e.mime, at: e.at })
+        }
       } else if (e.type === 'qq-state') {
         renderStatus(e.state === 'connected')
       }
@@ -533,34 +949,45 @@ function toPair(reason) {
   S.polling = null
   $('#pair-err').textContent = reason || ''
   $('#pair-err').hidden = !reason
-  $('#pair-host').value = S.host || localStorage.getItem(LS.host) || ''
+  $('#pair-host').value = (S.hosts.length ? S.hosts.join(',') : S.host) || localStorage.getItem(LS.host) || ''
   $('#pair-token').value = ''
   show('pair')
 }
 
 async function doPair() {
   const err = $('#pair-err')
-  const host = normalizeHost($('#pair-host').value)
+  const hosts = hostList($('#pair-host').value)
   const token = $('#pair-token').value.trim()
   err.hidden = true
-  if (!host) return (err.textContent = '先填电脑地址（面板上有）'), (err.hidden = false)
+  if (!hosts.length) return (err.textContent = '先填电脑地址（面板上有；家里/外面两个地址都用逗号填上）'), (err.hidden = false)
   if (!token) return (err.textContent = '先填配对密钥'), (err.hidden = false)
   const btn = $('#pair-go')
   btn.disabled = true
   btn.textContent = '正在连…'
   try {
-    // 先探活，再验密钥
-    const h = await fetch(`http://${host}/api/health`, { signal: AbortSignal.timeout(6000) })
-    if (!h.ok) throw new Error('电脑上的口袋没开（' + h.status + '）')
-    S.host = host
+    // 挨个探活，谁通用谁（多地址时其余的留着做备用）
+    let ok = null
+    let lastErr = null
+    for (const cand of hosts) {
+      try {
+        const h = await fetch(`${cand}/api/health`, { signal: AbortSignal.timeout(6000) })
+        if (h.ok) { ok = cand; break }
+        lastErr = new Error('电脑上的口袋没开（' + h.status + '）')
+      } catch (e) {
+        lastErr = e
+      }
+    }
+    if (!ok) throw lastErr || new Error('都连不上')
+    S.host = ok
+    S.hosts = [ok, ...hosts.filter((x) => x !== ok)]
     S.token = token
     const r = await api('/api/state', { timeout: 6000 })
     if (!r || !r.ok) throw new Error((r && r.message) || '密钥不对')
-    localStorage.setItem(LS.host, host)
+    localStorage.setItem(LS.host, S.hosts.join(','))
     localStorage.setItem(LS.token, token)
     boot()
   } catch (e) {
-    err.textContent = e.name === 'TimeoutError' || e.name === 'AbortError' ? '连不上：检查地址，手机和电脑要在同一网络' : '连不上：' + (e.message || e)
+    err.textContent = e.name === 'TimeoutError' || e.name === 'AbortError' ? '连不上：检查地址；手机和电脑要在同一网络（外面要装 Tailscale）' : '连不上：' + (e.message || e)
     err.hidden = false
   } finally {
     btn.disabled = false
@@ -583,6 +1010,31 @@ async function boot() {
   $('#pair-go').onclick = doPair
   $('#chat-send').onclick = send
   $('#btn-scroll-down').onclick = () => scrollBottom(true)
+  $('#chat-emoji').onclick = () => {
+    const p = $('#emoji-panel')
+    p.hidden = !p.hidden
+    if (!p.hidden) scrollBottom(true)
+  }
+  $('#chat-img').onclick = pickImage
+  $('#chat-file').addEventListener('change', onFilePicked)
+  $('#img-preview-del').onclick = clearImgPreview
+  // 换她的形象：小窝那颗相机按钮 + 设置页两个按钮
+  $('#pet-avatar-btn').onclick = pickAvatar
+  $('#btn-avatar-pick').onclick = pickAvatar
+  $('#btn-avatar-reset').onclick = resetAvatar
+  $('#avatar-file').addEventListener('change', onAvatarPicked)
+  const mic = $('#chat-mic')
+  mic.addEventListener('pointerdown', (e) => {
+    e.preventDefault()
+    try { mic.setPointerCapture(e.pointerId) } catch {}
+    startRec()
+  })
+  // 手指滑出按钮、来电、切后台都要兜底停掉，不然会一直「按着」
+  window.addEventListener('pointerup', stopRec)
+  window.addEventListener('pointercancel', stopRec)
+  window.addEventListener('blur', stopRec)
+  document.addEventListener('visibilitychange', () => { if (document.hidden) stopRec() })
+  buildEmoji()
   $('#chat-input').addEventListener('input', autoGrow)
   $('#chat-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {

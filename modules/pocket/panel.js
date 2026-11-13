@@ -32,12 +32,24 @@ return function Panel({ settings, save, toast }) {
   const pairLink = addrs.length && token ? `http://${addrs[0]}/#host=${addrs[0]}&token=${encodeURIComponent(token)}` : ''
   const pairText = (addrs.length ? addrs.map((a) => `http://${a}`).join('\n') : '') + (token ? `\n密钥：${token}` : '')
 
+  // 给每个地址标一句「什么时候填它」，免得对着三个地址不知道抄哪个
+  const addrLabel = (ip) => {
+    const v4 = ip.replace(/^\[|\]$/g, '')
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(v4)) {
+      if (/^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(v4)) return '家里 WiFi（和电脑连同一个路由器时用）'
+      return '局域网 IPv4'
+    }
+    if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(v4)) return 'Tailscale（装了才用）'
+    if (v4.includes(':')) return '公网 IPv6（在外面用 4G/5G 时用，需要光猫/路由器放行 ' + port + ' 端口）'
+    return ''
+  }
+
   const cell = { border: '1px solid rgba(128,128,128,.3)', borderRadius: 8, padding: '5px 10px', fontSize: 13, fontFamily: 'monospace', wordBreak: 'break-all' }
   const sw = { width: 34, height: 34, borderRadius: 10, border: '2px solid transparent', cursor: 'pointer', padding: 0 }
 
-  return h(ui.Card, { title: '口袋' },
+  return h(ui.Card, { title: '口袋aurabot' },
     h('p', { className: 'ab-note' },
-      '把她的对话流开放给手机 app（app 消息走她原生流程，记忆和 QQ 端共用一套）。手机和电脑要在同一个网络里，或配好 Tailscale 后用穿透地址。'),
+      '把她的对话流开放给手机 app（app 消息走她原生流程，记忆和 QQ 端共用一套）。家里连同一个 WiFi 用局域网地址；人在外面用 4G/5G 时填公网 IPv6 地址。'),
 
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' } },
       h(ui.Btn, {
@@ -49,13 +61,28 @@ return function Panel({ settings, save, toast }) {
     ),
 
     h('div', { style: { marginTop: 10 } },
-      h('p', { className: 'ab-small ab-muted' }, '局域网地址（手机 app 配对页填其中一个 + 密钥）：'),
+      h('p', { className: 'ab-small ab-muted' }, '可用地址（手机 app 配对页填，可多个都填上、逗号隔开——中英文逗号都行，app 会自动挑能通的）：'),
       addrs.length
-        ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-            addrs.map((a) => h('code', { key: a, style: cell }, `http://${a}`)))
+        ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+            addrs.map((a) => h('div', { key: a, style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+              h('code', { style: cell }, `http://${a}`),
+              h('span', { className: 'ab-small ab-muted' }, addrLabel(a)),
+            )))
         : h('p', { className: 'ab-small ab-muted' }, net ? '没找到局域网地址（没联网？）' : '读取中…'),
       h('p', { className: 'ab-small ab-muted', style: { marginTop: 6 } }, '密钥：'),
       h('code', { style: cell }, token || '（还没生成，动一下开关就会生成）'),
+    ),
+
+    h('div', { style: { marginTop: 12 } },
+      h('p', { className: 'ab-small', style: { fontWeight: 600 } }, '怎么用：'),
+      h('ol', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', paddingLeft: 20, lineHeight: 1.8 } },
+        h('li', null, '手机装好「口袋aurabot」app（或直接用手机浏览器开上面的地址也行）'),
+        h('li', null, 'app 配对页把地址填进去——在家填「家里 WiFi」那条；在外面填「公网 IPv6」那条；拿不准就把几条都填上，逗号隔开'),
+        h('li', null, '密钥抄下面这条（或点上面的「复制配对链接」，手机浏览器打开就自动填好）'),
+        h('li', null, '点「连上她」即可；换密钥后所有设备要重新配对'),
+      ),
+      h('p', { className: 'ab-small ab-muted', style: { marginTop: 6 } },
+        '小提示：在外面连不上时，先看光猫/路由器有没有放行 ' + port + ' 端口的 IPv6 入站（浏览器开 IPv6 测试网站确认家里宽带有没有公网 IPv6）。'),
     ),
 
     // ---- 人物色调预设 ----

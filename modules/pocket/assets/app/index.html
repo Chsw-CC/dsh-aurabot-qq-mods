@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#eaf5ff">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<title>口袋</title>
+<title>口袋aurabot</title>
 <link rel="icon" href="icons/avatar.png">
 <link rel="apple-touch-icon" href="icons/avatar.png">
 <link rel="stylesheet" href="app.css">
@@ -23,16 +23,16 @@
   <section id="view-pair" class="view" hidden>
     <div class="pair-card glass">
       <img class="pair-avatar" src="icons/avatar.png" alt="">
-      <h1>口袋</h1>
-      <p class="pair-sub">把她装进口袋里。<br>先和电脑上的「口袋」模块配对。</p>
+      <h1>口袋aurabot</h1>
+      <p class="pair-sub">把她装进口袋里。<br>先和电脑上的「口袋aurabot」模块配对。</p>
       <label>电脑地址
-        <input id="pair-host" type="text" inputmode="url" placeholder="例如 192.168.1.5:7788" autocomplete="off">
+        <input id="pair-host" type="text" inputmode="url" placeholder="192.168.1.5:7788" autocomplete="off">
       </label>
       <label>配对密钥
         <input id="pair-token" type="text" placeholder="pk_xxx（面板里复制）" autocomplete="off">
       </label>
       <button id="pair-go" class="btn-primary">连上她</button>
-      <p class="pair-hint">密钥在 DSH 面板「口袋」模块页；<br>手机和电脑要在同一个网络（在外可用 Tailscale 地址）。</p>
+      <p class="pair-hint">密钥在 DSH 面板「口袋aurabot」模块页。<br>在家填局域网地址；出门也能用就把外网地址也填上，逗号隔开，App 会自动挑能通的。</p>
       <p id="pair-err" class="pair-err" hidden></p>
     </div>
   </section>
@@ -51,9 +51,23 @@
       <div id="chat-day" class="day-divider" hidden></div>
     </div>
     <div id="typing" class="typing glass" hidden><span></span><span></span><span></span></div>
+    <div id="img-preview" class="img-preview glass" hidden>
+      <img id="img-preview-img" alt="">
+      <div class="pv-meta"><b>图片准备好了</b><small id="img-preview-size">点发送一起发出去</small></div>
+      <button id="img-preview-del" class="chip-btn" aria-label="取消图片">✕</button>
+    </div>
+    <div id="rec-indicator" class="rec-indicator glass" hidden>
+      <span class="rec-dot"></span>录音中… 松开发送
+    </div>
+    <div id="emoji-panel" class="emoji-panel glass" hidden></div>
     <footer class="inputbar glass">
+      <button id="chat-emoji" class="icon-btn" aria-label="表情" title="表情">😊</button>
+      <button id="chat-img" class="icon-btn" aria-label="发图" title="发图">📷</button>
+      <button id="chat-mic" class="icon-btn" aria-label="按住说话" title="按住说话">🎤</button>
       <textarea id="chat-input" rows="1" placeholder="说点什么…" maxlength="4000"></textarea>
       <button id="chat-send" class="btn-primary send-btn" aria-label="发送">➤</button>
+      <input type="file" id="chat-file" accept="image/*" hidden>
+      <input type="file" id="avatar-file" accept="image/*" hidden>
     </footer>
   </section>
 
@@ -82,6 +96,7 @@
       <div id="pet-mascot" class="pet-mascot">
         <img id="pet-img" src="icons/avatar.png" alt="">
       </div>
+      <button id="pet-avatar-btn" class="pet-avatar-btn glass" aria-label="换形象" title="换形象">📷</button>
       <div id="pet-bubble" class="pet-bubble glass" hidden></div>
       <div id="pet-fx" class="pet-fx"></div>
     </div>
@@ -106,6 +121,17 @@
     </header>
     <div class="settings-scroll">
       <div class="glass card">
+        <h3>🖼️ 她的形象</h3>
+        <p class="card-sub">从相册挑一张换成她的头像，小窝、聊天顶栏、空间一起换（只改你这台看到的）</p>
+        <div class="avatar-row">
+          <img class="avatar-preview" id="set-avatar-img" src="icons/avatar.png" alt="">
+          <div class="avatar-btns">
+            <button class="btn-soft" id="btn-avatar-pick">从相册选</button>
+            <button class="btn-soft" id="btn-avatar-reset">恢复默认</button>
+          </div>
+        </div>
+      </div>
+      <div class="glass card">
         <h3>🎨 界面配色</h3>
         <p class="card-sub">八套基础色调，只换界面颜色，图标不动</p>
         <div id="tone-grid" class="tone-grid"></div>
@@ -121,7 +147,7 @@
       </div>
       <div class="glass card">
         <h3>ℹ️ 关于</h3>
-        <p class="card-sub">口袋 · 她的口袋版。<br>消息走她电脑上的原生对话流：记忆、心情、表情包、语音、模组全都在，和 QQ 端共用同一份记忆。</p>
+        <p class="card-sub">口袋aurabot · 她的口袋版。<br>消息走她电脑上的原生对话流：记忆、心情、表情包、语音、模组全都在，和 QQ 端共用同一份记忆。</p>
       </div>
     </div>
   </section>
