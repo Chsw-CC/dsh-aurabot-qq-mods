@@ -34,6 +34,11 @@ export function canHangup({ userId, kind, role, isOwner } = {}, lastRequester, n
   return fresh && String(lastRequester.userId) === String(userId)
 }
 
+/** 挂断脚本的退出码 → 回话。0 才算真挂上，其它（没脚本、脚本失败）都说没在通话中。 */
+export function hangupReply(code) {
+  return Number(code) === 0 ? '挂啦～' : '我这儿好像没在通话中'
+}
+
 /**
  * 拨号状态机。
  * @param {object} o

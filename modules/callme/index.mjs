@@ -1,4 +1,4 @@
-// 语音通话：让她用自己的 QQ 账号拨 QQ 语音通话（私聊通话 / 群语音），也能挂断。
+﻿// 语音通话：让她用自己的 QQ 账号拨 QQ 语音通话（私聊通话 / 群语音），也能挂断。
 //
 // 做法：Windows 上 QQ NT 的按钮都能被 UI 自动化点到，assets/ 里两个 PowerShell 脚本负责
 // 「打开会话 → 点语音通话 →（群通话）搜索并勾选要拉进来的人 → 点确定」和「点退出通话」。
@@ -9,7 +9,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { HANGUP_RE, canHangup, createCallController, wantsCall, wantsGroupCall } from './lib/call.mjs'
+import { HANGUP_RE, canHangup, createCallController, hangupReply, wantsCall, wantsGroupCall } from './lib/call.mjs'
 
 const PS = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
@@ -133,7 +133,7 @@ export default {
       )
       if (!ok) return false
       const code = await call.hangup({ hangupScript: hangup })
-      await api.sendText(msg.chatId, code === 0 ? '挂啦～' : '我这儿好像没在通话中')
+      await api.sendText(msg.chatId, hangupReply(code))
       return true
     })
   },

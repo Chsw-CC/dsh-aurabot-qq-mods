@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import plugin from '../index.mjs'
-import { canHangup, createCallController, HANGUP_RE, wantsCall, wantsGroupCall } from '../lib/call.mjs'
+import { canHangup, createCallController, hangupReply, HANGUP_RE, wantsCall, wantsGroupCall } from '../lib/call.mjs'
 
 const MANIFEST = JSON.parse(readFileSync(new URL('../module.json', import.meta.url), 'utf8'))
 
@@ -234,6 +234,13 @@ test('群里没被 @ 不开群语音；被 @ 且说「群电话」才开', async
   assert.match(box.calls.replies.at(-1).text, /群里开个语音/)
 })
 
+test('挂断回话只看脚本退出码：0 才算真挂上', () => {
+  assert.equal(hangupReply(0), '挂啦～')
+  assert.match(hangupReply(0), /挂/)
+  assert.equal(hangupReply(5), '我这儿好像没在通话中')
+  assert.equal(hangupReply(-1), '我这儿好像没在通话中')
+})
+
 test('挂断：别人挂不了，主人挂了会回一句', async (t) => {
   const box = boot(t)
   assert.equal(await box.message({ text: '挂了吧', userId: '20002' }), false)
@@ -241,7 +248,8 @@ test('挂断：别人挂不了，主人挂了会回一句', async (t) => {
 
   assert.equal(await box.message({ text: '挂了吧', userId: '10001' }), true)
   assert.equal(box.calls.sent.length, 1)
-  assert.match(box.calls.sent[0].text, /挂/)
+  // 回话内容取决于本机脚本能不能跑起来（CI 上没有 PowerShell），所以只断言「回了，而且回的是这两种之一」
+  assert.match(box.calls.sent[0].text, /挂啦～|我这儿好像没在通话中/)
 })
 
 test('没装脚本时（缺 assets）什么都不做', async (t) => {
