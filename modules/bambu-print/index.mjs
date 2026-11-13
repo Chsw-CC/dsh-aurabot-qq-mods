@@ -1080,6 +1080,11 @@ export default {
       }
     }
 
+    /** 公钥指纹（8 位十六进制）；没就绪时返回空串，调用方自行省略那一行。 */
+    function enrollFingerprint () {
+      try { return String(enrollService.fingerprint() || '') } catch { return '' }
+    }
+
     /** 这段文本看起来是不是一段信封（只做形状判断，真正校验在 open 里）。 */
     function isEnvelope (text) {
       return /^BBX1\.[A-Za-z0-9_-]{40,}$/.test(String(text || '').trim())
@@ -1196,7 +1201,8 @@ export default {
       if (!s.enabled) return '拓竹模块没开总开关：让主人在面板「拓竹」里打开。'
       // 帮助分页：默认第 1 页（风险），「/打印机 帮助 2」翻页
       const helpFor = (q, page) => helpPage(page || 1, !!(q && q.isOwner))
-      if (!text) return helpFor(who)
+      // 只发「/打印机」= 要看帮助：和「/打印机 帮助」完全一样（合并转发，不刷屏）
+      if (!text) return { forwardNodes: helpForwardNodes(!!(who && who.isOwner)), fallback: helpFor(who, 1) }
       const parts = text.split(/\s+/)
       const head = String(parts[0] || '').toLowerCase()
       const rest = parts.slice(1).join(' ').trim()
@@ -1247,9 +1253,11 @@ export default {
         // 账号密码绝不能因为「他照着旧帮助发了」就又被收进聊天记录。
         if (!rest) {
           const pending = pendingLogins.get(who.userId)
+          const fp = enrollFingerprint()
           return [
             '用 Bambu 账号登录（账号和密码都不经过聊天）：',
             '1) 打开这个页面：' + (enrollLinkOrHint()),
+            fp ? '   页面上一开始就显示「公钥指纹 ' + fp + '」，和这行一致才是发给这台机器的' : '',
             '2) 填 Bambu 账号 + 密码（网页在浏览器里本地加密），点「生成」',
             '3) 把生成的 BBX1.… 整段贴回来：/打印机 登录 <那段>',
             '',

@@ -573,6 +573,49 @@ test('多用户模式开关：关掉后只服务主人，别人的绑定/命令�
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
+test('只发 /打印机 等同于 /打印机 帮助：走合并转发，不刷屏', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
+  try {
+    const api = await boot(dir)
+    await setupUser(api, USER)
+
+    await say(api, '/打印机', { userId: USER, chatId: 'private:' + USER })
+    const fwd = lastForward(api)
+    assert.ok(fwd.call, '只发命令名也要走合并转发：' + JSON.stringify(api.__onebot.map((c) => c.action)))
+    assert.ok(fwd.nodes.length > 1, '应当是多页帮助，实际 ' + fwd.nodes.length)
+
+    // 和 /打印机 帮助 的输出完全一致（页数、内容都不该有差别）
+    const bare = fwd.text
+    await say(api, '/打印机 帮助', { userId: USER, chatId: 'private:' + USER })
+    assert.equal(lastForward(api).text, bare, '两种写法的帮助内容应当完全一样')
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test('/打印机 登录 会给出公钥指纹，用户能核对网页是不是这台机器的', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
+  try {
+    const api = await boot(dir)
+    await say(api, '/打印机 登录', { userId: USER, chatId: 'private:' + USER })
+    const text = lastText(api)
+
+    // 回复里要有 8 位十六进制指纹
+    const m = text.match(/公钥指纹 ([0-9a-f]{8})/)
+    assert.ok(m, '登录回复里应当写明公钥指纹：' + text)
+
+    // 这个指纹必须真的等于信封服务算出来的那个（页面用同一份算法）
+    const expected = (await route(api, '/enroll')).fingerprint
+    assert.equal(m[1], expected, '指纹要和信封服务一致')
+    assert.match(expected, /^[0-9a-f]{8}$/)
+
+    // 链接也要在，且带 #k=
+    const link = text.match(/#k=([A-Za-z0-9_-]{87})/)
+    assert.ok(link, '要给出带公钥的链接')
+
+    // 这一条只是给链接：不该出现真的密文（提示里的「BBX1.…」是占位符，不算）
+    assert.equal(/BBX1\.[A-Za-z0-9_-]{40,}/.test(text), false, '这一条只是给链接，不该出现真实密文')
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
 test('帮助用合并转发：默认一条塞进全部页，含风险与存储策略', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
   try {
