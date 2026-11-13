@@ -81,6 +81,9 @@ function normalizeHost(v) {
   }
   s = s.replace(/\/+$/, '')
   if (!s) return ''
+  // 手打的逗号/冒号残渣：[240e::1]: → [240e::1]；240e::1: → 240e::1（但不碰合法的 ::）
+  if (s.endsWith(']:')) s = s.slice(0, -1)
+  if (!s.endsWith(']') && s.endsWith(':') && !s.endsWith('::')) s = s.slice(0, -1)
   // 裸 IPv6（冒号两个以上又没方括号）→ 补方括号
   if (!s.startsWith('[') && (s.match(/:/g) || []).length >= 2) s = '[' + s + ']'
   const hasPort = /^\[[^\]]+\]:\d+$/.test(s) || /^[^[\]]+:\d+$/.test(s)
@@ -987,7 +990,7 @@ async function doPair() {
     localStorage.setItem(LS.token, token)
     boot()
   } catch (e) {
-    err.textContent = e.name === 'TimeoutError' || e.name === 'AbortError' ? '连不上：检查地址；手机和电脑要在同一网络（外面要装 Tailscale）' : '连不上：' + (e.message || e)
+    err.textContent = e.name === 'TimeoutError' || e.name === 'AbortError' ? '连不上：检查地址；在家要和电脑同一个 WiFi，在外面要填公网 IPv6 地址（并放行 7788 端口）' : '连不上：' + (e.message || e)
     err.hidden = false
   } finally {
     btn.disabled = false
