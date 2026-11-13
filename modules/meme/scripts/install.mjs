@@ -1,3 +1,6 @@
+import { checkEnvironment } from '../lib/environment.mjs';
+import { hasBaseRuntime } from './runtime-state.mjs';
+import { cachedExtension } from '../lib/extension.mjs';
 import { prepareDependencies } from './prepare-runtime.mjs';
 import { cp, mkdir, access, rename, readFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
@@ -9,6 +12,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const withExtension = process.argv.includes('--with-extension');
 const target = resolve(process.argv.slice(2).find(x => x !== '--with-extension') || join(homedir(), '.dsh', 'plugins-data', 'aurabot', 'modules', 'meme'));
 if (await access(target).then(() => true, () => false)) throw new Error(`目标已存在：${target}。安装器不会覆盖现有模块。`);
+await checkEnvironment({extension:withExtension,download:!hasBaseRuntime(root) || (withExtension && !cachedExtension(root))});
 const stage = join(dirname(target), '_meme-install');
 await mkdir(stage, { recursive: true });
 for (const name of ['index.mjs', 'module.json', 'package.json', 'panel.js', 'lib', 'assets', 'docs', 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'scripts']) await cp(join(root, name), join(stage, name), { recursive: true });

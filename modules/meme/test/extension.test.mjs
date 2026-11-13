@@ -8,7 +8,7 @@ function harness(dir, prepare=async()=>{}) {
   const saved=[], catalog=[], logs=[];
   let enabled=false;
   const engine={call:async(op,args)=>{assert.equal(op,'extension');enabled=args.enabled;return{items:enabled?['base','extra']:['base'],extensionEnabled:enabled,extensionCount:enabled?1:0};}};
-  const manager=new ExtensionManager({dir,engine,prepare,onCatalog:r=>catalog.push(r.items),save:p=>saved.push(p),log:{warn:(...m)=>logs.push(m.join(' '))}});
+  const manager=new ExtensionManager({dir,engine,prepare,check:async()=>{},onCatalog:r=>catalog.push(r.items),save:p=>saved.push(p),log:{warn:(...m)=>logs.push(m.join(' '))}});
   return {manager,saved,catalog,logs};
 }
 test('安装与卸载同步目录、持久状态，不删除资源；重复操作互斥',async()=>{

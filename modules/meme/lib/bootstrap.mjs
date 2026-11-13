@@ -1,23 +1,27 @@
+import { checkEnvironment, environmentMessage, environmentHelp } from './environment.mjs';
+import { hasBaseRuntime } from '../scripts/runtime-state.mjs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { stopProcessTree } from './process.mjs';
 export class BootstrapManager {
-  constructor({dir,runtimeDir,onReady,log,prepare}) {
+  constructor({dir,runtimeDir,onReady,log,prepare,check=checkEnvironment}) {
     Object.assign(this,{dir,runtimeDir,onReady,log});
+    this.check=check;
     this.prepare=prepare || (progress=>this.prepareFiles(progress));
     this.state={busy:false,phase:'checking',message:'正在检查表情库…',completed:0,total:0,error:''};this.disposed=false;this.child=null;
   }
   status(){return {...this.state};}
   markReady(){this.state={busy:false,phase:'ready',message:'表情库已就绪',completed:0,total:0,error:''};}
-  markFailed(){this.state={busy:false,phase:'failed',message:'表情库未能启动，请重试。',completed:0,total:0,error:'表情库未能启动，请重试。'};}
+  markFailed(error){const message=environmentMessage(error,'表情库未能启动，请重试。');this.state={busy:false,phase:'failed',message,completed:0,total:0,error:message,help:environmentHelp(error)};}
   start(){
     if(this.disposed || this.state.busy || this.state.phase==='ready')return this.status();
     this.state={busy:true,phase:'checking',message:'正在检查表情库…',completed:0,total:0,error:''};
     this.task=this.run().catch(error=>{
       if(this.disposed)return;
       this.log.warn('基础库准备失败',error.stack || String(error));
-      this.state={busy:false,phase:'failed',message:'准备未完成，请稍后重试。',completed:0,total:0,error:'准备未完成，请稍后重试。'};
+      const message=environmentMessage(error,'准备未完成，请稍后重试。');
+      this.state={busy:false,phase:'failed',message,completed:0,total:0,error:message,help:environmentHelp(error)};
     });
     return this.status();
   }
@@ -28,7 +32,9 @@ export class BootstrapManager {
     await this.onReady();
     if(!this.disposed)this.markReady();
   }
-  prepareFiles(progress){
+  async prepareFiles(progress){
+    await this.check({download:!hasBaseRuntime(this.runtimeDir)});
+    if(this.disposed)return;
     return new Promise((resolve,reject)=>{
       const child=spawn(process.execPath,[join(this.dir,'scripts','bootstrap.mjs'),this.runtimeDir],{
         windowsHide:true,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,ELECTRON_RUN_AS_NODE:'1'}

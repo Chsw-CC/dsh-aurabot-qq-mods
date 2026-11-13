@@ -32,7 +32,7 @@
 
 ## 安装后自动准备
 
-把模块完整目录放到 `~/.dsh/plugins-data/aurabot/modules/meme/`，打开“表情库”即可。**无需运行安装命令、npm install，也不用配置 API Key 或 Python。**
+在模块市场安装“表情制作”，打开“表情库”等待准备完成即可。手动安装时，把完整模块目录放到 `~/.dsh/plugins-data/aurabot/modules/meme/`。**无需运行安装命令、npm install，也不用配置 API Key 或 Python。**
 
 首次启动会自动识别系统，下载运行组件和基础素材。面板显示当前阶段与进度；完成后直接发送 `#摸摸`、`#黄仁勋说 你好` 使用。网络失败时点击 **重试准备**，不用重新配置。默认只准备 732 个基础模板，不下载 Python 扩展。
 
@@ -45,7 +45,15 @@
 
 开发者也可保留原来的命令行安装方式：`node scripts/install.mjs [目标目录]`。加 `--with-extension` 可同时预装扩展；安装器不会覆盖已有模块。
 
-平台：Windows x64 优先；macOS Intel/Apple Silicon、Linux glibc x64/arm64 已做平台与路径适配，未运行平台验收。使用宿主现有 Node 和系统自带 curl/tar，不额外安装包管理器。Windows 原生引擎需系统具备 VC++ 运行库（当前机器已能运行）。
+### 支持的系统
+
+安装时不需要选系统。Windows x64、Linux x64/ARM64、macOS Intel/Apple Silicon 使用同一个模块包；运行组件会自动匹配，模板素材共用。Docker 内按 Linux 处理。
+
+Windows x64 已实测；Linux x64 容器及 ARM64 仿真容器已验证；macOS 已适配，尚未实测。Linux / Docker 推荐 Debian 12 或 Ubuntu 22.04 及以上，不支持 Alpine，部署要求见 [安装说明](docs/DOCKER.md)。
+
+从 1.3.6 起，安装前会检查支持的系统、下载工具及 Linux 所需组件；缺少时，面板显示简短提示和“安装说明”。补齐后点击 **重试准备** 或 **安装扩展库**，已有资源继续复用。扩展缺少组件不影响基础库。
+
+若提示“下载工具不完整”：请让部署者检查运行 DSH 的环境是否能执行 `curl --version` 和 `tar --version`。Linux / Docker 按上述安装说明补齐；Windows 请使用带有 curl、tar 的正常系统环境，并确认 DSH 能访问它们。Windows 原生引擎还需要 VC++ 运行库；这项未纳入本次自动检查。
 
 ### 模块市场
 
