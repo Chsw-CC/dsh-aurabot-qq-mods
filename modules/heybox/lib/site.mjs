@@ -945,6 +945,10 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
     const intro = []
     const inline = []
     const tail = []
+    // 上传失败要计数：以前只 warn 一句就跳过，帖子照样以纯文字发出去，
+    // 事后只能靠人肉看页面才发现「配图没上」——线上那些无图长文就是这么来的。
+    let uploadTried = 0
+    let uploadFailed = 0
     for (const seg of segments || []) {
       if (seg.type !== 'img' || !seg.buf) continue
       const pos = seg.position === 'tail' ? 'tail' : (seg.position === 'inline' ? 'inline' : 'afterIntro')
@@ -953,8 +957,9 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
         log?.info?.('正文不足 ' + minWords + ' 字，跳过文首配图：' + seg.filename)
         continue
       }
+      uploadTried++
       const up = await uploadInline(seg)
-      if (!up) continue
+      if (!up) { uploadFailed++; continue }
       if (pos === 'afterIntro') intro.push(up)
       else if (pos === 'inline') inline.push(up)
       else tail.push(up)
@@ -981,7 +986,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
     for (const b of allImgs) blocks.push({ type: 'img', url: b.url, width: String(b.width), height: String(b.height) })
     return {
       blocks, fullText, words,
-      images: { intro: intro.length, inline: inline.length, tail: tail.length, total: allImgs.length },
+      images: { intro: intro.length, inline: inline.length, tail: tail.length, total: allImgs.length, uploadTried, uploadFailed },
       introSkipped: !canIntroImg && words < minWords,
     }
   }
@@ -1275,7 +1280,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
         hashtags: actItems.map((x) => x.name),
         // 网页路径没走 content_tags，话题得靠编辑器里手动挂；如实标成 null 表示「没回查」
         hashtagsVerified: null, hashtagsOk: null, hashtagsNote: '网页兜底不挂话题',
-        autoImages: autoPlan ? { planned: autoPlan.slots.length, generated: autoPlan.generated, fallback: autoPlan.fallback, kinds: autoPlan.slots.map((x) => x.kind) } : null,
+        autoImages: autoPlan ? { planned: autoPlan.slots.length, generated: autoPlan.generated, fallback: autoPlan.fallback, kinds: autoPlan.slots.map((x) => x.kind), sources: autoPlan.slots.map((x) => x.from || 'meme') } : null,
         plan: plan.fromPlan ? plan.slot : null,
         viaWeb: true,
         communityOk: w.communityOk !== false,
@@ -1315,7 +1320,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
       hashtagsOk: tagsVerified ? tagsVerified.length : null,
       hashtagsNote: actItems.length ? '' : '',
       // 自动配图来源：现画几张、表情包兜底几张（手动传图时是 null）
-      autoImages: autoPlan ? { planned: autoPlan.slots.length, generated: autoPlan.generated, fallback: autoPlan.fallback, kinds: autoPlan.slots.map((x) => x.kind) } : null,
+      autoImages: autoPlan ? { planned: autoPlan.slots.length, generated: autoPlan.generated, fallback: autoPlan.fallback, kinds: autoPlan.slots.map((x) => x.kind), sources: autoPlan.slots.map((x) => x.from || 'meme') } : null,
       plan: plan.fromPlan ? plan.slot : null,
     }
     } catch (e) {
@@ -1510,16 +1515,28 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
     let generated = 0
     let fallback = 0
     const out = []
+    // ── 取图顺序：表情包优先，没有匹配的才现画 ─────────────────────────
+    // 主人定的：配图优先用表情包库里的图；图库里没有匹配的，再调生图模型。
+    // （旧版是反过来的「生图优先、表情包兜底」。反过来有两个实际坏处：
+    //   1) 生图没配好时（这台机器 imageGen.model 是空的，enabled() 恒 false）
+    //      每张都先白试一次才落到表情包，日志里全是「生图失败」的噪音；
+    //   2) 她的人设就是表情包里的那只大肥鱼，表情包比现画更贴调性、零成本。）
+    const wantReal = String(realStyle || '').toLowerCase() === 'real'
     for (const s of slots) {
       let p = ''
-      if (imagegen) {
+      let fromMeme = false
+      // 1) 表情包：先按位置挑对应情绪的图（happy/daily/…），文末优先 daily
+      p = pickFallback(s.kind, used)
+      if (p) { fallback++; fromMeme = true }
+      // 2) 图库里没有可用的（或者这张要写实风、表情包对不上）→ 现画
+      if (!p && imagegen) {
         try {
           const gen = await imagegen.enabled?.()
           if (gen) {
-            // 生图加超时：GENERATE_TIMEOUT_MS 里没回来就当这次失败、走表情包兜底。
+            // 生图加超时：GENERATE_TIMEOUT_MS 里没回来就当这次失败、放弃这张。
             // 不加超时的话，生图服务卡住会把整个发帖拖死（发帖是串行等图的）。
             const buf = await withTimeout(
-              imagegen.generate(imageIdeaFor(s.kind, { mood, excerpt: s.excerpt, style: realStyle }), { shape: 'square' }),
+              imagegen.generate(imageIdeaFor(s.kind, { mood, excerpt: s.excerpt, style: wantReal ? 'real' : 'anime' }), { shape: 'square' }),
               GENERATE_TIMEOUT_MS,
               '生图超过 ' + Math.round(GENERATE_TIMEOUT_MS / 1000) + ' 秒没返回',
             )
@@ -1537,20 +1554,16 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
               pruneImageDir(f)
             }
           }
-        } catch (e) { log?.warn?.('生图失败，用表情包兜底：' + String(e.message).slice(0, 60)) }
+        } catch (e) { log?.warn?.('生图失败，这张跳过：' + String(e.message).slice(0, 60)) }
       }
-      if (!p) {
-        p = pickFallback(s.kind, used)
-        if (p) fallback++
-      }
-      if (p) out.push({ kind: s.kind, path: p })
+      if (p) out.push({ kind: s.kind, path: p, from: fromMeme ? 'meme' : 'generated' })
     }
     return {
       slots: out,
       generated,
       fallback,
       words,
-      note: out.length === 0 ? '一张配图都没拿到（生图失败且图库为空），这帖会被拒发' : '',
+      note: out.length === 0 ? '一张配图都没拿到（图库为空且生图不可用），这帖会被拒发' : '',
     }
   }
 
