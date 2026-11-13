@@ -645,9 +645,9 @@ test('帮助用合并转发：默认一条塞进全部页，含风险与存储�
     assert.match(all, /⑥ 凭据怎么保管/)
     assert.match(all, /暂停 · 继续 · 停止/)
     assert.match(all, /0 表示关加热/)
-    assert.match(all, /群里只能暂停\/继续，停止必须私聊/)
+    assert.match(all, /群权限改成「控制」后才能暂停、继续、停止/)
     assert.match(all, /OAuth/)
-    assert.match(all, /默认 30 分钟、只给看状态/)
+    assert.match(all, /默认 30 分钟、给看状态和控制/)
     assert.match(all, /默认 10 条/)
     assert.match(all, /没有安全码/)
 
@@ -1496,6 +1496,36 @@ test('没有安全码：主人建号后直接能绑局域网、查状态', async
     assert.equal(api.__vault.hasUser(USER), false)
     await say(api, '/打印机 状态', { userId: USER, chatId: 'private:' + USER })
     assert.doesNotMatch(lastText(api), /42%/, '没建号的用户不该能查状态')
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test('非主人会话锁定/过期后也会自动恢复：命令和模型工具都不再要求重新登录', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
+  try {
+    const api = await boot(dir, { users: USER })
+    await setupUser(api, USER)
+    api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
+
+    // 正常查一次
+    await say(api, '/打印机 状态', { userId: USER, chatId: 'private:' + USER })
+    assert.match(lastText(api), /42%/)
+
+    // 锁定这个用户的内存会话 → 下一条命令应当自动恢复，而不是回「你还没有登录过」
+    const locked = await route(api, '/lock', { qq: USER })
+    assert.equal(locked.ok, true)
+    assert.equal(api.__vault.isUnlocked(USER), false, '锁定后内存里不该还有会话')
+    await say(api, '/打印机 状态', { userId: USER, chatId: 'private:' + USER })
+    assert.equal(api.__vault.isUnlocked(USER), true, '非主人发命令也应当自动恢复会话')
+    assert.match(lastText(api), /42%/)
+    assert.doesNotMatch(lastText(api), /还没有登录过/, '已经有账号的人不该被要求重新登录')
+
+    // 模型工具走同一条恢复路径
+    await route(api, '/lock', { qq: USER })
+    assert.equal(api.__vault.isUnlocked(USER), false)
+    const tool = toolsAt(api, { kind: 'private', userId: USER, chatId: 'private:' + USER })[0]
+    const res = await tool.execute({ action: 'status' })
+    assert.equal(res.ok, true, '工具也应当自动恢复会话：' + JSON.stringify(res))
+    assert.equal(api.__vault.isUnlocked(USER), true)
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 

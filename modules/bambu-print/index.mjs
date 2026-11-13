@@ -33,83 +33,92 @@ import {
   canControl, canPhoto, redaction, maskQQ, maskIp, createRateLimiter, parseMinutes,
 } from './lib/policy.mjs'
 
-// 帮助分成 4 页：一页一条消息，避免一次刷出几十行。
-// 「风险」和「存储策略」是最该被看到的，所以放在第一页。
+// 帮助分成 6 页（主人多一页局域网）：一页一条消息，避免一次刷出几十行。
+// 「风险」和「数据存在哪」最该被看到，所以放在前两页。
 const HELP_PAGES = [
   {
     key: 'risk',
     title: '① 风险',
     lines: [
-      '私聊发送同样有风险：私聊记录会以明文留存，撤回并不能可靠消除风险。请优先使用官方授权方式或临时凭据。',
-      '访问码 = 打印机控制权：谁拿到谁能暂停、停止、改温度。',
-      '别把密码、访问码发到群里；群里也不接受绑定、授权等敏感操作。',
-      '账号密码现在不经过聊天了（走那条一次性网页链接），但访问码仍然要你自己输。',
-      '谨慎使用插件：请在你熟悉的「鱼」管理者下使用。',
+      '私聊记录会以明文留存，撤回并不能可靠消除风险，能不发就不发。',
+      '访问码 = 打印机控制权：谁拿到，谁就能暂停、停止、改温度。',
+      '别把密码、访问码发到群里；群里也不接受绑定、授权这类操作。',
+      '账号密码现在不经过聊天（走那条一次性网页），但访问码仍然要你自己填。',
+      '谨慎使用：只用你信得过的机器人。它的主人能读到这台机器上的数据目录。',
     ],
   },
   {
     key: 'store',
     title: '② 数据存在哪',
     lines: [
-      '账号密码只加密存在本机，不落明文、不进日志、不上传。',
-      '所以：能读这个数据目录的人可以解开这些凭据。这台机器本身要可信。',
-      '登录网页用公钥加密，账号密码不经过聊天；每段密文只能用一次、会过期。',
-      '删掉数据目录等于永久删除，需要重新登录/绑定。',
+      '登录换来的云端通行证（token）和局域网访问码，只加密存在本机，不落明文、不进日志、不上传。',
+      '密码只用这一次，登录完就丢；账号会出现在凭据名的括号里，方便你认出是谁。',
+      '登录网页用公钥加密，每段密文只能用一次、会过期。',
+      '代价：能读这台机器数据目录的人，可以解开这些凭据，所以机器本身要可信。',
+      '删掉数据目录等于永久删除，得重新登录、重新绑定。',
     ],
   },
   {
     key: 'watch',
     title: '③ 看状态与简单控制',
     lines: [
+      '看状态、暂停继续、开关灯、调速、调温、拍照，一条命令做一件事。',
       '/打印机 状态 [打印机]',
-      '  看进度、层数、已打印 / 剩余、预计完成、温度。多台不带名字会先问你哪一台。',
+      '  看进度、层数、已打印 / 剩余、预计完成和温度。多台不写名字会先问你是哪台。',
       '/打印机 暂停 · 继续 · 停止 [打印机]',
-      '  停止要再发一次确认。群里只能暂停/继续，停止必须私聊。',
+      '  停止会再要一次确认；群里默认只能看，群权限改成「控制」后才能暂停、继续、停止。',
       '/打印机 灯 开|关 [打印机]',
-      '  打印仓灯。不写开/关就当「开」。',
+      '  打印仓的灯。开或关必须写一个。',
       '/打印机 速度 1-4 [打印机]',
-      '  4 最快（狂暴模式），1 最慢（静音）。',
+      '  4 最快，1 最慢。',
       '/打印机 温度 喷嘴=220 热床=60 [打印机]',
-      '  至少给一个，0 表示关加热。例如「温度 喷嘴=220」。',
+      '  至少给一个；0 表示关加热。',
       '/打印机 拍照 [打印机]',
-      '  拍一张打印仓。局域网优先，不行回退云端；群里要允许拍照。',
-      '[打印机] 可以写编号、名字或序列号；只有一台时可以省。',
+      '  拍一张打印仓：局域网优先，不行回云端；群里要有拍照权限。',
+      '前提：[打印机] 可以写编号、名字或序列号；只有一台时可以省。',
     ],
   },
   {
     key: 'account',
     title: '④ 登录云端账号',
     lines: [
+      '账号密码不进聊天：开一次性网页，生成一段码，再整段贴回来。',
       '/打印机 登录',
-      '  发一个一次性网页链接（账号密码不经过聊天）。',
+      '  发一条一次性网页链接。网页里填 Bambu 账号 + 密码，点「生成加密文本」，再点「复制整条命令」贴回来。',
       '/打印机 登录 <BBX1 开头那段>',
-      '  把网页生成的那段整段贴回来，登录后自动同步账号下的打印机。',
-      '  OAuth 注册的账号要先去 App 里设密码，才能用账号密码登录。',
+      '  把生成的整段贴回来；成功后会自动同步账号下的打印机。',
       '/打印机 验证码',
-      '  云端要验证码时先发它，让云端把码发到你邮箱/手机。',
+      '  云端要验证码时先发它，让云端把码发到你邮箱或手机。',
       '/打印机 验证码 <6位>',
-      '  收到码后用这条提交。',
+      '  收到码后 5 分钟内提交。',
       '/打印机 两步验证 <6位>',
       '  云端要求两步验证时用。',
       '/打印机 同步',
-      '  重新拉一次云端设备列表（换机器、换账号后用）。',
+      '  换机器、换账号后，重新拉一次云端设备列表。',
+      '不用「绑定」命令：登录成功就会把账号下的打印机带出来。',
+      '前提：用 OAuth（Google/Apple 等）注册的账号，要先去 Bambu App 里设密码，才能这样登录。',
     ],
   },
   {
     key: 'share',
     title: '⑤ 列表、授权、群权限',
     lines: [
+      '看自己绑了什么，临时把使用权分给别人，再管管它在群里的表现。',
       '/打印机 列表',
-      '  看自己绑定的打印机、编号、打码序列号，以及别人授权给你的。',
+      '  看编号、名字、打码序列号，以及别人授权给你的打印机。',
       '/打印机 授权 <对方QQ> [分钟] [status,control,photo]',
-      '  把自己的凭据限时共享给对方，立即生效、随时能撤。默认 30 分钟、只给看状态。',
+      '  范围写 status（看状态）、control（控制）、photo（拍照）；默认 30 分钟、给看状态和控制。',
+      '  立即生效，随时能撤。',
       '/打印机 撤销 <授权编号>',
-      '  提前收回授权，编号在「列表」里能看到。',
+      '  提前收回；编号是「授权」成功那条回复里 g_ 开头的那串。',
       '/打印机 审计 [条数]',
-      '  看自己的绑定 / 控制 / 授权记录，默认 10 条。',
-      '/打印机 群权限 [只读|控制|关闭|跟随] [拍照 开|关] [文件名 开|关]',
-      '  不带参数是查看，带参数才是改。只影响你自己那台在群里的表现。',
-      '群里默认只说进度、层数、温度，文件名显示「已脱敏」。',
+      '  看自己的绑定、控制、授权记录，默认 10 条，最多 50 条。',
+      '/打印机 群权限 [只读|控制|关闭|跟随] [拍照 开|关|跟随] [文件名 开|关]',
+      '  不带参数是查看，带参数才是改；只影响你自己的打印机。',
+      '  群里默认只报进度、层数、温度，文件名显示「已脱敏」。',
+      '/打印机 解绑 <编号>',
+      '  删掉自己的一条绑定；编号就是「/打印机 列表」里的序号。',
+      '前提：授权、撤销、群权限、解绑都只能在私聊里做。',
     ],
   },
   {
@@ -118,10 +127,10 @@ const HELP_PAGES = [
     lines: [
       '没有安全码：不用设、不用记、不用解锁。',
       '你的凭据仍然加密落盘（每人一把独立密钥），主密钥在这台机器上。',
-      '代价：能读这台机器数据目录的人可以解开这些凭据——机器本身要可信。',
+      '代价：能读这台机器数据目录的人可以解开这些凭据，所以机器本身要可信。',
       '/打印机 锁定',
-      '  清掉内存里缓存的密钥；下次用会自动恢复。',
-      '这些只能在私聊里用。',
+      '  清掉内存里缓存的密钥；下次用会自动恢复，不用重新登录。',
+      '「锁定」只能在私聊里用。',
     ],
   },
 ]
@@ -146,7 +155,9 @@ function helpPage (page, isOwner) {
   if (index > 0) nav.push('/打印机 帮助 ' + index)
   if (!isLast) nav.push('/打印机 帮助 ' + (index + 2))
   // 最后一页也要说清楚「到头了」，否则用户不知道还要不要继续翻
-  const tail = '\n—— ' + (nav.length ? nav.join(' | ') : '') + (isLast ? (nav.length ? ' · 已经是最后一页' : '已经是最后一页') : '')
+  const tail = nav.length
+    ? '\n—— 翻页：' + nav.join(' | ') + (isLast ? '（已经是最后一页）' : '')
+    : '\n—— 已经是最后一页'
   return head + '\n' + body + tail
 }
 
@@ -206,9 +217,15 @@ function helpForwardNodes (isOwner) {
 
 const OWNER_HELP_LINES = [
   '/打印机 绑定 本地 <序列号> <IP> <访问码> [名称]',
+  '  直接用局域网连；访问码在打印机屏幕上。',
   '/打印机 绑定 追加 <序列号> <IP> [访问码] [名称]',
-  '/打印机 解绑 <编号> · 接口 云端|本地|自动',
-  '/打印机 证书 [序号] · 证书 信任（换了固件 / 换机器后）',
+  '  同一条访问码下再加一台；不填访问码就沿用已有的。',
+  '/打印机 绑定（不带参数）· /打印机 解绑 <编号>',
+  '  不带参数能看到凭据编号；解绑用的就是那个编号。',
+  '/打印机 接口 云端|本地|自动',
+  '  切换你自己的打印机走云端还是局域网。',
+  '/打印机 证书 [序号] · /打印机 证书 信任',
+  '  看证书指纹；换了固件或换了机器，才需要「证书 信任」重新固定。',
 ]
 
 // 局域网绑定表单的形状规则（面板和 /lan/bind 共用同一套）：只做「看起来像不像」，
@@ -220,7 +237,7 @@ const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/
 export default {
   id: 'bambu-print',
   name: '拓竹',
-  version: '1.1.0',
+  version: '1.1.1',
   api: 1,
   description: '看拓竹 3D 打印机状态、暂停继续、停止、灯光、温度和拍照；每个用户一条独立加密凭据，默认谁也看不到别人的 token，只有本人主动授权才限时共享。',
   panel: 'panel.js',
@@ -701,7 +718,7 @@ export default {
 
     // ---------- 打印机解析 ----------
     function pickPrinter(list, selector) {
-      if (!list.length) return { ok: false, code: 'NO_PRINTER', message: '你还没绑定打印机。打开面板「拓竹」绑定，或在私聊里发「/打印机」看用法。' }
+      if (!list.length) return { ok: false, code: 'NO_PRINTER', message: '你还没绑定打印机：私聊发「/打印机 登录」（网页里填账号密码，不经过聊天），或者让对方在私聊里授权给你。' }
       const raw = String(selector || '').trim()
       if (!raw) {
         if (list.length === 1) return { ok: true, printer: list[0] }
@@ -740,6 +757,26 @@ export default {
         for (const p of r.printers) out.push({ ...p, granted: true, ownerQQ: g.ownerQQ, scopes: g.scopes })
       }
       return out
+    }
+
+    /**
+     * 列表为空时的人话：区分「自己没绑」和「授权还在、但主人锁着解不开」。
+     * 后者不能回「你还没绑定」，也不能假装查到了打印机。
+     */
+    function noPrinterHint (qq) {
+      const userId = String(qq || '')
+      const generic = '你还没绑定打印机：私聊发「/打印机 登录」（网页里填账号密码，不经过聊天），或者让对方在私聊里授权给你。'
+      let grants = []
+      try { grants = userId ? vault.grantSessions(userId) : [] } catch (error) { grants = [] }
+      if (!grants.length) return generic
+      for (const grant of grants) {
+        let r = null
+        try { r = vault.grantedPrinters(userId, grant.grantId) } catch (error) { r = null }
+        if (r && r.code === 'OWNER_LOCKED') {
+          return '你手上有一份授权，但打印机主人现在没解锁，凭据取不出来。让对方私聊随便发一条打印机命令（比如「/打印机 状态」），密钥会自动恢复，再试一次就行。'
+        }
+      }
+      return '你手上有一份授权，但里面还没有可用的打印机：让对方看一下他的绑定还在不在，或者让他重新授权一次。'
     }
 
     /**
@@ -796,21 +833,21 @@ export default {
     }
 
     function lockedHint() {
-      return '这个账号还没有绑定打印机：先私聊我「/打印机 登录」，在网页里填 Bambu 账号密码。'
+      return '你还没有登录，或者登录会话已经过期：私聊发「/打印机 登录」，在网页里填 Bambu 账号密码（不经过聊天），再把生成的那段贴回来。'
     }
 
     function explain(error) {
       const code = error && error.code ? error.code : ''
       const table = {
-        NO_USER: '这个 QQ 还没有绑定。',
-        EXISTS: '已经绑定过了，用「/打印机 解锁」。',
+        NO_USER: '这个 QQ 还没有登录过：先私聊发「/打印机 登录」，在网页里填 Bambu 账号密码。',
+        EXISTS: '这个 QQ 已经建过账号了，不用重复建。',
         LOCKED_OUT: '错太多次了，先等一会儿再试。',
-        LOCKED: '保险箱锁着，先解锁。',
+        LOCKED: '登录会话锁着：再发一次命令就会自动恢复，不用重新登录。',
         NOT_FOUND: '找不到这条记录。',
         BAD_INPUT: '参数不对。',
         EXPIRED: '已经过期了。',
-        TOO_MANY: '绑定数量到上限了。',
-        AUTH_FAILED: '账号或密码不对。',
+        TOO_MANY: '凭据数量到上限了：先用「/打印机 解绑 <编号>」删掉一条，或在设置里调高上限。',
+        AUTH_FAILED: 'Bambu 账号或密码不对：重新发「/打印机 登录」拿网页链接再试。',
         NO_ACCOUNT: '缺少 Bambu 账号（邮箱或手机号）。',
         NO_PASSWORD: '缺少密码。用 OAuth 注册的账号请先在 Bambu 手机 App 里设置密码。',
         NO_CODE: '缺少验证码。',
@@ -818,8 +855,8 @@ export default {
         CODE_INCORRECT: '验证码不对。',
         CODE_FAILED: '验证码登录失败。',
         TFA_FAILED: '两步验证失败。',
-        CSRF_FAILED: '拿不到 CSRF token，两步验证做不了，可以改用验证码登录。',
-        TOKEN_EXPIRED: '云端 token 已失效，需要重新登录。',
+        CSRF_FAILED: '拿不到登录校验串（CSRF token），两步验证做不了，可以改用验证码登录。',
+        TOKEN_EXPIRED: '云端 token 已失效：重新发「/打印机 登录」登录一次。',
         RATE_LIMITED: '请求太频繁，过一会儿再试。',
         CLOUD_DOWN: 'Bambu 云端暂时不可用。',
         TIMEOUT: '连接超时。',
@@ -831,7 +868,7 @@ export default {
     }
 
     function pickSelected(list, who, chatId, selector) {
-      if (!list.length) return { ok: false, code: 'NO_PRINTER', message: '你还没绑定打印机。打开面板「拓竹」绑定，或在私聊里发「/打印机」看用法。' }
+      if (!list.length) return { ok: false, code: 'NO_PRINTER', message: noPrinterHint(who.userId) }
       const sel = String(selector || '').trim()
       if (sel) {
         const picked = pickPrinter(list, sel)
@@ -1012,7 +1049,7 @@ export default {
           const secret = vault.secretOf(secretOwner, printer.bindingId)
           if (secret && secret.mode === 'cloud') { accessToken = secret.accessToken; tokenRegion = secret.region || tokenRegion }
         } catch (error) {
-          return { ok: false, code: 'LOCKED', message: '云端画面需要这台打印机的 token：请让绑定者私聊「/打印机 登录」重新登录一次，再试。' }
+          return { ok: false, code: 'LOCKED', message: '云端画面需要这台打印机的 token，但绑定者现在没解锁：让他私聊随便发一条打印机命令（比如「/打印机 状态」），密钥会自动恢复，再试一次。' }
         }
       }
       if (!accessToken) {
@@ -1165,7 +1202,7 @@ export default {
     /** 信封错误码 → 中文人话。绝不回显任何明文。 */
     function envelopeErrorText (code) {
       const table = {
-        BAD_FORMAT: '这段不像是本模块生成的信封（应该以 BBX1. 开头，整段复制，别只复制一半）。',
+        BAD_FORMAT: '这段不像是这台机器生成的登录信封（应该以 BBX1. 开头，整段复制，别只复制一半）。',
         BAD_VERSION: '信封版本不支持，刷新一下登录网页再生成。',
         BAD_SUITE: '信封的加密套件这台机器不支持。',
         TOO_LARGE: '这段太长了，不像是信封。',
@@ -1191,13 +1228,16 @@ export default {
       const text = String(arg || '').trim()
       const s = settings()
       const who = senderOf(msg)
-      // 每次命令进来确保会话可用（正常情况下就是空操作）
-      if (who.isOwner) await ensureOwnerSession()
       // 多用户模式关掉 = 只服务主人一个人：别人连帮助都不给，静默不理
       if (s.multiUser === false && !who.isOwner) return null
       // 总开关关着就什么都不响应，**帮助也不例外**：
       // 关掉的意思是「这个模块现在不工作」，这时候还回一大段帮助会让人以为它是开着的。
-      if (!s.enabled) return '拓竹模块没开总开关：让主人在面板「拓竹」里打开。'
+      if (!s.enabled) return '拓竹的总开关关着：让主人在面板「拓竹」里打开。'
+      // 到这里才确保会话可用（正常情况下就是空操作）。
+      // 没有安全码之后，会话只是内存缓存：不小心锁过 / 闲置到期都应该自动恢复，
+      // 不该让非主人用户被要求「重新登录一次」。放在两个开关之后，是为了
+      // 「模块没开 / 单用户模式」时不替被忽略的人解密钥。
+      await ensureSession(who.userId)
       // 帮助分页：默认第 1 页（风险），「/打印机 帮助 2」翻页
       const helpFor = (q, page) => helpPage(page || 1, !!(q && q.isOwner))
       // 只发「/打印机」= 要看帮助：和「/打印机 帮助」完全一样（合并转发，不刷屏）
@@ -1223,7 +1263,7 @@ export default {
 
       if (/^(列表|绑定列表|我的)$/.test(head)) {
         const list = listOf(who.userId)
-        if (!list.length) return '你还没绑定打印机。打开面板「拓竹」→ 绑定。'
+        if (!list.length) return noPrinterHint(who.userId)
         return '你的打印机：\n' + formatChoiceList(list) + '\n\n用「/打印机 状态 1」这样带编号或名字。'
       }
 
@@ -1257,7 +1297,7 @@ export default {
             '用 Bambu 账号登录（账号和密码都不经过聊天）：',
             '1) 打开这个页面：' + (enrollLinkOrHint()),
             fp ? '   页面上一开始就显示「公钥指纹 ' + fp + '」，和这行一致才是发给这台机器的' : '',
-            '2) 填 Bambu 账号 + 密码（网页在浏览器里本地加密），点「生成」',
+            '2) 填 Bambu 账号 + 密码（网页在浏览器里本地加密），点「生成加密文本」，再点「复制整条命令」',
             '3) 把生成的 BBX1.… 整段贴回来：/打印机 登录 <那段>',
             '',
             '如果云端还要验证码：/打印机 验证码 → 等码到邮箱/手机 → /打印机 验证码 <6位>（5 分钟内有效）',
@@ -1277,7 +1317,7 @@ export default {
         const pending = pendingLogins.get(who.userId)
         if (!pending || pending.until < now()) {
           pendingLogins.delete(who.userId)
-          return '没有等待中的登录，或者已经超过 5 分钟。请重新「/打印机 登录 <账号> <密码>」。'
+          return '没有等待中的登录，或者已经超过 5 分钟。重新发「/打印机 登录」，再拿一次网页链接。'
         }
         const code = rest.replace(/\s+/g, '')
         try {
@@ -1319,16 +1359,16 @@ export default {
       if (/^(绑定|添加|bind)$/.test(head)) {
         if (msg.kind !== 'private') return '绑定只能在私聊里做。'
         if (!who.isOwner) {
-          return '绑定打印机请用「/打印机 登录 <Bambu 账号> <密码>」：登录成功后账号下的打印机会自动同步，token 会加密保存。'
+          return '绑定打印机请用「/打印机 登录」：打开网页链接，在里面填 Bambu 账号密码（不经过聊天）。登录成功后账号下的打印机会自动同步。'
         }
         if (!rest) {
           const list = vault.listBindings(who.userId)
           return [
             '绑定（主人可用局域网；其他人用云端登录）：',
-            '· 云端登录：/打印机 登录 <账号> <密码>',
+            '· 云端登录：/打印机 登录（网页里填账号密码，不经过聊天）',
             '· 本地（仅主人）：/打印机 绑定 本地 <序列号> <打印机IP> <访问码> [名称]',
             '· 追加（仅主人）：/打印机 绑定 追加 <序列号> <打印机IP> [访问码] [名称]',
-            '· 看/解绑：/打印机 列表、/打印机 解绑 <编号>',
+            '· 解绑：/打印机 解绑 <编号>（编号就是下面这份列表的序号）',
             '',
             list.length ? '你现在有 ' + list.length + ' 条凭据：\n' + list.map((b, i) => (i + 1) + '. ' + b.label + '（' + (b.mode === 'cloud' ? '云端' : '本地') + '，' + b.printers.length + ' 台）').join('\n') : '还没有绑定。',
           ].join('\n')
@@ -1337,7 +1377,7 @@ export default {
         const p = rest.split(/\s+/)
         const sub = String(p[0] || '').toLowerCase()
         try {
-          if (sub === '云端' || sub === 'cloud') return '云端请用账号登录：/打印机 登录 <账号> <密码>（不再手填 access token）。'
+          if (sub === '云端' || sub === 'cloud') return '云端请用账号登录：/打印机 登录（网页里填 Bambu 账号密码，不再手填 access token）。'
           const append = sub === '追加' || sub === 'add'
           const seq = p[1] || ''
           const ip = p[2] || ''
@@ -1510,7 +1550,7 @@ export default {
         const pieces = rest.split(/\s+/)
         const adminQQ = pieces[0] || ''
         if (!/^\d{4,15}$/.test(adminQQ)) return '用法：/打印机 授权 <对方QQ> [分钟] [status,control,photo]'
-        if (adminQQ === who.userId) return '不用授权给自己 —— 这些打印机本来就是你绑定的。'
+        if (adminQQ === who.userId) return '不用授权给自己：这些打印机本来就是你绑定的。'
         const minutes = parseMinutes(pieces[1], 30, 1440)
         const scopes = String(pieces[2] || 'status,control').split(/[,，\s]+/).filter((x) => Object.hasOwn({ status: 1, control: 1, photo: 1 }, x))
         if (!scopes.length) return '范围只能是 status / control / photo。'
@@ -1535,7 +1575,7 @@ export default {
 
       if (/^(撤销|revoke)$/.test(head)) {
         if (msg.kind !== 'private') return '撤销只能在私聊里做。'
-        if (!rest) return '用法：/打印机 撤销 <授权编号>；用「/打印机 审计」能看编号。'
+        if (!rest) return '用法：/打印机 撤销 <授权编号>；编号是「/打印机 授权」成功那条回复里 g_ 开头的那串。'
         try {
           await vault.revokeGrant({ byQQ: who.userId, grantId: rest })
           await audit(who.userId, 'revoke', true, '', rest)
@@ -1597,7 +1637,7 @@ export default {
         const value = /云端|cloud/.test(raw) ? 'cloud' : /自动|auto/.test(raw) ? 'auto' : /本地|局域网|lan/.test(raw) ? 'lan' : null
         if (value === null) return '接口只能是「云端」「本地」或「自动」。'
         if (value === 'lan' && !who.isOwner) return '只有主人可以切到本地接口；你默认走云端。'
-        if (value === 'lan' && !s.ownerLocalAllowed) return '主人已经把本地接口关掉了（settings.ownerLocalAllowed）。'
+        if (value === 'lan' && !s.ownerLocalAllowed) return '主人已经在设置里关掉了「允许主人使用本地接口」。'
         try {
           const r = await vault.setPrefs(who.userId, { interface: value })
           await audit(who.userId, 'interface', true, value)
@@ -1747,6 +1787,8 @@ export default {
       const g = gate(msg)
       if (!g.ok) return false
       const who = senderOf(msg)
+      // 和命令入口一致：选打印机也先确保会话可用，否则拿不到凭据
+      await ensureSession(who.userId)
       const list = listOf(who.userId)
       if (!list.length) return false
       let ref = ''
@@ -1799,7 +1841,12 @@ export default {
         },
         required: ['action'],
         execute: async ({ action, printer, on, level, nozzle, bed }) => {
-          const picked = pickPrinter(list, printer || '')
+          // 模型工具和聊天命令用同一套会话恢复：锁过 / 到期都自动续上。
+          // 必须在挑打印机之前恢复：工具注册时如果会话锁着，list 里是拿不到凭据的，
+          // 拿到的是 meta 版本；恢复后重新取一份带凭据的列表再挑。
+          await ensureSession(userId)
+          const fresh = listOf(userId)
+          const picked = pickPrinter(fresh.length ? fresh : list, printer || '')
           if (!picked.ok) return { ok: false, message: picked.message }
           const actor = { userId, isOwner }
           if (chat.kind === 'group') {
@@ -1807,7 +1854,7 @@ export default {
             if (acc.mode === 'off') return { ok: false, message: '这台打印机的主人在群里关掉了打印机功能。' }
             if (action !== 'status' && acc.mode !== 'control') return { ok: false, message: '这台打印机的主人在群里只允许查看状态。' }
           }
-          if (!picked.printer.granted && !vault.isUnlocked(userId)) return { ok: false, message: '请用户在私聊里发「/打印机 登录」重新登录一次，再来。' }
+          if (!picked.printer.granted && !vault.isUnlocked(userId)) return { ok: false, message: '这个账号的凭据现在取不出来：请用户在私聊里发「/打印机 登录」重新登录一次，再来。' }
           const scope = action === 'status' ? 'status' : 'control'
           if (!canUseScope(picked.printer, scope)) return { ok: false, message: '这个授权没有这个范围。' }
           if (action === 'status') {
@@ -2245,7 +2292,7 @@ export default {
         },
         cn: isCnLikely({}),
         timeoutMs: s.tutkTimeoutMs,
-        note: '云端画面 = 云端 token 铸 ttcode + 本机 TUTK 抓帧桥。桥已随模块预编译（不需要 .NET）；还需要一份 BambuSource 库（OBN 的产物，本模块不打包）：' + BAMBUSOURCE_ADVICE + '把 ' + BAMBUSOURCE_FILE + ' 放到桥同目录即可。有局域网地址+访问码时优先走局域网。',
+        note: '云端画面 = 云端 token 铸 ttcode + 本机 TUTK 抓帧桥。桥已随模块预编译（不需要 .NET）；还需要一份 BambuSource 库（OBN 的产物，这里不打包）：' + BAMBUSOURCE_ADVICE + '把 ' + BAMBUSOURCE_FILE + ' 放到桥同目录即可。有局域网地址+访问码时优先走局域网。',
       }
     })
 

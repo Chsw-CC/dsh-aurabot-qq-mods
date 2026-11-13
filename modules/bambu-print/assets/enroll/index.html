@@ -6,26 +6,26 @@
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex">
-<title>Bambu 打印 · 登录</title>
+<title>拓竹打印 · 登录（账号密码不进聊天）</title>
 <link rel="stylesheet" href="./style.css">
 </head>
 <body>
 <main class="page">
 
   <header class="page-head">
-    <h1>Bambu 打印 · 登录</h1>
-    <p class="lead">为了避免账号密码在聊天内暴露或者留存，这个页面作用仅生成密文，不发任何网络请求，也不保存任何输入（没有本地缓存、没有 cookie），关掉或刷新就没了。</p>
+    <h1>拓竹打印 · 登录</h1>
+    <p class="lead">这个页面只做一件事：把你填的 Bambu 账号和密码，在这台浏览器的本地加密成一段文本。它不联网、不上传、不保存，关掉或刷新就没了。</p>
   </header>
 
   <p class="fatal" id="fatal" hidden></p>
 
   <!-- 公钥 -->
   <section class="card" id="key-card">
-    <h2>这把公钥</h2>
+    <h2>第一步：确认公钥</h2>
 
     <div id="key-missing">
-      <p class="notice">请先在 QQ 里私聊机器人发 <code>/打印机 登录</code> 拿链接，再点开那个链接。链接末尾的 <code>#k=</code> 就是这台机器人的公钥。</p>
-      <p class="hint">已经拿到链接但没自动带过来？把整条链接（或那 87 个字符的公钥）贴到下面：</p>
+      <p class="notice">先在 QQ 私聊机器人发 <code>/打印机 登录</code>，拿到一条链接，再从那条链接打开本页。链接里 <code>#k=</code> 后面那串就是这台机器人的公钥。</p>
+      <p class="hint">链接没自动带过来？把整条链接（或那 87 个字符的公钥）贴到下面也一样：</p>
       <div class="inline">
         <input id="manual-key" type="text" inputmode="text" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="粘贴链接，或 87 个字符的公钥">
         <button type="button" class="secondary" id="use-key">使用</button>
@@ -34,7 +34,7 @@
     </div>
 
     <div id="key-ready" hidden>
-      <p class="ok-line">公钥已载入。核对指纹和机器人面板上显示的一致，再往下填。</p>
+      <p class="ok-line">公钥已载入。先核对下面这串指纹——要和机器人在私聊里发给你的那串一模一样，再往下填。</p>
       <p class="fingerprint">公钥指纹 <strong id="key-fingerprint"></strong></p>
       <button type="button" class="ghost small" id="change-key">换一把公钥</button>
     </div>
@@ -42,7 +42,7 @@
 
   <!-- 表单 -->
   <form class="card" id="form" novalidate autocomplete="off">
-    <h2>填写</h2>
+    <h2>第二步：填账号和密码</h2>
 
     <div class="field">
       <label for="account">Bambu 账号 <span class="tag req">必填</span></label>
@@ -60,7 +60,7 @@
     <div class="field">
       <label for="region">账号区域</label>
       <select id="region" name="region"></select>
-      <p class="hint">默认中国大陆。用国际站注册的账号（邮箱后缀常见 gmail / outlook）才需要改成「国际」。</p>
+      <p class="hint">默认中国大陆。用国际站（bambulab.com，邮箱常见 gmail / outlook）注册的账号才要改成「国际」。</p>
     </div>
 
     <ul class="issues" id="issues"></ul>
@@ -69,13 +69,13 @@
       <button type="submit" class="primary" id="generate">生成加密文本</button>
       <button type="button" class="ghost" id="clear">清空</button>
     </div>
-    <p class="hint">生成后账号和密码会被清空；用完记得点「清空」。</p>
+    <p class="hint">点「生成加密文本」之后，输入框里的账号和密码会被自动清掉。</p>
   </form>
 
   <!-- 结果 -->
   <section class="card result" id="result" hidden>
-    <p class="danger-note">这段里是你的密文。只在私聊发给机器人即可<strong>不要发群里。</strong></p>
-    <p class="danger-sub">机器人解完就作废：同一段只能用一次，过期也打不开。</p>
+    <p class="danger-note">第三步：把这段发回私聊。它本身就是密文，<strong>只发私聊，不要发群里。</strong></p>
+    <p class="danger-sub">机器人解完就作废：同一段只能用一次，过了时间也打不开。</p>
     <textarea id="output" rows="5" readonly spellcheck="false" aria-label="加密后的文本"></textarea>
     <div class="actions">
       <button type="button" class="primary" id="copy-command">复制整条命令</button>
@@ -83,11 +83,11 @@
       <span class="copy-status" id="copy-status" role="status" aria-live="polite"></span>
     </div>
     <p class="hint" id="result-meta"></p>
-    <p class="hint">回到 QQ 私聊，直接粘贴「复制整条命令」得到的内容即可（它已经带上了 <code>/打印机 登录</code>）。</p>
+    <p class="hint">回到 QQ 私聊，粘贴「复制整条命令」给你的内容就行——它已经带上了 <code>/打印机 登录</code>。</p>
   </section>
 
   <footer class="page-foot">
-    <p>页面没有构建、没有依赖，只有同目录的 <code>style.css</code> / <code>bbx.js</code> / <code>enroll-form.js</code>，不连接任何外部域名。</p>
+    <p>这个页面没有构建、没有第三方依赖，只用到同目录的 <code>style.css</code> / <code>bbx.js</code> / <code>enroll-form.js</code>，不会连接任何外部域名。</p>
   </footer>
 
   <noscript><p class="fatal">这个页面需要 JavaScript 才能在本地加密，请换一个正常的浏览器打开。</p></noscript>

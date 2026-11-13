@@ -716,7 +716,7 @@ test('帮助页：完整风险告知 + 本地安全策略，正文不再占首�
   assert.match(all, /没有「管理员」这一级/)
   assert.match(all, /别人看不到你的凭据/)
   assert.match(all, /不要在任何群里发密码/)
-  assert.match(all, /模块自述：访问码 \/ token 等同于打印机控制权/)
+  assert.match(all, /服务端说明：访问码 \/ token 等同于打印机控制权/)
   // 本地安全策略要点
   for (const label of ['本地安全策略', '每个用户一把独立密钥', '没有安全码', '控制面与摄像头要求先固定证书', '画面端口(322)单独核对', '云端用系统 CA', '会话到期自动清']) {
     assert.match(all, new RegExp(label.replace(/[()]/g, '\\$&')), '帮助页缺少：' + label)

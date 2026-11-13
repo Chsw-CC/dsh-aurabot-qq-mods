@@ -62,29 +62,29 @@ const DEFAULTS = {
 }
 
 const FALLBACK_RULES = {
-  groupMode: { kind: 'enum', def: 'status', values: ['off', 'status', 'control'], label: '群模式', hint: '只作用于发起人自己的绑定；绑定者本人还能在自己的「群权限」里再收紧或放宽。' },
+  groupMode: { kind: 'enum', def: 'status', values: ['off', 'status', 'control'], label: '群模式', hint: '只对发起人自己的绑定生效；绑定者本人还能在自己的「群权限」里再收紧或放宽。' },
   groupPhoto: { kind: 'bool', def: true, label: '群聊允许拍照', hint: '关掉后群里只能看状态，不能要画面。' },
-  allowGroupName: { kind: 'bool', def: false, label: '群里允许显示文件名', hint: '默认关：群里文件行显示「已脱敏」，项目名永远不显示。' },
-  defaultInterface: { kind: 'enum', def: 'cloud', values: ['cloud', 'lan'], label: '默认接口', hint: '默认云端；非主人用户默认且只能是云端。' },
+  allowGroupName: { kind: 'bool', def: false, label: '群里允许显示文件名', hint: '默认关：群里文件名显示「已脱敏」，项目名永远不显示。' },
+  defaultInterface: { kind: 'enum', def: 'cloud', values: ['cloud', 'lan'], label: '默认接口', hint: '默认走云端；非主人只能走云端。' },
   ownerInterface: { kind: 'enumAllowEmpty', def: '', values: ['', 'cloud', 'lan'], label: '主人的接口覆盖', hint: '只影响主人自己。' },
-  ownerLocalAllowed: { kind: 'bool', def: true, label: '允许主人使用本地接口', hint: '关掉后连主人也一律走云端（本地接口要求打印机和这台电脑在同一网段）。' },
-  multiUser: { kind: 'bool', def: true, label: '多用户模式', hint: '开着：每个 QQ 各绑各的、互相看不到，别人可以用授权共享。关掉：只服务主人一个人，其他人的命令和工具一律不响应。' },
+  ownerLocalAllowed: { kind: 'bool', def: true, label: '允许主人使用本地接口', hint: '关掉后连主人也一律走云端（本地接口要求打印机和这台电脑在同一个局域网）。' },
+  multiUser: { kind: 'bool', def: true, label: '多用户模式', hint: '开着：每个 QQ 各绑各的、互相看不到，也能用授权共享。关掉：只服务主人一个人，其他人的命令和工具都不响应。' },
   unlockDays: { kind: 'int', def: 7, min: 1, max: 30, step: 1, label: '解锁有效期（天）', hint: '到期后内存里的密钥自动清零（1~30 天，默认 7 天）。' },
   maxBindings: { kind: 'int', def: 5, min: 1, max: 20, step: 1, label: '每人最多凭据数', hint: '一个人最多能绑几条凭据（一个云端账号算一条，可含多台）。' },
   requestTimeoutMs: { kind: 'int', def: 6000, min: 2000, max: 20000, step: 500, label: '打印机超时（毫秒）', hint: '等打印机回执最长多久。' },
-  selectedTtlMinutes: { kind: 'int', def: 10, min: 1, max: 60, step: 1, label: '群内选择记忆（分钟）', hint: '群里点过「第几台」之后记多久（下一条不用重选）。' },
-  tutkBridgePath: { kind: 'text', def: '', label: '抓帧桥路径（留空 = 用模块自带的）', hint: '只有想换成别的桥程序时才填。' },
-  tutkLibPath: { kind: 'text', def: '', label: 'BambuSource 库路径（留空 = 桥旁边自动找）', hint: '本模块不打包它（OBN 是 AGPL-3.0）。点下面的「下载」会自动取回并放到桥同目录，国内走加速代理。' },
+  selectedTtlMinutes: { kind: 'int', def: 10, min: 1, max: 60, step: 1, label: '群内选择记忆（分钟）', hint: '群里选过「第几台」之后记多久（下一条不用重选）。' },
+  tutkBridgePath: { kind: 'text', def: '', label: '抓帧桥路径（留空 = 用自带的）', hint: '只有想换成别的桥程序时才填。' },
+  tutkLibPath: { kind: 'text', def: '', label: 'BambuSource 库路径（留空 = 桥旁边自动找）', hint: '这里不打包它（OBN 的许可证是 AGPL-3.0）。点下面的「下载」会自动取回并放到桥同目录，国内走加速代理。' },
   tutkTimeoutMs: { kind: 'int', def: 20000, min: 3000, max: 60000, step: 1000, label: '抓帧超时（毫秒）', hint: '云端抓一帧最长等多久（3000~60000）。' },
 }
 
 const EMPTY_RISK = [
-  '私聊发送同样有风险：私聊记录会以明文留存，撤回并不能可靠消除风险。请优先使用官方授权方式或临时凭据；如确需提供，请先评估风险，事后立即修改密码并检查账号授权与设备绑定情况。',
-  '谨慎使用插件：请在你熟悉的「鱼」管理者下使用。',
-  '局域网访问码（LAN Access Code）等同于打印机控制权：谁拿到它，谁就能暂停、停止、改温度、发 G-code。',
+  '私聊发送同样有风险：私聊记录会以明文留存，撤回并不能可靠消除风险。要用，尽量用官方授权或临时凭据；用完马上改密码，并检查账号授权和设备绑定。',
+  '谨慎使用：只用你信得过的机器人。它的主人能读到这台机器上的数据目录。',
+  '局域网访问码（打印机屏幕上那串）等同于打印机控制权：谁拿到，谁就能暂停、停止、改温度、发 G-code（打印机听得懂的指令）。',
   '每个用户的凭据仍然加密落盘（每人一把独立密钥），主密钥在这台机器上——能读数据目录的人可以解开，所以这台机器本身要可信。',
-  '没有「管理员」这一级：别人看不到你的凭据，除非你主动授权。授权就是限时共享使用权，到期自动失效、随时能撤销；对方始终拿不到你的凭据。',
-  '不要在任何群里发密码、访问码。群里本模块也不接受绑定、授权等敏感操作。',
+  '没有「管理员」这一级：别人看不到你的凭据，除非你主动授权。授权就是限时把使用权借出去，到期自动收回、随时能撤销；对方始终拿不到你的凭据。',
+  '不要在任何群里发密码、访问码。群里也不接受绑定、授权这类操作。',
 ]
 
 const TAIL_ACTIONS = {
@@ -115,7 +115,7 @@ return function Panel (props) {
   }
   const request = typeof call === 'function'
     ? call
-    : function () { return Promise.resolve({ ok: false, message: '接口不可用' }) }
+    : function () { return Promise.resolve({ ok: false, message: '接口不可用：面板没拿到调用接口，重开一次面板。' }) }
   const editable = typeof given.setSettings === 'function'
   const persist = typeof given.save === 'function' ? given.save : null
 
@@ -187,7 +187,7 @@ return function Panel (props) {
       // GET /overview：不带 body 才是 get()，契约里它是只读路由
       const r = await request('/overview')
       if (!r || r.ok === false) {
-        setLoadError((r && r.message) || '接口没有返回数据。')
+        setLoadError((r && r.message) || '接口没有返回数据。点「重试」再来一次。')
         setOv(null)
       } else {
         setLoadError('')
@@ -212,7 +212,7 @@ return function Panel (props) {
           setLanStatus(null)
           setLanError('')
         } else {
-          setLanError((r && r.message) || '读取局域网状态失败。')
+          setLanError((r && r.message) || '读取局域网状态失败。点「重试」再来一次。')
           setLanStatus(null)
           setLanUnsupported(false)
         }
@@ -229,7 +229,7 @@ return function Panel (props) {
         setLanError('')
       } else {
         setLanStatus(null)
-        setLanError('读取局域网状态失败：' + msg)
+        setLanError('读取局域网状态失败：' + msg + '。点「重试」再来一次。')
       }
     } finally {
       setLanLoaded(true)
@@ -243,14 +243,14 @@ return function Panel (props) {
     try {
       const r = await request('/enroll')
       if (!r || r.ok === false) {
-        setEnrollError((r && r.message) || '读不到登录链接。')
+        setEnrollError((r && r.message) || '读不到登录链接。点右上角「刷新」再试。')
         setEnroll(null)
       } else {
         setEnrollError('')
         setEnroll(r)
       }
     } catch (err) {
-      setEnrollError(String((err && err.message) || err))
+      setEnrollError('读不到登录链接：' + String((err && err.message) || err) + '。点右上角「刷新」再试。')
       setEnroll(null)
     } finally {
       setEnrollLoading(false)
@@ -260,19 +260,19 @@ return function Panel (props) {
   /** 只解信封看摘要：不消费、不执行、不回显任何秘密（账号是掩码的）。 */
   const inspectEnroll = async function () {
     const text = String(enrollTrial || '').trim()
-    if (!text) { setEnrollTrialError('先把那段 BBX1.… 贴进来。'); return }
+    if (!text) { setEnrollTrialError('先把那段 BBX1.… 整段贴进来。'); return }
     setBusy('enroll-inspect')
     setEnrollTrialError('')
     setEnrollTrialResult(null)
     try {
       const r = await request('/enroll/inspect', { text: text })
       if (!r || r.ok === false) {
-        setEnrollTrialError((r && r.message) || '解不开这段。')
+        setEnrollTrialError((r && r.message) || '解不开这段：确认是从这台机器的登录网页生成的，并且整段复制过来。')
         return
       }
       setEnrollTrialResult(r)
     } catch (err) {
-      setEnrollTrialError(String((err && err.message) || err))
+      setEnrollTrialError('解不开这段：' + String((err && err.message) || err) + '。重新生成一次再试。')
     } finally {
       setBusy('')
     }
@@ -308,13 +308,14 @@ return function Panel (props) {
 
   const unlockOwner = async function () {
     setUnlockError('')
+    // 没有安全码了：/owner/unlock 不校验 body，这里做的事只是重新开一次内存会话。
+    // 输入框留着是为了兼容旧面板/旧测试，留空也能解锁，不再强制填。
     const code = String(unlockCode || '').trim()
-    if (!code) { setUnlockError('这里已经不需要密码了，直接点下面的按钮即可。'); return }
     setBusy('unlock')
     try {
       const r = await request('/owner/unlock', { code: code })
       if (!r || r.ok === false) {
-        setUnlockError((r && r.message) || '解锁没有成功。')
+        setUnlockError((r && r.message) || '解锁没有成功。再点一次；一直失败就看服务端日志。')
         return
       }
       setUnlockCode('')
@@ -336,7 +337,7 @@ return function Panel (props) {
     try {
       const r = await request('/owner/nocode', {})
       if (!r || r.ok === false) {
-        setUnlockError((r && r.message) || '开启失败。')
+        setUnlockError((r && r.message) || '开启失败。再点一次；一直失败就看服务端日志。')
         return
       }
       notify('已开启，可以直接用了')
@@ -358,7 +359,7 @@ return function Panel (props) {
     try {
       const r = await request('/owner/lock', {})
       if (!r || r.ok === false) {
-        notify((r && r.message) || '锁定没有成功', 'err')
+        notify((r && r.message) || '锁定没有成功，再点一次试试', 'err')
         return
       }
       notify('已锁定')
@@ -382,7 +383,7 @@ return function Panel (props) {
     try {
       const r = await request('/lan/discover', { timeoutMs: 3500 })
       if (!r || r.ok === false) {
-        setDiscoverError((r && r.message) || '搜索失败。')
+        setDiscoverError((r && r.message) || '搜索失败。确认这台电脑和打印机在同一个网段，再点一次。')
         setDiscovered([])
         return
       }
@@ -447,7 +448,7 @@ return function Panel (props) {
         printers: printers,
       })
       if (!r || r.ok === false) {
-        setFormError((r && r.message) || '绑定没有成功。')
+        setFormError((r && r.message) || '绑定没有成功。检查序列号、IP 和访问码，再提交一次。')
         await loadLan()
         return
       }
@@ -473,7 +474,7 @@ return function Panel (props) {
     try {
       const r = await request('/audit', { limit: 50 })
       if (!r || r.ok === false) {
-        setAuditError((r && r.message) || '读取失败')
+        setAuditError((r && r.message) || '读取失败，点「读取最近 50 条」再试。')
         return
       }
       setAuditError('')
@@ -492,8 +493,8 @@ return function Panel (props) {
       if (!r || r.ok !== true) { setTutkCheck({ ok: false, text: (r && r.message) || '检查失败' }); return }
       const bridge = r.bridge || {}
       const lib = r.lib || {}
-      if (!bridge.ok) setTutkCheck({ ok: false, text: '抓帧桥不可用：' + (bridge.message || bridge.code || '未知原因') + '（留空即用模块自带的）' })
-      else if (!lib.ok) setTutkCheck({ ok: false, text: '桥没问题，只差 BambuSource 库：点右边的「下载」会自动取回；也可以手动从 ' + (r.lib && r.lib.download ? r.lib.download : BAMBUSOURCE_URL) + ' 取 ' + (r.lib && r.lib.file ? r.lib.file : 'BambuSource') })
+      if (!bridge.ok) setTutkCheck({ ok: false, text: '抓帧桥不可用：' + (bridge.message || bridge.code || '未知原因') + '。把「抓帧桥路径」留空，就会用自带的那个。' })
+      else if (!lib.ok) setTutkCheck({ ok: false, text: '桥没问题，只差 BambuSource 库：点右边的「下载」会自动取回；也可以手动从 ' + (r.lib && r.lib.download ? r.lib.download : BAMBUSOURCE_URL) + ' 下载 ' + (r.lib && r.lib.file ? r.lib.file : 'BambuSource') + '，放进桥同目录' })
       else setTutkCheck({ ok: true, text: '都就绪了。桥：' + (bridge.path || '') + '；库：' + (lib.path || '') })
     } catch (err) {
       setTutkCheck({ ok: false, text: '检查失败：' + String((err && err.message) || err) })
@@ -507,7 +508,7 @@ return function Panel (props) {
     setTutkCheck({ ok: false, text: '正在下载 BambuSource（分段读取，只拉需要的那几 MB）…' })
     try {
       const r = await request('/tutk/download', { dir: String(cfg.tutkLibPath || '').trim() })
-      if (!r || r.ok !== true) { setTutkCheck({ ok: false, text: (r && r.message) || '下载失败' }); return }
+      if (!r || r.ok !== true) { setTutkCheck({ ok: false, text: (r && r.message) || '下载失败，可以再点一次「下载 BambuSource 库」。' }); return }
       setTutkCheck({
         ok: r.ready === true,
         text: '已下载 ' + (r.version || '') + '（' + Math.round((r.bytes || 0) / 1048576) + 'MB，来自 ' + (r.via || '') +
@@ -516,7 +517,7 @@ return function Panel (props) {
       })
       notify(r.ready ? 'BambuSource 已就绪' : '下载完成，但自检未通过', r.ready ? 'ok' : 'err')
     } catch (err) {
-      setTutkCheck({ ok: false, text: '下载失败：' + String((err && err.message) || err) })
+      setTutkCheck({ ok: false, text: '下载失败：' + String((err && err.message) || err) + '。可以再点一次。' })
     } finally {
       setBusy('')
     }
@@ -531,7 +532,7 @@ return function Panel (props) {
   if (!ov) {
     return h('div', { className: 'ab-grid' },
       h(ui.Card, { title: '拓竹' },
-        h('div', { className: 'ab-note err' }, loadError || '读取不到面板数据。'),
+        h('div', { className: 'ab-note err' }, loadError || '读取不到面板数据。点「重试」再来一次；一直这样就重启 Aurabot。'),
         h('div', { className: 'ab-flex', style: { marginTop: 8 } },
           h(ui.Btn, { small: true, onClick: function () { load() } }, '重试'))))
   }
@@ -590,7 +591,7 @@ return function Panel (props) {
   // 顶部那行现状：用「就绪 / 没解锁」比「已解锁」好懂，也更贴合免码时的实际情况
   const summary = countsUsers + ' 个用户 · ' + countsPrinters + ' 台打印机 · ' +
     (ownerOnline ? '主人已就绪' : '主人还没就绪') +
-    (cfg.active === true ? '' : ' · 模块关着')
+    (cfg.active === true ? '' : ' · 总开关关着')
 
   const isWin = typeof navigator !== 'undefined' && /windows/i.test(String(navigator.userAgent || ''))
   const bambuSourceFile = isWin ? 'BambuSource.dll' : 'libBambuSource.so'
@@ -677,7 +678,7 @@ return function Panel (props) {
   },
   h('div', { className: 'ab-small ab-muted', style: { marginTop: 2, lineHeight: 1.7 } },
     cfg.active === true
-      ? '开着：会响应打印机相关命令（仍受 Aurabot 的白名单和群权限限制）。'
+      ? '开着：会响应打印机相关命令，但仍受 Aurabot 的白名单和群权限限制。'
       : '关着：私聊和群里的打印机命令都不再响应，也不会去连打印机；面板本身还能打开。'),
   dirty
     ? h('div', { className: 'ab-note warn', style: { marginTop: 8 } },
@@ -685,7 +686,7 @@ return function Panel (props) {
     : null,
   !editable
     ? h('div', { className: 'ab-note warn', style: { marginTop: 8 } },
-      '当前宿主版本较老，拿不到草稿接口：这里的改动只在本页生效，并且每改一项就立刻保存。')
+      '当前宿主版本较老，拿不到草稿接口：你在这里改的值只在本页生效，而且每改一项就立刻保存。')
     : null)
 
   // ======== 页内分页 ========
@@ -761,7 +762,7 @@ return function Panel (props) {
 
   const overviewPage = h(ui.Card, {
     title: '用户与打印机',
-    desc: '每行一个用户：谁是、绑了几条凭据、几台打印机、账号是否就绪。点开才看得到他那几条凭据和打印机。序列号打码，token、访问码一律不出现，这里也不会改任何东西。',
+    desc: '一行一个用户：绑了几条凭据、几台打印机、账号是否就绪。点开一行才看得到具体是哪些打印机。序列号打码，token（云端通行证）和访问码一律不显示；这一页只看，不改。',
   },
   h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 16 } },
     stat('已绑定用户', countsBound),
@@ -775,7 +776,7 @@ return function Panel (props) {
   h('div', { className: 'ab-flex', style: { gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' } },
     h(ui.Btn, { small: true, kind: onlyBound ? 'primary' : undefined, onClick: function () { setOnlyBound(function (previous) { return !previous }) } },
       onlyBound ? '只看已绑定 ✓' : '只看已绑定'),
-    h('span', { className: 'ab-small ab-muted' }, '当前显示 ' + shownUsers.length + ' 人（只是本页筛选，不改设置）')),
+    h('span', { className: 'ab-small ab-muted' }, '当前显示 ' + shownUsers.length + ' 人（只影响这一页，不改设置）')),
   shownUsers.length
     ? h('div', { style: { marginTop: 8 } },
       h('div', {
@@ -807,7 +808,7 @@ return function Panel (props) {
     h('span', { className: 'ab-small ab-muted' },
       ownerOnline
         ? ('主人 ' + (ownerQQ || ownerMasked || ''))
-        : '先解锁，才能把访问码加密保存。'),
+        : '先恢复会话，才能把访问码加密保存。'),
     ownerOnline ? btn(busy === 'lock' ? '锁定中…' : '立即锁定', lockOwner, { disabled: busy === 'lock' }) : null)
 
   // 建号：不需要输任何东西，点一下就建好并可用
@@ -818,19 +819,19 @@ return function Panel (props) {
         btn(busy === 'nocode' ? '正在开启…' : '建立账号，直接开始', enableNoCode, { kind: 'primary', disabled: busy === 'nocode' })),
       h('div', { className: 'ab-small ab-muted', style: { marginTop: 4, lineHeight: 1.7 } },
         '点一下就能用：账号的密钥由这台机器保管。' +
-        '代价是：能读到本模块数据目录的人，可以解开这里的凭据。'))
+        '代价是：能读到这台机器数据目录的人，可以解开这里的凭据。'))
     : null
 
   const unlockForm = !ownerOnline
     ? h('div', { style: { marginTop: 10 } },
       noCodeBlock,
       h('div', { className: 'ab-label', style: { marginTop: noCodeAllowed ? 12 : 0, marginBottom: 4 } },
-        '刷新会话'),
+        '恢复会话'),
       h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' } },
-        secretInput(unlockRef, setUnlockCode, { name: 'owner-code', placeholder: '这里不需要填任何东西' }),
+        secretInput(unlockRef, setUnlockCode, { name: 'owner-code', placeholder: '可以留空' }),
         btn(busy === 'unlock' ? '解锁中…' : '解锁', unlockOwner, { kind: noCodeAllowed ? 'outline' : 'primary', disabled: busy === 'unlock' })),
       h('div', { className: 'ab-small ab-muted', style: { marginTop: 4, lineHeight: 1.6 } },
-        '没有安全码了：这里只是重新开一次内存会话。'),
+        '没有安全码了：点「解锁」就是重新开一次内存会话，输入框可以留空。'),
       note(unlockError, 'err'))
     : null
 
@@ -860,12 +861,12 @@ return function Panel (props) {
               btn('用这台', function () { useDiscovered(d) }, { small: true }))
             })))
         : h('div', { className: 'ab-small ab-muted', style: { marginTop: 6 } },
-          '这个网段没搜到拓竹打印机。确认打印机已开机联网，并且和这台电脑在同一个局域网。'))
+          '这个网段没搜到拓竹打印机。确认打印机已开机联网、和这台电脑在同一个局域网，再点一次「搜索局域网打印机」。'))
       : null)
 
   const lanAllowedWarn = lanAllowed === false
     ? h('div', { className: 'ab-note err', style: { marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-      h('span', null, '设置里「允许主人使用本地接口」是关的：绑上了也用不了局域网。'),
+      h('span', null, '设置里「允许主人使用本地接口」是关的：绑上了也用不了局域网。去设置里打开它，再回来绑定。'),
       btn('去设置', function () { switchPage('settings') }, { small: true }))
     : null
 
@@ -883,13 +884,13 @@ return function Panel (props) {
       h('div', { key: 'lan-label', style: { minWidth: 0 } },
         h('div', { className: 'ab-label', style: { marginBottom: 4 } }, '凭据名'),
         textInput(bindLabel, setBindLabel, { key: 'lan-label', placeholder: '例如：我的 A1' }),
-        h('div', { className: 'ab-small ab-muted', style: { marginTop: 2, lineHeight: 1.6 } }, '只是一个方便认的名字。同一条凭据下的几台打印机共用一个访问码。')),
+        h('div', { className: 'ab-small ab-muted', style: { marginTop: 2, lineHeight: 1.6 } }, '起个方便认的名字。同一条凭据下的几台打印机共用一个访问码。')),
       h('div', { key: 'lan-code', style: { minWidth: 0 } },
         h('div', { className: 'ab-label', style: { marginBottom: 4 } }, '访问码（Access Code）'),
         secretInput(codeRef, setAccessCode, { name: 'lan-access-code', placeholder: '打印机屏幕上那条 Access Code', style: { width: '100%' } }),
-        h('div', { className: 'ab-small ab-muted', style: { marginTop: 2, lineHeight: 1.6 } }, '打印机屏幕上那 8 位。只用于这次提交，成功后立即清空，之后也查不回来。')),
+        h('div', { className: 'ab-small ab-muted', style: { marginTop: 2, lineHeight: 1.6 } }, '打印机屏幕上「访问码」那一栏（8 位）。只用于这次提交，成功后立即清空，之后也查不回来。')),
     ]),
-    h('div', { className: 'ab-small ab-muted', style: { margin: '8px 0 4px' } }, '要绑的打印机：序列号 + 局域网 IP（名字可以不填）。点上面的「搜索局域网打印机」能自动填。'),
+    h('div', { className: 'ab-small ab-muted', style: { margin: '8px 0 4px' } }, '要绑的打印机：序列号 + 局域网 IP（名字可以不填）。点上面的「搜索局域网打印机」可以自动填。'),
     rows.map(rowNode),
     h('div', { className: 'ab-flex', style: { gap: 8, marginTop: 4, flexWrap: 'wrap' } },
       btn('+ 添加一台', addRow, { small: true }),
@@ -905,8 +906,8 @@ return function Panel (props) {
         : null,
       h('div', { className: 'ab-small ab-muted', style: { marginTop: 2, lineHeight: 1.6 } },
         bindResult.cert && bindResult.cert.fingerprint256
-          ? '已固定打印机自己的自签名证书（' + String(bindResult.cert.fingerprint256).slice(0, 16) + '…），以后每次连接都会校验它。'
-          : '绑定成功了，但证书还没固定（' + ((bindResult.cert && bindResult.cert.error) || '打印机可能没开机') + '）。下次连上它时会自动学一次，之后才严格校验。'),
+          ? '已记住这台打印机的证书（相当于它的身份证）：' + String(bindResult.cert.fingerprint256).slice(0, 16) + '…。以后每次连接都会核对，对不上就拒绝。'
+          : '绑定成功了，但还没记住这台打印机的证书（' + ((bindResult.cert && bindResult.cert.error) || '打印机可能没开机') + '）。下次连上它时会自动记一次，之后才严格核对。'),
       h('div', { style: { marginTop: 6 } }, btn('知道了', function () { setBindResult(null) }, { small: true })))
     : null
 
@@ -937,7 +938,7 @@ return function Panel (props) {
 
   const lanPage = h(ui.Card, {
     title: '局域网绑定',
-    desc: '只有主人能用。可以点「搜索局域网打印机」自动填好序列号和 IP，再补上屏幕上的访问码即可。访问码加密保存，提交后立即清空，之后也查不回来。',
+    desc: '只有主人能用。点「搜索局域网打印机」可以自动填好序列号和 IP，再补上打印机屏幕上的访问码。访问码加密保存，提交后立即清空，之后也查不回来。',
   },
   lanStatusLine,
   unlockForm,
@@ -946,7 +947,7 @@ return function Panel (props) {
   lanLoading && !lanLoaded ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 8 } }, '正在读取局域网状态…') : null,
   note(lanError, 'err'),
   lanUnsupported
-    ? h('div', { className: 'ab-note warn', style: { marginTop: 8 } }, '当前模块版本不支持面板绑定，请升级。')
+    ? h('div', { className: 'ab-note warn', style: { marginTop: 8 } }, '当前模块版本不支持面板绑定，请升级后再试。')
     : null,
   lanUnsupported ? null : bindForm,
   bindSuccess,
@@ -960,7 +961,7 @@ return function Panel (props) {
   const hintOf = function (key, rule) {
     const base = typeof rule.hint === 'string' && rule.hint.trim() ? rule.hint.trim() : (FALLBACK_RULES[key] ? FALLBACK_RULES[key].hint : '')
     if (key !== 'groupMode') return base
-    const allowText = '谁能在私聊里用、哪些群能用，都跟着 Aurabot 自己的白名单走（目前私聊 ' + allowCount + ' 个号、群 ' + groupCount + ' 个群，另外还有主人）。本模块不再单独维护一份名单。'
+    const allowText = '谁能在私聊里用、哪些群能用，都跟着 Aurabot 自己的白名单走（目前私聊 ' + allowCount + ' 个号、群 ' + groupCount + ' 个群，另外还有主人）。这里不再另维护一份名单。'
     return base ? base + ' ' + allowText : allowText
   }
   const clampNumber = function (key, rule) {
@@ -1028,11 +1029,11 @@ return function Panel (props) {
       h('span', { className: 'ab-small ab-muted' }, '控制面 8883 与摄像头 6000：首次连接自动学习，之后严格校验'),
       h('span', { className: 'ab-small', style: { color: '#2f9e44' } }, '始终开启')),
     h('div', { className: 'ab-small ab-muted', style: { marginTop: 2, lineHeight: 1.6 } },
-      '证书变了会拒绝连接并说明原因。确认是自己重刷了固件，就私聊发「/打印机 证书 信任」重新固定；想看当前指纹发「/打印机 证书」。'),
+      '证书变了会拒绝连接并说明原因。确认是你自己重刷了固件，就私聊发「/打印机 证书 信任」重新固定；想看当前指纹发「/打印机 证书」。'),
     h('div', { className: 'ab-small ab-muted', style: { marginTop: 4, lineHeight: 1.7 } },
-      '证书内容（含公钥）和访问码一起加密存在保险库里，磁盘上看不到明文；面板和日志里只出现分段指纹。'),
+      '证书内容（含公钥）和访问码一起加密存在本机的保险库里，磁盘上看不到明文；面板和日志里只出现分段指纹。'),
     h('div', { className: 'ab-small ab-muted', style: { marginTop: 4, lineHeight: 1.7 } },
-      '画面端口 322（X1/H2/P2S/X2D）的证书单独固定：启动 ffmpeg 前先比对指纹，对不上就不抓拍。'))
+      '画面端口 322（X1/H2/P2S/X2D）的证书单独核对：抓画面的程序（ffmpeg）启动前先比对指纹，对不上就不抓拍。'))
 
   const tutkActions = h('div', { style: { marginTop: 10 } },
     h('div', { className: 'ab-flex', style: { gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
@@ -1042,15 +1043,15 @@ return function Panel (props) {
         ? h('span', { className: 'ab-small', style: { color: tutkCheck.ok ? '#2f9e44' : '#e5484d' } }, tutkCheck.text)
         : h('span', { className: 'ab-small ab-muted' }, '「检查」只读文件、不连打印机。')),
     h('div', { className: 'ab-small ab-muted', style: { marginTop: 6, lineHeight: 1.7 } },
-      '本模块不打包 BambuSource（OBN 是 AGPL-3.0）。点「下载」会自动取回并放到桥同目录，国内走加速代理；也可以手动从 ',
+      '这里不打包 BambuSource（它的许可证是 AGPL-3.0）。点「下载」会自动取回并放到桥同目录，国内走加速代理；也可以手动从 ',
       h('a', { href: BAMBUSOURCE_URL, target: '_blank', rel: 'noreferrer', style: { color: '#4f8cff' } }, 'Releases'),
-      ' 取 ' + bambuSourceAdvice + '。'))
+      ' 下载，解压出 ' + bambuSourceAdvice + ' 放进同一目录。'))
 
   const settingsPage = h(ui.Card, {
     title: '设置',
-    desc: '每一项的范围和说明都由服务端同一份规则给出。改完点页面底部的「保存设置」才生效——面板里不会再画第二个保存按钮。',
+    desc: '每一项的范围和说明都来自同一份设置规则。改完点页面底部的「保存设置」才会生效；这一页不会再放第二个保存按钮。',
   },
-  groupTitle('多用户与准入', '关掉多用户模式后，这个模块只服务主人一个人。'),
+  groupTitle('多用户与准入', '关掉多用户模式后，只服务主人一个人。'),
   grid([fieldBlock('multiUser'), fieldBlock('groupMode'), fieldBlock('groupPhoto'), fieldBlock('allowGroupName')]),
   groupTitle('接口与时长'),
   grid([
@@ -1058,7 +1059,7 @@ return function Panel (props) {
     fieldBlock('unlockDays'), fieldBlock('maxBindings'), fieldBlock('requestTimeoutMs'), fieldBlock('selectedTtlMinutes'),
   ]),
   tlsBlock,
-  groupTitle('云端画面（TUTK）', '抓帧桥随模块预编译好，留空即用；只差一份 BambuSource 库。'),
+  groupTitle('云端画面（TUTK）', '抓帧桥已经预编译好，留空即用；只差一份 BambuSource 库。'),
   grid([fieldBlock('tutkBridgePath'), fieldBlock('tutkLibPath'), fieldBlock('tutkTimeoutMs')]),
   tutkActions)
 
@@ -1066,43 +1067,43 @@ return function Panel (props) {
   // 风险卡「我知道」收起后，完整内容在这里；也是查「这东西到底怎么保护我」的地方。
   const helpPage = h(ui.Card, {
     title: '帮助',
-    desc: '这里说明这个模块会碰什么、怎么保护它，以及哪些地方只是「尽力而为」。',
+    desc: '这里说明它会碰到什么、怎么保护你，以及哪些地方只是尽量做到。',
   },
-  groupTitle('风险告知', '这些一旦出事是实打实的，先看一眼。'),
+  groupTitle('风险告知', '这些后果是实打实的，先看一眼。'),
   h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
     EMPTY_RISK.map(function (line, index) {
       return h('div', { key: 'help-risk-' + index, className: 'ab-small', style: { lineHeight: 1.75 } },
         h('span', { style: { fontWeight: 600 } }, (index + 1) + '. '), line)
     })),
   serverRisk
-    ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 4, lineHeight: 1.7 } }, '模块自述：' + serverRisk)
+    ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 4, lineHeight: 1.7 } }, '服务端说明：' + serverRisk)
     : null,
 
   groupTitle('本地安全策略', '秘密怎么存、谁能解开、哪里会拒绝连接。'),
 
   h('div', { className: 'ab-small', style: { lineHeight: 1.85 } },
-    h('div', null, '· ', h('b', null, '每个用户一把独立密钥。'), '绑定数据用随机密钥加密（AES-256-GCM）；解它的主密钥在这台机器上（host-key.bin）。'),
-    h('div', null, '· ', h('b', null, '没有安全码。'), '谁都不要再记任何码；代价是能读到本模块数据目录的人可以解开这些凭据——机器本身要可信。'),
-    h('div', null, '· ', h('b', null, '控制面与摄像头要求先固定证书。'), '局域网 MQTT(8883) 与 MJPEG(6000) 第一次连接只握手读证书、不发访问码；之后每次都用它当锚点严格校验。没固定过证书就拒绝发访问码，不会「先连上试试」。'),
-    h('div', null, '· ', h('b', null, '画面端口(322)单独核对。'), 'X1/H2/P2S/X2D 的画面走 ffmpeg，它没法做证书 pin；所以模块在启动 ffmpeg 之前先握手取证书、和固定过的指纹比对，对不上就不启动，访问码连 stdin 都不进。'),
-    h('div', null, '· ', h('b', null, '云端用系统 CA。'), '云端 MQTT 用系统根证书 + 主机名校验，不会因为配置里有自签锚点就降级成不校验。'),
-    h('div', null, '· ', h('b', null, '凭据不进命令行、不进日志。'), '访问码和 token 不会出现在进程参数里；错误文本会先擦掉秘密再返回。'),
+    h('div', null, '· ', h('b', null, '每个用户一把独立密钥。'), '你的凭据用随机密钥分别加密（AES-256-GCM，一种加密算法）；解开它们的主密钥在这台机器上（host-key.bin）。'),
+    h('div', null, '· ', h('b', null, '没有安全码。'), '谁都不要再记任何码；代价是能读到这台机器数据目录的人可以解开这些凭据，所以这台机器本身要可信。'),
+    h('div', null, '· ', h('b', null, '控制面与摄像头要求先固定证书。'), '局域网的命令通道（MQTT，8883）和摄像头（MJPEG，6000）第一次连接只握手读证书、不发访问码；之后每次都拿它来核对。没固定过证书就拒绝发访问码，不会「先连上试试」。'),
+    h('div', null, '· ', h('b', null, '画面端口(322)单独核对。'), 'X1/H2/P2S/X2D 的画面由一个外部程序（ffmpeg）抓，它自己做不了证书核对；所以启动前先握手取证书、和记下的指纹比对，对不上就不启动，访问码也不会交给它。'),
+    h('div', null, '· ', h('b', null, '云端用系统 CA。'), '云端连接用系统自带的根证书，并核对主机名；不会因为配置里放了自签名证书就跳过校验。'),
+    h('div', null, '· ', h('b', null, '凭据不进命令行、不进日志。'), '访问码和云端 token（登录凭证）不会出现在进程参数里；错误文本会先擦掉秘密再返回。'),
     h('div', null, '· ', h('b', null, '群聊默认脱敏。'), '群里只说进度、层数、温度；文件名显示「已脱敏」，项目名永远不显示。'),
-    h('div', null, '· ', h('b', null, '会话到期自动清。'), '解锁只在内存里保留 DEK，到期或「立即锁定」就清零；重启模块也清零。')),
+    h('div', null, '· ', h('b', null, '会话到期自动清。'), '解密后的密钥只放在内存里，到期或点「立即锁定」就清零；重启后内存也会清空，但下次用会自动恢复，凭据不用重新输入。')),
 
   groupTitle('它是怎么连打印机的', '两种接口，各自的前提不同。'),
   h('div', { className: 'ab-small', style: { lineHeight: 1.85 } },
-    h('div', null, '· ', h('b', null, '云端接口'), '（默认，所有用户）：Bambu 账号登录换 token，走云端 MQTT 看状态、下命令。'),
-    h('div', null, '· ', h('b', null, '本地接口'), '（主人，或拿到授权的人）：局域网直连，需要打印机屏幕上的访问码。要求打印机和这台电脑在同一网段。'),
-    h('div', null, '· ', h('b', null, '画面'), '：有局域网地址就优先走局域网（A1/P1 走 MJPEG，X1 系列走 RTSPS）；否则回退云端 TUTK，需要一份 BambuSource 库。')),
+    h('div', null, '· ', h('b', null, '云端接口'), '（默认，所有用户）：用 Bambu 账号登录换到 token，走云端通道看状态、下命令。'),
+    h('div', null, '· ', h('b', null, '本地接口'), '（主人，或拿到授权的人）：局域网直连，需要打印机屏幕上的访问码；打印机要和这台电脑在同一个局域网。'),
+    h('div', null, '· ', h('b', null, '画面'), '：有局域网地址就优先走局域网（A1/P1 走 MJPEG，X1 系列走 RTSPS）；不行再回云端 TUTK，需要一份 BambuSource 库。')),
 
-  groupTitle('命令速查', '这些也可以直接对她说；聊天里发「/打印机 帮助」会分页给出同样的内容。'),
+  groupTitle('命令速查', '这些也可以直接对她说。聊天里发「/打印机 帮助」会给出同样的内容，分 6 页（主人 7 页）。'),
   h('div', { className: 'ab-small ab-muted', style: { lineHeight: 1.8 } },
     h('div', null, '/打印机 状态 · 暂停 · 继续 · 停止 · 灯 开/关 · 速度 1-4 · 温度 喷嘴=220 热床=60 · 拍照'),
-    h('div', null, '/打印机 列表 · 授权 <对方QQ> [分钟] · 撤销 <授权编号> · 审计 · 群权限'),
-    h('div', null, '/打印机 登录 · 锁定（只走私聊）'),
-    h('div', null, '主人额外：/打印机 绑定 本地 … · 解绑 <编号> · 接口 云端|本地|自动 · 证书 [序号]'),
-    h('div', { style: { marginTop: 4 } }, '聊天里「/打印机 帮助」第 1 页是风险、第 2 页是数据存储策略、之后是命令；「帮助 2」直接翻页。')))
+    h('div', null, '/打印机 列表 · 解绑 <编号> · 授权 <对方QQ> [分钟] · 撤销 <授权编号> · 审计 · 群权限'),
+    h('div', null, '/打印机 登录 · 锁定（登录、绑定、授权、群权限等敏感操作只走私聊）'),
+    h('div', null, '主人额外：/打印机 绑定 本地 … · 接口 云端|本地|自动 · 证书 [序号]'),
+    h('div', { style: { marginTop: 4 } }, '聊天里「/打印机 帮助」第 1 页是风险、第 2 页是数据存在哪、第 3 页起是命令；发「帮助 2」可以直接翻页。')))
 
   // ======== ④ 审计 ========
   const auditRows = Array.isArray(audit) ? audit : (Array.isArray(ov.audit) ? ov.audit : [])
@@ -1155,12 +1156,12 @@ return function Panel (props) {
 
   const enrollPage = h(ui.Card, {
     title: '登录信封',
-    desc: '用户发「/打印机 登录」拿到一条链接，在网页里填 Bambu 账号密码，网页只用这把公钥在浏览器里加密。机器人用私钥解开，用完即焚——秘密不经过聊天记录。',
+    desc: '对方发「/打印机 登录」会拿到一条链接，在网页里填 Bambu 账号密码。网页在浏览器里就地加密（只拿到公钥，只能加密、解不开），机器人用自己的私钥解开，用完即焚——秘密不经过聊天记录。',
     right: btn(enrollLoading ? '读取中…' : '刷新', loadEnroll, { disabled: enrollLoading }),
   },
   enrollError ? note(enrollError, 'err') : null,
 
-  groupTitle('这条链接给用户', '他私聊发「/打印机 登录」也会拿到同一条（公钥一样，链接随公钥变）。'),
+  groupTitle('这条链接给对方', '对方私聊发「/打印机 登录」也会拿到同一条（公钥一样，链接随公钥变）。'),
   enrollLinkText
     ? h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 6 } },
       h('code', {
@@ -1172,15 +1173,15 @@ return function Panel (props) {
 
   h('div', { className: 'ab-small ab-muted', style: { marginTop: 10, lineHeight: 1.8 } },
     '公钥指纹：', h('strong', null, enrollFingerprint || '—'),
-    '　·　建议生存时间：', String((enroll && enroll.ttlMinutes) || 60), ' 分钟',
-    '　·　服务端最多接受：', String((enroll && enroll.maxTtlMinutes) || 1440), ' 分钟',
+    '　·　网页信封有效期：固定 10 分钟',
+    '　·　服务端上限：', String((enroll && enroll.maxTtlMinutes) || 1440), ' 分钟（兼容旧信封）',
     '　·　已用掉：', String((enroll && enroll.stats && enroll.stats.used) || 0), ' 段'),
 
-  groupTitle('核对指纹', '用户点开链接后页面顶部会显示同一串指纹。对不上就说明这个页面不是这台机器给的，别在里面填东西。'),
+  groupTitle('核对指纹', '对方点开链接后，页面顶部会显示同一串指纹。对不上就说明这个页面不是这台机器给的，别在里面填东西。'),
   h('div', { className: 'ab-small ab-muted', style: { marginTop: 4, lineHeight: 1.8 } },
     '链接里 #k= 后面那 87 个字符就是公钥。公钥只能加密；私钥只在这台机器的数据目录里，永不导出。'),
 
-  groupTitle('贴一段进来看看对不对', '只解密看摘要，不执行、不消费：看完还能照常拿去用。账号打码显示。'),
+  groupTitle('贴一段进来看看对不对', '只解密看摘要，不执行、不消费：看完还能照常拿去用。账号会打码显示。'),
   h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start', marginTop: 6 } },
     h('textarea', {
       className: 'ab-input',
@@ -1194,17 +1195,17 @@ return function Panel (props) {
   note(enrollTrialError, 'err'),
   trialLines ? h('pre', { className: 'ab-small', style: { marginTop: 8, whiteSpace: 'pre-wrap', lineHeight: 1.7 } }, trialLines) : null,
 
-  groupTitle('为什么这样更安全', ''),
+  groupTitle('为什么改成网页登录', ''),
   h('div', { className: 'ab-small ab-muted', style: { marginTop: 4, lineHeight: 1.9 } },
-    '旧流程里账号密码得直接打进聊天，聊天记录是明文留存的，撤回也不可靠。现在：',
-    h('br'), '· 网页在用户自己的浏览器里加密，只拿到公钥；',
-    h('br'), '· 私钥只在这台机器上，机器人解完就把明文用完丢掉，不落盘、不进日志；',
-    h('br'), '· 每段信封只能用一次，且过期作废（重放会被拒）；',
+    '以前账号密码得直接打进聊天，聊天记录是明文留存的，撤回也不可靠。现在：',
+    h('br'), '· 网页在对方的浏览器里加密，只拿到公钥；',
+    h('br'), '· 私钥只在这台机器上，机器人解完就把明文丢掉，不落盘、不进日志；',
+    h('br'), '· 每段信封只能用一次，过期作废，重放会被拒；',
     h('br'), '· 本机管理员能读到数据目录 → 也能读到私钥。这条边界要看清楚：机器本身要可信。'))
 
   const auditPage = h(ui.Card, {
     title: '审计',
-    desc: '解锁、绑定、控制、授权各记一行。操作者显示完整 QQ（这台电脑上的主人自己看）；备注里不会有密码、访问码或 token。',
+    desc: '解锁、绑定、控制、授权各记一行。操作者显示完整 QQ（只有这台电脑上的主人能看到）；备注里不会出现密码、访问码或 token。',
     right: btn(busy === 'audit' ? '读取中…' : '读取最近 50 条', loadAudit, { disabled: busy === 'audit' }),
   },
   auditList.length

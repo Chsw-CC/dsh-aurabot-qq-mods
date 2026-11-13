@@ -1277,7 +1277,7 @@ export class Vault {
       payload = this.#payloadFor(owner).payload
     } catch (error) {
       if (error instanceof VaultError && error.code === 'LOCKED') {
-        throw new VaultError('OWNER_LOCKED', '这台打印机的主人当前没解锁：请让他私聊发「/打印机 解锁」后再试')
+        throw new VaultError('OWNER_LOCKED', '这台打印机的主人现在没解锁，凭据取不出来：让对方私聊随便发一条打印机命令（比如「/打印机 状态」），密钥会自动恢复，再试一次就行。')
       }
       throw error
     }
