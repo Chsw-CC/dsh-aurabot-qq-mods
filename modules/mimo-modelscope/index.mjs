@@ -19,7 +19,7 @@ const textArg = (description) => ({ type: 'string', description })
 export default {
   id: 'mimo-modelscope',
   name: 'MiMo 语音与魔搭生图',
-  version: '1.0.3',
+  version: '1.0.4',
   api: 1,
   description: '小米 MiMo 音色克隆与魔搭多模型生图',
   panel: 'panel.js',
@@ -36,17 +36,10 @@ export default {
     imageModels: MODEL_LIST,
     imageDefaultModel: 'Qwen/Qwen-Image-2.1-Turbo',
   },
-  settings: [
-    { key: 'mimoKey', type: 'password', label: 'MiMo API Key' },
-    { key: 'voiceSpeed', type: 'select', label: 'MiMo 语速', options: [
-      { value: 'slow', label: '慢' }, { value: 'normal', label: '正常' }, { value: 'fast', label: '快' },
-      { value: 'very-fast', label: '很快' }, { value: 'fastest', label: '最快' },
-    ] },
-    { key: 'modelScopeToken', type: 'password', label: '魔搭 Token' },
-    { key: 'imageModels', type: 'textarea', label: '魔搭模型', hint: '每行一个模型 ID，格式为 组织/模型。' },
-    { key: 'imageDefaultModel', type: 'text', label: '默认模型 ID', hint: '留空或该模型未列出时，使用列表第一项。' },
-  ],
   setup(api) {
+    // 自定义面板接管字段渲染，宿主仍负责密钥脱敏及空白输入时保留原值。
+    const { registerSecretField } = api.lib('core/config.js')
+    for (const key of ['mimoKey', 'modelScopeToken']) registerSecretField(['ext', api.id, key])
     const lifecycle = new AbortController()
     const { signal } = lifecycle
     api.onDispose(() => lifecycle.abort())

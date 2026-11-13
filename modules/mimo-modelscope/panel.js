@@ -1,5 +1,9 @@
 const { useEffect, useRef, useState } = React
-const { Card, Row, Btn, Switch } = ui
+const { Card, Row, Btn, Switch, Select } = ui
+const speedOptions = [
+  { value: 'slow', label: '慢' }, { value: 'normal', label: '正常' }, { value: 'fast', label: '快' },
+  { value: 'very-fast', label: '很快' }, { value: 'fastest', label: '最快' },
+]
 
 function asBase64(file) {
   return new Promise((resolve, reject) => {
@@ -10,7 +14,7 @@ function asBase64(file) {
   })
 }
 
-return function Panel({ settings, draftSettings, setSettings, save, toast, reload }) {
+return function Panel({ settings, draftSettings = settings, setSettings, toast, reload }) {
   const [status, setStatus] = useState(null)
   const [busy, setBusy] = useState(false)
   const [voiceText, setVoiceText] = useState('')
@@ -74,7 +78,7 @@ return function Panel({ settings, draftSettings, setSettings, save, toast, reloa
 
   function feature(slot, title, key) {
     const current = status?.local?.[slot]
-    const value = Boolean((draftSettings || settings)[key])
+    const value = Boolean(draftSettings[key])
     const setupHint = slot === 'tts' ? '保存 MiMo API Key 并选好参考音频后自动接管。' : '保存魔搭 Token 并选好默认模型后自动接管。'
     return h(Row, {
       label: title,
@@ -82,19 +86,51 @@ return function Panel({ settings, draftSettings, setSettings, save, toast, reloa
         current?.enabled && !current.ready && value ? setupHint : undefined,
     }, h(Switch, {
       on: value, title, disabled: busy,
-      onChange: (on) => setSettings ? setSettings({ [key]: on }) : save({ [key]: on }),
+      onChange: (on) => setSettings({ [key]: on }),
     }), h(Btn, {
       small: true, disabled: busy || !current || (current.conflict && !current.enabled),
       onClick: () => run('/local', { slot, enabled: !current.enabled }),
     }, current?.enabled ? '关闭接管' : '启用接管'))
   }
 
+  function input(key, label, { multiline = false, password = false, placeholder } = {}) {
+    return h(multiline ? 'textarea' : 'input', {
+      className: multiline ? 'ab-textarea' : 'ab-input',
+      ...(multiline ? {} : { type: password ? 'password' : 'text' }),
+      ...(password ? { autoComplete: 'new-password' } : {}),
+      value: draftSettings[key] ?? '',
+      'aria-label': label,
+      placeholder,
+      onChange: (event) => setSettings({ [key]: event.target.value }),
+    })
+  }
+
+  function credential(key, label, href, linkLabel) {
+    const configured = Boolean(settings[key + 'Set'])
+    return h(Row, { label },
+      input(key, label, { password: true, placeholder: configured ? '已保存（不改就留空）' : undefined }),
+      h('a', {
+        href, target: '_blank', rel: 'noopener noreferrer',
+        style: { color: 'var(--ab-sea, #2563eb)', textDecoration: 'underline' },
+      }, linkLabel),
+      !configured && h('span', { className: 'ab-small', style: { color: 'var(--ab-warn, #b45309)', whiteSpace: 'nowrap' } },
+        h('i', { className: 'ab-dot warn', 'aria-hidden': true, style: { display: 'inline-block', marginRight: 5 } }), '未配置'))
+  }
+
   const models = status?.models || []
   const references = status?.references || []
   const currentReference = status?.currentReference
   return h(React.Fragment, null,
-    h(Card, { title: 'MiMo 试听' },
+    h(Card, { title: 'MiMo 语音与魔搭生图' },
       feature('tts', '启用 MiMo 语音', 'voiceEnabled'),
+      credential('mimoKey', 'MiMo API Key', 'https://platform.xiaomimimo.com/#/console/api-keys', '申请 MiMo API Key'),
+      h(Row, { label: 'MiMo 语速' },
+        h(Select, { value: draftSettings.voiceSpeed, options: speedOptions, ariaLabel: 'MiMo 语速', onChange: (voiceSpeed) => setSettings({ voiceSpeed }) })),
+      feature('image', '启用魔搭生图', 'imageEnabled'),
+      credential('modelScopeToken', '魔搭 Token', 'https://modelscope.cn/my/myaccesstoken', '申请魔搭 Token'),
+      h(Row, { label: '魔搭模型', hint: '每行一个模型 ID，格式为 组织/模型。' }, input('imageModels', '魔搭模型', { multiline: true })),
+      h(Row, { label: '默认模型 ID', hint: '留空或该模型未列出时，使用列表第一项。' }, input('imageDefaultModel', '默认模型 ID'))),
+    h(Card, { title: 'MiMo 试听' },
       h(Row, { label: '当前参考音频', hint: status && !currentReference ? 'WAV 或 MP3，最大 7 MB。' : undefined },
         h('strong', { style: { overflowWrap: 'anywhere' } }, currentReference?.name || (status ? '未选择' : '正在读取')),
         h('input', { type: 'file', ref: picker, hidden: true, accept: '.wav,.mp3,audio/wav,audio/mpeg', onChange: upload }),
@@ -114,7 +150,6 @@ return function Panel({ settings, draftSettings, setSettings, save, toast, reloa
         h(Btn, { disabled: busy || !voiceText.trim(), onClick: () => run('/preview-voice', { text: voiceText }, (result) => setAudio(result.url)) }, '生成试听')),
       audio && h('audio', { controls: true, src: audio, 'aria-label': 'MiMo 试听音频' })),
     h(Card, { title: '魔搭试画', desc: '保存魔搭设置后，可以在这里试用列表里的模型。' },
-      feature('image', '启用魔搭生图', 'imageEnabled'),
       h(Row, { label: '本次模型' },
         h('select', { className: 'ab-input', value: models.includes(model) ? model : '', 'aria-label': '试画模型', onChange: (event) => setModel(event.target.value) },
           h('option', { value: '' }, status?.defaultModel ? '默认 · ' + status.defaultModel : '默认模型'),

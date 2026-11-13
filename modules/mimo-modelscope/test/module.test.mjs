@@ -45,6 +45,7 @@ function startModule(t, { settings = {}, prepare } = {}) {
     rmSync(root, { recursive: true, force: true })
   })
   const api = {
+    id,
     dir: fileURLToPath(new URL('../', import.meta.url)),
     config: () => cfg,
     settings: () => ({ ...definition.defaults, ...cfg.ext[id] }),
@@ -57,6 +58,7 @@ function startModule(t, { settings = {}, prepare } = {}) {
     saveSettings: (patch) => api.setConfig({ ext: { [id]: patch } }),
     dataDir: (...parts) => join(dir, ...parts),
     lib: (path) => {
+      if (path === 'core/config.js') return { registerSecretField() {} }
       assert.equal(path, 'core/net.js')
       return { fetchImage: () => assert.fail('Unexpected image download') }
     },
