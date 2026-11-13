@@ -220,7 +220,7 @@ const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/
 export default {
   id: 'bambu-print',
   name: '拓竹',
-  version: '1.0.0',
+  version: '1.0.1',
   api: 1,
   description: '看拓竹 3D 打印机状态、暂停继续、停止、灯光、温度和拍照；每个用户一条独立加密凭据，默认谁也看不到别人的 token，只有本人主动授权才限时共享。',
   panel: 'panel.js',
