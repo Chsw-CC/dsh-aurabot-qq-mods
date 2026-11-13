@@ -16,7 +16,7 @@ export function localRequest(req, post = false) {
 }
 
 export default {
-  id: 'smart-search', name: '联网搜索', version: '1.0.1', api: 1,
+  id: 'smart-search', name: '联网搜索', version: '1.0.2', api: 1,
   description: '需要时自己查资料、读网页，回答附上来源；默认沿用 DSH 搜索',
   panel: 'panel.js', defaults: DEFAULTS,
   setup(api) {
