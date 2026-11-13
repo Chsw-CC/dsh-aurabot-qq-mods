@@ -13,6 +13,8 @@ import { HeyboxClient, HeyboxError, cosSign, newDeviceId, WEB_BASE, TOPICS } fro
 import { POST_STYLES, DEFAULT_POST_STYLE, styleOf, stylePrompt } from './styles.mjs'
 import { startQrLogin, pollQrLogin, verifyCookie } from './qr.mjs'
 import { createVerifier } from './verify.mjs'
+import { createBrowser } from './browser.mjs'
+import { postViaWeb, shouldFallbackToWeb } from './webpost.mjs'
 
 const { dataDir } = globalThis.aurabot.lib('core/store.js')
 
@@ -171,6 +173,21 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
   let qrStarting = false
   let disposed = false
   const getVerifier = () => verifier ||= createVerifier({ profileDir: dataDir('heybox', 'edge-profile'), browserPath: () => getConfig().heybox?.browserPath || '', log, useEgo: () => getConfig().browser?.useDshSidebar === true })
+
+  // 网页兜底发帖用的浏览器：跟扫码验证共用同一个 profile，登录态能复用；
+  // 慢慢起、起不来就如实回报（别让发帖链路因为这个炸掉）。
+  let webBrowser = null
+  async function getWebBrowser() {
+    if (disposed) return { ok: false, message: '模块已关闭' }
+    try {
+      webBrowser ||= createBrowser({ profileDir: dataDir('heybox', 'edge-profile'), browserPath: () => getConfig().heybox?.browserPath || '', log, useEgo: () => false })
+      const r = await webBrowser.open()
+      if (!r.ok) return { ok: false, message: r.message || '浏览器没起来' }
+      return { ok: true, browser: webBrowser }
+    } catch (e) {
+      return { ok: false, message: e.message }
+    }
+  }
   const nowMs = () => now()
   const localToday = () => today(new Date(nowMs()))
 
@@ -1182,7 +1199,36 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
     const blocks = built.blocks
     const fullText = built.fullText
     const desc = fullText.replace(/\s+/g, ' ').slice(0, 80)
-    const d = await getClient().post('/bbs/app/api/link/post', {
+    // ── 浏览器兜底 ──
+    // 服务端把 App 侧发帖接口关了（`发布功能暂不可用`）时这里会抛 HeyboxError('api')。
+    // 同一个登录取网页创作者编辑器能正常发（实测带图成功、能拿到 id、也能删），
+    // 所以这类「接口还在、只是不让我们用」的软拒改走网页发布；别把它当成
+    // 网络/校验失败直接退掉——那样主人会以为是她写的有问题。
+    let webFallback = null
+    const tryWeb = async (apiError) => {
+      if (webFallback) return webFallback
+      if (!shouldFallbackToWeb({ ok: false, message: apiError?.message || '', code: apiError?.code })) return null
+      log?.warn?.('小黑盒 API 发帖被拒（' + String(apiError?.message || '').slice(0, 40) + '），改走浏览器兜底')
+      const br = await getWebBrowser()
+      if (!br.ok) { log?.warn?.('网页兜底：浏览器起不来（' + br.message + '）'); return null }
+      try {
+        webFallback = await postViaWeb({
+          browser: br.browser,
+          cookie: cookie(),
+          title: t,
+          blocks,
+          communityName: cfg.webPostCommunity || '盒友杂谈',
+          log,
+        })
+      } catch (e) {
+        log?.warn?.('网页兜底出错：' + e.message)
+        webFallback = { ok: false, message: '网页兜底出错：' + e.message }
+      }
+      return webFallback
+    }
+    let d
+    try {
+      d = await getClient().post('/bbs/app/api/link/post', {
       link_tag: '11',                         // 11=文章（富文本，行内插图真正生效）
       text: JSON.stringify(blocks),
       title: t,
@@ -1204,6 +1250,37 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
       original: '1',
       declaration: '0',
     })
+
+    } catch (apiError) {
+      // 只兜「服务端不让我们用这个接口」这一类；别的错误照原样往上抛
+      log?.warn?.('DBG catch hit: ' + (apiError?.message||'') + ' code=' + apiError?.code + ' should=' + shouldFallbackToWeb({ok:false,message:apiError?.message||'',code:apiError?.code})); const w = await tryWeb(apiError)
+      if (!w || !w.ok) {
+        if (w && w.needLogin) log?.warn?.('网页兜底：浏览器里也没有登录态，得让主人重新扫码')
+        throw apiError
+      }
+      // 兜底成功了：按 normal 路径收尾（额度已消耗，别退回去）
+      reserved = false
+      const wid = String(w.linkId || '')
+      const wurl = w.url || (wid ? `${WEB_BASE}/app/bbs/link/${wid}` : '')
+      pushHistory({ kind: 'post', linkId: wid, title: t })
+      memory?.addEvent?.({ text: `我在小黑盒发了一帖《${t}》`, tags: ['小黑盒'], importance: 0.5 })
+      log?.info?.('小黑盒网页兜底发帖成功：' + wurl)
+      return {
+        ok: true,
+        message: (wurl ? `发出去了（网页兜底）：${wurl}` : '网页兜底发出去了，但没拿到帖子编号')
+          + `（风格：${st.label}，行内图 ${w.imgs || 0} 张）`,
+        url: wurl, linkId: wid, inline: w.imgs || 0, topicId, style: st.id,
+        images: built.images, introSkipped: built.introSkipped,
+        textOnly: built.images.total === 0,
+        hashtags: actItems.map((x) => x.name),
+        // 网页路径没走 content_tags，话题得靠编辑器里手动挂；如实标成 null 表示「没回查」
+        hashtagsVerified: null, hashtagsOk: null, hashtagsNote: '网页兜底不挂话题',
+        autoImages: autoPlan ? { planned: autoPlan.slots.length, generated: autoPlan.generated, fallback: autoPlan.fallback, kinds: autoPlan.slots.map((x) => x.kind) } : null,
+        plan: plan.fromPlan ? plan.slot : null,
+        viaWeb: true,
+        communityOk: w.communityOk !== false,
+      }
+    }
 
     const r = d.result || {}
     let id = String((typeof r === 'object' && (r.link_id ?? r.linkid)) || d.link_id || d.linkid || '')
@@ -2266,6 +2343,8 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
     verifySession = null
     client?.dispose()
     verifier?.dispose()
+    try { webBrowser?.close?.() } catch { /* 关不干净不拦着卸载 */ }
+    webBrowser = null
   }
 
   log?.info?.('小黑盒模块起来了' + (cookie() ? '' : '（还没填 Cookie）'))
