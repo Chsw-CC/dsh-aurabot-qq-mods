@@ -106,6 +106,12 @@ def info(meme):
             'params':{'minImages':p.min_images,'maxImages':p.max_images,'minTexts':p.min_texts,'maxTexts':p.max_texts,'defaultTexts':p.default_texts,'options':options},'backend':'python'}
 
 memes = {m.key:m for m in library.get_memes() if m.key not in excluded}
+from meme_generator.exception import TextOverLength, OpenImageFailed, ArgModelMismatch
+
+class OutputTooLarge(Exception):
+    pass
+
+user_errors = (TextOverLength, OpenImageFailed, ArgModelMismatch, OutputTooLarge)
 if '--catalog' in sys.argv:
     if not all(k in memes for k in ['masturbate','huochailu']):
         raise RuntimeError('指定模板标识未载入：masturbate / huochailu')
@@ -136,9 +142,13 @@ for line in sys.stdin:
             result = meme(images=[base64.b64decode(im['data']) for im in images],texts=request.get('texts',[]),args=options)
         data = result.getvalue()
         if len(data)>20*1024*1024:
-            raise ValueError('生成结果超过 20 MB，请缩小输入图片')
+            raise OutputTooLarge('生成结果超过 20 MB，请缩小输入图片')
         reply = {'id':request['id'],'base64':base64.b64encode(data).decode('ascii')}
     except Exception as error:
         traceback.print_exc(file=sys.stderr)
         reply = {'id':request.get('id'),'error':str(error) or type(error).__name__}
+        for error_type in user_errors:
+            if isinstance(error, error_type):
+                reply['errorCode'] = error_type.__name__
+                break
     print(json.dumps(reply,ensure_ascii=False),file=wire,flush=True)

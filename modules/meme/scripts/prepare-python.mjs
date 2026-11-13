@@ -1,4 +1,6 @@
 import { preparePythonRuntime } from './prepare-python-runtime.mjs';
+import { withRuntimeLock } from './bootstrap.mjs';
+import { cachedExtension } from '../lib/extension.mjs';
 import { extractResourceArchive, validResource } from './resource-archive.mjs';
 import { prepareSkiaData } from './python-data.mjs';
 import { readFile, writeFile, stat, mkdir, rm, rename, readdir, unlink } from 'node:fs/promises';
@@ -10,11 +12,14 @@ const run = promisify(execFile);
 const execute = (file, args, options={}) => new Promise((res,rej)=>{const p=spawn(file,args,{stdio:'inherit',windowsHide:true,...options});p.on('error',rej);p.on('exit',code=>code===0?res():rej(Error(`${file} 退出 ${code}`)));});
 const exists = p => stat(p).then(()=>true,()=>false);
 export async function preparePython(root,{onProgress=()=>{}}={}) {
+ return withRuntimeLock(root, () => preparePythonFiles(root, onProgress), '.extension-install.lock');
+}
+async function preparePythonFiles(root,onProgress) {
  const manifest=JSON.parse(await readFile(new URL('./python-pack.json',import.meta.url),'utf8'));
  const home=join(root,'node_modules','.meme-python'), source=join(home,'source'), toolDir=join(home,'tools');
  await mkdir(source,{recursive:true});await mkdir(toolDir,{recursive:true});
  const marker=join(home,'ready.json');
- if(await exists(marker)) {const ready=JSON.parse(await readFile(marker,'utf8'));if(ready.revision===manifest.revision && ready.platform===`${process.platform}-${process.arch}` && await exists(join(home,ready.executable)) && await exists(join(home,'catalog.json'))) {await prepareSkiaData(home, ready.platform);console.log('Python 扩展已准备');return;}}
+ if(cachedExtension(root)) {await prepareSkiaData(home, `${process.platform}-${process.arch}`);console.log('Python 扩展已准备');return;}
  const missing=[];
  for(const f of manifest.files)if(!await validResource(source,f))missing.push(f);
  if(missing.length) {
@@ -49,7 +54,7 @@ export async function preparePython(root,{onProgress=()=>{}}={}) {
   }
  }
  await writeFile(join(home,'skipped-directories.json'),JSON.stringify(skipped));
- await writeFile(marker,JSON.stringify(runtime));
+ await writeFile(marker+'.part',JSON.stringify(runtime));await rename(marker+'.part',marker);
  // Keep installed files, not installer caches or archives.
  await rm(toolDir,{recursive:true,force:true});
  for(const entry of await readdir(join(home,'interpreter'),{withFileTypes:true}))if(entry.isSymbolicLink())await unlink(join(home,'interpreter',entry.name));

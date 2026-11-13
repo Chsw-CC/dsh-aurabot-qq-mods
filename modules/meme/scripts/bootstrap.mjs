@@ -7,8 +7,8 @@ import { hasBaseRuntime } from './runtime-state.mjs';
 const sleep = ms=>new Promise(r=>setTimeout(r,ms));
 // Hot reload can briefly overlap a terminating installer. Only one writer owns a
 // runtime directory; a killed install leaves files for the next attempt to reuse.
-export async function withRuntimeLock(root, work) {
-  await mkdir(root,{recursive:true});const lock=join(root,'.base-install.lock');let owned=false;
+export async function withRuntimeLock(root, work, lockName = '.base-install.lock') {
+  await mkdir(root,{recursive:true});const lock=join(root,lockName);let owned=false;
   for (let n=0;n<60;n++) {
     try {const file=await open(lock,'wx');await file.writeFile(String(process.pid));await file.close();owned=true;break;}
     catch(e) {

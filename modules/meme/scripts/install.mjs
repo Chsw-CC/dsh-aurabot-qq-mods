@@ -11,7 +11,7 @@ const target = resolve(process.argv.slice(2).find(x => x !== '--with-extension')
 if (await access(target).then(() => true, () => false)) throw new Error(`目标已存在：${target}。安装器不会覆盖现有模块。`);
 const stage = join(dirname(target), '_meme-install');
 await mkdir(stage, { recursive: true });
-for (const name of ['index.mjs', 'module.json', 'package.json', 'panel.js', 'lib', 'assets', 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'scripts']) await cp(join(root, name), join(stage, name), { recursive: true });
+for (const name of ['index.mjs', 'module.json', 'package.json', 'panel.js', 'lib', 'assets', 'docs', 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'scripts']) await cp(join(root, name), join(stage, name), { recursive: true });
 await prepareDependencies(stage,{sourceRoot:root});
 const assets = join('node_modules', '.meme-runtime');
 if (await access(join(root, assets, 'ready.json')).then(() => true, () => false)) await cp(join(root, assets), join(stage, assets), { recursive: true });

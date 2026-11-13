@@ -36,6 +36,7 @@ export function matchTemplate(text, index, direct = false) {
     if (!match) continue;
     const substitute = s => String(s).replace(/\{(\w+)\}/g, (_, name) => match.groups?.[name] || '');
     return { item: entry.item, rest: text.slice(match[0].length).trim(), shortcut: { ...entry.shortcut,
+      names: (entry.shortcut.names || []).map(substitute),
       texts: entry.shortcut.texts.map(substitute),
       options: Object.fromEntries(Object.entries(entry.shortcut.options).map(([key, value]) => [key, { ...value, field0: typeof value.field0 === 'string' ? substitute(value.field0) : value.field0 }])) }, direct };
   }
@@ -46,17 +47,21 @@ export function parseInput(text, item, shortcut, fallbackText = '你好') {
   const defs = item.params.options || [];
   const nameMap = new Map();
   for (const d of defs) for (const n of [d.field0.name, ...(d.field0.parserFlags?.shortAliases || []), ...(d.field0.parserFlags?.longAliases || [])]) nameMap.set(n, d);
-  const tokens = text.match(/"(?:\\.|[^"\\])*"|'[^']*'|\S+/gu) || [];
+  const tokens = [...text.matchAll(/(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s"'])+/gu)];
   const rest = [];
+  let cursor = 0, literal = false;
   for (let i = 0; i < tokens.length; i++) {
-    const match = tokens[i].match(/^(?:--|#)([^=]+)(?:=(.*))?$/u);
-    if (!match) { rest.push(tokens[i]); continue; }
+    const token = tokens[i], word = token[0];
+    if (word === '--' && !literal) { rest.push(text.slice(cursor, token.index)); cursor = token.index + word.length; literal = true; continue; }
+    const match = !literal && word.match(/^(?:--|#)([^=]+)(?:=(.*))?$/u);
+    if (!match) continue;
     const d = nameMap.get(match[1]);
     if (!d) throw new UserError(`不支持参数 ${match[1]}；发送“#表情详情 ${item.keywords[0]}”查看参数`);
     let raw = match[2];
-    if (raw === undefined && d.type === 'Boolean' && !/^(true|false|0|1)$/i.test(tokens[i + 1] || '')) raw = 'true';
-    else if (raw === undefined) raw = tokens[++i];
+    if (raw === undefined && d.type === 'Boolean' && !/^(true|false|0|1)$/i.test(tokens[i + 1]?.[0] || '')) raw = 'true';
+    else if (raw === undefined) raw = tokens[++i]?.[0];
     if (raw === undefined) throw new UserError(`参数 ${match[1]} 缺少值`);
+    rest.push(text.slice(cursor, token.index)); cursor = tokens[i].index + tokens[i][0].length;
     raw = raw.replace(/^(["'])(.*)\1$/s, '$2');
     let value = raw;
     if (d.type === 'Boolean') { if (!/^(true|false|1|0)$/i.test(raw)) throw new UserError('开关参数须为 true 或 false'); value = /^(true|1)$/i.test(raw); }
@@ -66,10 +71,19 @@ export function parseInput(text, item, shortcut, fallbackText = '你好') {
     }
     options[d.field0.name] = { type: d.type, field0: value };
   }
-  const content = rest.join(' ').trim();
-  const texts = content ? content.split(/\s*\/\s*/u).map(s => s.replace(/^(["'])(.*)\1$/s, '$2')) : [...(shortcut?.texts?.length ? shortcut.texts : item.params.defaultTexts || [])];
+  rest.push(text.slice(cursor));
+  const content = rest.join('').trim();
   const p = item.params;
-  while (texts.length < p.minTexts) texts.push(p.defaultTexts?.[texts.length % (p.defaultTexts.length || 1)] || fallbackText || '你好');
+  const defaults = shortcut?.texts?.length ? shortcut.texts : p.defaultTexts || [];
+  // A slash in a single caption (URL/date) is text. Multi-caption separators
+  // only apply outside quoted strings; preserve newlines and intentional spaces.
+  const parts = content && p.maxTexts > 1 ? content.match(/(?:"(?:\\.|[^"\\])*"|'[^']*'|[^/])+|\//gu) || [] : [content];
+  const sections = [''];
+  for (const part of parts) { if (p.maxTexts > 1 && part === '/') sections.push(''); else sections[sections.length - 1] += part; }
+  const texts = content ? sections.map(s => s.trim().replace(/^(["'])(.*)\1$/s, '$2')) : defaults.slice(0, p.maxTexts);
+  const fallback = i => defaults[i % (defaults.length || 1)] || fallbackText || '你好';
+  while (texts.length < p.minTexts) texts.push(fallback(texts.length));
+  for (let i = 0; i < texts.length; i++) if (!texts[i].trim()) texts[i] = fallback(i);
   if (texts.length < p.minTexts || texts.length > p.maxTexts) throw new UserError(`“${item.keywords[0]}”需要 ${p.minTexts}–${p.maxTexts} 段文字，用 / 分隔；发送“#表情详情 ${item.keywords[0]}”查看用法`);
   if (texts.some(t => t.length > 1000)) throw new UserError('每段文字最多 1000 字');
   return { texts, options };

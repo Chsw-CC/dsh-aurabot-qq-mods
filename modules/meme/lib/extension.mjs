@@ -5,12 +5,14 @@ import { join } from 'node:path';
 import { prepareSkiaData } from '../scripts/python-data.mjs';
 import { stopProcessTree } from './process.mjs';
 import { UserError } from './errors.mjs';
+const revision = JSON.parse(readFileSync(new URL('../scripts/python-pack.json', import.meta.url), 'utf8')).revision;
 
 export function cachedExtension(dir) {
   const home = join(dir, 'node_modules', '.meme-python');
   try {
     const ready = JSON.parse(readFileSync(join(home, 'ready.json'), 'utf8'));
-    return ready.platform === `${process.platform}-${process.arch}` && existsSync(join(home, ready.executable)) && existsSync(join(home, 'catalog.json'));
+    const catalog = JSON.parse(readFileSync(join(home, 'catalog.json'), 'utf8'));
+    return ready.revision === revision && ready.platform === `${process.platform}-${process.arch}` && existsSync(join(home, ready.executable)) && Array.isArray(catalog) && catalog.length > 0;
   } catch { return false; }
 }
 export class ExtensionManager {
@@ -23,6 +25,7 @@ export class ExtensionManager {
   async mount(enabled) {
     if(this.disposed) throw new UserError('模块已停止');
     const result=await this.engine.call('extension',{enabled});
+    if(this.disposed) return;
     this.onCatalog(result); this.installed=!!result.extensionEnabled; this.count=result.extensionCount || 0;
   }
   async restore() {
@@ -34,6 +37,7 @@ export class ExtensionManager {
     if(this.busy) throw new UserError('扩展库正在处理，请稍后');
     this.busy=true; this.error='';this.operation=enabled?'install':'uninstall';this.message=enabled?'正在安装扩展库…':'正在卸载扩展库…';this.received=0;
     this.task=this.change(enabled).catch(e=>{
+      if(this.disposed) return;
       this.log.warn('扩展库操作失败', e.stack || String(e));
       this.error=enabled?'安装未完成，请重试。':'卸载未完成，请重试。';
     }).finally(()=>{this.busy=false;});
@@ -61,7 +65,7 @@ export class ExtensionManager {
       this.child=child;
       let tail='';const output=b=>{tail=(tail+b).slice(-4000);};child.stderr.on('data',output);
       createInterface({input:child.stdout}).on('line',line=>{
-        if(line.startsWith('@@MEME_EXTENSION ')){try{const p=JSON.parse(line.slice(17));this.message=p.message;this.received=p.received || 0;}catch{}}
+        if(line.startsWith('@@MEME_EXTENSION ') && !this.disposed){try{const p=JSON.parse(line.slice(17));this.message=p.message;this.received=p.received || 0;}catch{}}
         else output(line+'\n');
       });
       child.once('error',reject);
