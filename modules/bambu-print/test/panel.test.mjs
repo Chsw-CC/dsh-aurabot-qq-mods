@@ -245,7 +245,7 @@ test('panel.js 能被 new Function(body) 解析，并返回一个组件函数', 
   assert.equal(typeof h1.render(), 'object')
 })
 
-test('首屏：顶部卡片 + 四个页签，默认停在「总览」', async () => {
+test('首屏：顶部卡片 + 五个页签，默认停在「总览」', async () => {
   const h1 = harness()
   const tree = await h1.mount()
   const all = text(tree)
@@ -253,8 +253,8 @@ test('首屏：顶部卡片 + 四个页签，默认停在「总览」', async ()
   assert.match(all, /2 个用户 · 3 台打印机/)
   const s = seg(tree)
   assert.ok(s, '缺少 ui.Seg 分页')
-  assert.deepEqual(s.props.options.map((o) => o.value), ['overview', 'lan', 'settings', 'audit', 'help'])
-  assert.deepEqual(s.props.options.map((o) => o.label), ['总览', '局域网绑定', '设置', '审计', '帮助'])
+  assert.deepEqual(s.props.options.map((o) => o.value), ['overview', 'enroll', 'lan', 'settings', 'audit', 'help'])
+  assert.deepEqual(s.props.options.map((o) => o.label), ['总览', '登录信封', '局域网绑定', '设置', '审计', '帮助'])
   assert.equal(s.props.value, 'overview', '默认页应是总览')
   assert.match(all, /用户与打印机/)
   assert.ok(cardTitled(tree, '用户与打印机'), '总览页内容应在首屏')

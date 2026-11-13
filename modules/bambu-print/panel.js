@@ -17,6 +17,7 @@ const { useState, useEffect, useRef } = React
 
 const PAGES = [
   { value: 'overview', label: '总览' },
+  { value: 'enroll', label: '登录信封' },
   { value: 'lan', label: '局域网绑定' },
   { value: 'settings', label: '设置' },
   { value: 'audit', label: '审计' },
@@ -172,6 +173,13 @@ return function Panel (props) {
   const [discovering, setDiscovering] = useState(false)
   const [discovered, setDiscovered] = useState(null)
   const [discoverError, setDiscoverError] = useState('')
+  // ---- 登录信封（公钥 / 链接 / 试解） ----
+  const [enroll, setEnroll] = useState(null)
+  const [enrollError, setEnrollError] = useState('')
+  const [enrollLoading, setEnrollLoading] = useState(false)
+  const [enrollTrial, setEnrollTrial] = useState('')
+  const [enrollTrialResult, setEnrollTrialResult] = useState(null)
+  const [enrollTrialError, setEnrollTrialError] = useState('')
 
   // ---- 读取 ----
   const load = async function () {
@@ -230,6 +238,47 @@ return function Panel (props) {
     }
   }
 
+  // ---- 登录信封 ----
+  const loadEnroll = async function () {
+    setEnrollLoading(true)
+    try {
+      const r = await request('/enroll')
+      if (!r || r.ok === false) {
+        setEnrollError((r && r.message) || '读不到登录链接。')
+        setEnroll(null)
+      } else {
+        setEnrollError('')
+        setEnroll(r)
+      }
+    } catch (err) {
+      setEnrollError(String((err && err.message) || err))
+      setEnroll(null)
+    } finally {
+      setEnrollLoading(false)
+    }
+  }
+
+  /** 只解信封看摘要：不消费、不执行、不回显任何秘密（账号是掩码的）。 */
+  const inspectEnroll = async function () {
+    const text = String(enrollTrial || '').trim()
+    if (!text) { setEnrollTrialError('先把那段 BBX1.… 贴进来。'); return }
+    setBusy('enroll-inspect')
+    setEnrollTrialError('')
+    setEnrollTrialResult(null)
+    try {
+      const r = await request('/enroll/inspect', { text: text })
+      if (!r || r.ok === false) {
+        setEnrollTrialError((r && r.message) || '解不开这段。')
+        return
+      }
+      setEnrollTrialResult(r)
+    } catch (err) {
+      setEnrollTrialError(String((err && err.message) || err))
+    } finally {
+      setBusy('')
+    }
+  }
+
   const switchPage = function (next) {
     // 离开局域网页就把秘密 state 一起清掉：密码框是非受控的，切页会重挂，
     // 不清就会出现「框里空了但 state 里还留着访问码」的错位。
@@ -250,6 +299,7 @@ return function Panel (props) {
   useEffect(function () {
     load()
     loadLan()
+    loadEnroll()
   }, [])
 
   // ---- 局域网：解锁 / 锁定 / 绑定 ----
@@ -1077,6 +1127,84 @@ return function Panel (props) {
     h('span', { className: 'ab-small ab-muted' }, item.note || ''))
   })
 
+  // ======== ② 登录信封 ========
+  // 账号密码和安全码不再经过聊天，用户必须先去网页生成一段密文；
+  // 这一页负责把链接给他、核对指纹、以及贴一段进来先看看对不对（不消费、不执行）。
+  const enrollLinkText = enroll && enroll.link ? String(enroll.link) : ''
+  const enrollFingerprint = enroll && enroll.fingerprint ? String(enroll.fingerprint) : ''
+  const enrollKindLabel = { login: '登录', unlock: '只解锁', changecode: '改安全码' }
+  const trial = enrollTrialResult
+  const trialLines = trial
+    ? [
+      '用途：' + (enrollKindLabel[trial.kind] || trial.kind),
+      '生存时间：' + String(trial.ttlMin || '?') + ' 分钟（' + fmtTime(trial.expiresAt) + ' 前有效）',
+      '区域：' + String(trial.region || ''),
+      trial.hasAccount ? '账号：' + String(trial.accountMasked || '') + (trial.hasPassword ? ' + 密码' : '') : '不带账号密码',
+      trial.hasNewCode ? '带新安全码（改码）' : '',
+    ].filter(Boolean).join('\n')
+    : ''
+  const copyToClipboard = function (text, label) {
+    if (!text) return
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(
+          function () { notify(label || '已复制') },
+          function () { notify('复制失败，手动选中复制', 'err') })
+        return
+      }
+    } catch (err) { /* 落到下面 */ }
+    notify('这个浏览器不让直接复制，手动选中复制吧', 'err')
+  }
+
+  const enrollPage = h(ui.Card, {
+    title: '登录信封',
+    desc: '用户发「/打印机 登录」拿到一条链接，在网页里填 Bambu 账号密码，网页只用这把公钥在浏览器里加密。机器人用私钥解开，用完即焚——秘密不经过聊天记录。',
+    right: btn(enrollLoading ? '读取中…' : '刷新', loadEnroll, { disabled: enrollLoading }),
+  },
+  enrollError ? note(enrollError, 'err') : null,
+
+  groupTitle('这条链接给用户', '他私聊发「/打印机 登录」也会拿到同一条（公钥一样，链接随公钥变）。'),
+  enrollLinkText
+    ? h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 6 } },
+      h('code', {
+        style: { flex: '1 1 320px', minWidth: 220, wordBreak: 'break-all', background: 'rgba(0,0,0,.04)', padding: '6px 8px', borderRadius: 6, fontSize: 12 },
+      }, enrollLinkText),
+      btn('复制链接', function () { copyToClipboard(enrollLinkText, '链接已复制') }))
+    : h('div', { className: 'ab-small ab-muted', style: { marginTop: 6 } },
+      enrollLoading ? '正在读取…' : '还没读到链接，点右上角「刷新」。'),
+
+  h('div', { className: 'ab-small ab-muted', style: { marginTop: 10, lineHeight: 1.8 } },
+    '公钥指纹：', h('strong', null, enrollFingerprint || '—'),
+    '　·　建议生存时间：', String((enroll && enroll.ttlMinutes) || 60), ' 分钟',
+    '　·　服务端最多接受：', String((enroll && enroll.maxTtlMinutes) || 1440), ' 分钟',
+    '　·　已用掉：', String((enroll && enroll.stats && enroll.stats.used) || 0), ' 段'),
+
+  groupTitle('核对指纹', '用户点开链接后页面顶部会显示同一串指纹。对不上就说明这个页面不是这台机器给的，别在里面填东西。'),
+  h('div', { className: 'ab-small ab-muted', style: { marginTop: 4, lineHeight: 1.8 } },
+    '链接里 #k= 后面那 87 个字符就是公钥。公钥只能加密；私钥只在这台机器的数据目录里，永不导出。'),
+
+  groupTitle('贴一段进来看看对不对', '只解密看摘要，不执行、不消费：看完还能照常拿去用。账号打码显示。'),
+  h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start', marginTop: 6 } },
+    h('textarea', {
+      className: 'ab-input',
+      rows: 3,
+      value: enrollTrial,
+      placeholder: 'BBX1.…',
+      style: { flex: '1 1 320px', minWidth: 220, fontFamily: 'monospace', fontSize: 12 },
+      onChange: function (e) { setEnrollTrial(e.target.value) },
+    }),
+    btn(busy === 'enroll-inspect' ? '解析中…' : '解析', inspectEnroll, { disabled: busy === 'enroll-inspect' })),
+  note(enrollTrialError, 'err'),
+  trialLines ? h('pre', { className: 'ab-small', style: { marginTop: 8, whiteSpace: 'pre-wrap', lineHeight: 1.7 } }, trialLines) : null,
+
+  groupTitle('为什么这样更安全', ''),
+  h('div', { className: 'ab-small ab-muted', style: { marginTop: 4, lineHeight: 1.9 } },
+    '旧流程里账号密码和安全码都得打进聊天，聊天记录是明文留存的，撤回也不可靠。现在：',
+    h('br'), '· 网页在用户自己的浏览器里加密，只拿到公钥；',
+    h('br'), '· 私钥只在这台机器上，机器人解完就把明文用完丢掉，不落盘、不进日志；',
+    h('br'), '· 每段信封只能用一次，且过期作废（重放会被拒）；',
+    h('br'), '· 本机管理员能读到数据目录 → 也能读到私钥。这条边界要看清楚：机器本身要可信。'))
+
   const auditPage = h(ui.Card, {
     title: '审计',
     desc: '解锁、绑定、控制、授权各记一行。操作者显示完整 QQ（这台电脑上的主人自己看）；备注里不会有密码、访问码或 token。',
@@ -1097,7 +1225,9 @@ return function Panel (props) {
   // 帮 助页按前后顺序放在最后；这个三元链要保持和 PAGES 一致
   const pageBody = page === 'overview'
     ? overviewPage
-    : page === 'lan'
+    : page === 'enroll'
+      ? enrollPage
+      : page === 'lan'
       ? lanPage
       : page === 'settings'
         ? settingsPage

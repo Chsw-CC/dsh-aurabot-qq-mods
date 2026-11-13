@@ -2380,6 +2380,42 @@ export default {
         : { ok: false, code: minted.code, message: minted.error }
     })
 
+    // ---------- 登录信封（面板：看链接 / 试解一段） ----------
+
+    api.route('/enroll', async () => {
+      await ready()
+      const ok = await enrollReady()
+      if (!ok) return { ok: false, code: 'NOT_READY', message: '登录密钥还没就绪：数据目录可能不可写，检查 modules-data/bambu-print/ 的权限。' }
+      const s = settings()
+      let stats = { used: 0, keyCreatedAt: 0 }
+      try { stats = enrollService.stats() } catch { /* 保持默认 */ }
+      return {
+        ok: true,
+        link: enrollService.link(s.enrollBaseUrl),
+        publicKey: enrollService.publicKey(),
+        baseUrl: s.enrollBaseUrl || DEFAULT_ENROLL_BASE,
+        custom: !!s.enrollBaseUrl,
+        fingerprint: enrollService.fingerprint(),
+        ttlMinutes: s.enrollTtlMinutes,
+        maxTtlMinutes: s.enrollMaxTtlMinutes,
+        keyCreatedAt: Number(stats.keyCreatedAt) || 0,
+        stats: { used: Number(stats.used) || 0 },
+      }
+    })
+
+    api.route('/enroll/inspect', async (req) => {
+      await ready()
+      const b = await body(req)
+      try { enrollService.setMaxTtlMinutes(settings().enrollMaxTtlMinutes) } catch { /* 老实现没有这个方法 */ }
+      if (!(await enrollReady())) return { ok: false, code: 'NOT_READY', message: '登录密钥还没就绪。' }
+      try {
+        const info = await enrollService.inspect(String(b.text || ''))
+        return { ok: true, ...info }
+      } catch (error) {
+        return { ok: false, code: (error && error.code) || 'BAD_FORMAT', message: envelopeErrorText((error && error.code) || 'BAD_FORMAT') }
+      }
+    })
+
     api.route('/audit', async (req) => {
       await ready()
       const q = query(req)
