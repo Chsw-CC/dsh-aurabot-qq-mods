@@ -55,7 +55,7 @@
 
 ## 5. 网页那份代码在哪
 
-全在 `assets/enroll/`，原样发布到静态托管。仓库内置的是 GitHub Pages，工作流是 `.github/workflows/pages-bambu-enroll.yml`。
+全在 `assets/enroll/`，是纯静态文件（没有构建、没有第三方依赖），原样拷到任何静态托管就能用。默认那份在 GitHub Pages 上，地址见第 6 节。
 
 | 文件 | 作用 |
 |---|---|

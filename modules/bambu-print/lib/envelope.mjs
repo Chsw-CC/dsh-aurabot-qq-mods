@@ -28,7 +28,7 @@ import {
 } from '../assets/enroll/bbx.js'
 
 /**
- * 内置默认登录网页地址（由 .github/workflows/pages-bambu-enroll.yml 发布）。
+ * 内置默认登录网页地址（作者仓库的 GitHub Pages，发布内容就是 assets/enroll/ 这个目录）。
  *
  * 注意：这是**这个仓库**的地址。别人 fork 之后应当把设置项 enrollBaseUrl 改成
  * 自己那份（否则用户点开的是别人的页面 —— 页面只能加密，偷不到私钥，但能偷用户输入）。
