@@ -43,18 +43,19 @@ DSH 面板那个端口要登录态，手机拿不到。所以模组自带一个�
 
 ## 在外面用（4G / 5G）
 
-服务跑在家里电脑上，人在外面要有一条回家的路。按「要不要装东西」排序：
+服务跑在家里电脑上，人在外面要有一条回家的路。面板「口袋aurabot」页会列出当前可用的地址并逐条标注用途，**两种外网方案都能在面板上直接操作**：
 
-1. **公网 IPv6 直连（首选，手机上什么都不用装）**
-   - 现在三大运营商家宽基本都下发公网 IPv6，手机 4G/5G 也默认有 IPv6
-   - 光猫 / 路由器里：开启 IPv6，防火墙放行 `7788`（或给这台电脑设固定 IPv6 后缀再单独放行）
-   - 电脑上 `ipconfig` 看那个 `2xxx:` / `240e:` 开头的地址，就是它
+1. **公网 IPv6 直连（地址固定，但门槛在手机侧）**
+   - 现在三大运营商家宽基本都下发公网 IPv6，但**手机的流量不一定有 IPv6**（先在手机浏览器开 test-ipv6.com 确认；显示 0/10 就是纯 IPv4，这条路走不通）
+   - 光猫 / 路由器里：开启 IPv6，防火墙放行 `7788`（Windows 侧也要放行入站，见下）
    - 手机填：`[240e:xxxx:xxxx::xxxx]:7788`（方括号不能少，这是 IPv6 的写法，不是可选装饰）
    - 建议把 IPv6 地址配成固定的（路由器里做 DHCPv6 静态分配），否则重启光猫可能会变
-2. **Cloudflare Tunnel（不想碰路由器就用这个，手机也不用装）**
-   - 电脑上跑一次 `cloudflared tunnel --url http://127.0.0.1:7788`，会得到一个 `https://xxx.trycloudflare.com`
-   - 把网址整个填进 app 就行（以 `https://` 开头时不会自动补 `:7788`）
-   - 临时域名每次重启会变；固定域名要绑自己的域名，免费额度够用
+   - Windows 放行（管理员 PowerShell）：`New-NetFirewallRule -DisplayName "Pocket 7788" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 7788 -Profile Any`
+2. **隧道（面板一键启动，任何网络都能连）**
+   - 电脑装 [cloudflared](https://github.com/cloudflare/cloudflared/releases/latest)（下载 `cloudflared-windows-amd64.exe` 放到任意位置，如 `C:\Users\你\auratools\bin\`；面板会自动找到，找不到就在模块设置里把完整路径填进「cloudflaredPath」）
+   - 面板「口袋aurabot」页点「启动隧道」，几秒后得到一个 `https://xxx.trycloudflare.com`，点「复制隧道地址」填进 app
+   - https 是真安全上下文：手机浏览器直接开这个网址也能用，且 `getUserMedia` 可用（语音条不依赖 app 原生录音）
+   - 临时域名每次重启会变，重启后重新点一次「启动隧道」、把新地址更新到 app；固定域名要绑自己的域名到 Cloudflare（免费）
 3. **Tailscale（公司网络封端口、上面两条都走不通时的兜底）**
    - 电脑和手机都装，登同一账号，电脑会多出 `100.x.x.x`（模组会自动识别这个网段）
    - 填 `192.168.x.x:7788,100.x.x.x:7788`

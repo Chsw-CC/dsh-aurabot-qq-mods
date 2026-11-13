@@ -15,6 +15,7 @@ const TONES = [
 
 return function Panel({ settings, save, toast }) {
   const [net, setNet] = useState(null)
+  const [tunBusy, setTunBusy] = useState(false)
   const tone = TONES.some((t) => t.id === settings?.tone) ? settings.tone : 'ocean'
   const token = String(settings?.token || '')
 
@@ -29,8 +30,16 @@ return function Panel({ settings, save, toast }) {
 
   const port = net?.port || 7788
   const addrs = (net?.addresses || []).map((ip) => `${ip}:${port}`)
-  const pairLink = addrs.length && token ? `http://${addrs[0]}/#host=${addrs[0]}&token=${encodeURIComponent(token)}` : ''
-  const pairText = (addrs.length ? addrs.map((a) => `http://${a}`).join('\n') : '') + (token ? `\n密钥：${token}` : '')
+  const tun = net?.tunnel || {}
+  const tunnelOrigin = tun.running && tun.url ? tun.url.replace(/^https?:\/\//, '') : ''
+  const tunnelPair = tunnelOrigin ? `https://${tunnelOrigin}` : ''
+  // 配对优先给隧道地址（外面也能用）；没跑隧道就用局域网第一条
+  const pairBase = tunnelPair || (addrs.length ? `http://${addrs[0]}` : '')
+  const pairLink = pairBase && token ? `${pairBase}/#host=${encodeURIComponent(pairBase)}&token=${encodeURIComponent(token)}` : ''
+  const pairText =
+    (tunnelPair ? `隧道（外面用）：${tunnelPair}\n` : '') +
+    (addrs.length ? addrs.map((a) => `局域网：http://${a}`).join('\n') : '') +
+    (token ? `\n密钥：${token}` : '')
 
   // 给每个地址标一句「什么时候填它」，免得对着三个地址不知道抄哪个
   const addrLabel = (ip) => {
@@ -40,8 +49,22 @@ return function Panel({ settings, save, toast }) {
       return '局域网 IPv4'
     }
     if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(v4)) return 'Tailscale（装了才用）'
-    if (v4.includes(':')) return '公网 IPv6（在外面用 4G/5G 时用，需要光猫/路由器放行 ' + port + ' 端口）'
+    if (v4.includes(':')) return '公网 IPv6（要求手机流量有 IPv6 + 光猫放行端口）'
     return ''
+  }
+
+  const toggleTunnel = async () => {
+    setTunBusy(true)
+    try {
+      const r = await call('/tunnel', { action: tun.running ? 'stop' : 'start' })
+      if (r && r.ok === false) toast(r.message || '隧道操作失败')
+      else if (r && r.url) toast('隧道好了：' + r.url)
+      else toast(r && r.message ? r.message : (tun.running ? '隧道已停' : '隧道已启动'))
+    } catch (e) {
+      toast('隧道操作失败：' + (e && e.message ? e.message : e))
+    }
+    await reload()
+    setTunBusy(false)
   }
 
   const cell = { border: '1px solid rgba(128,128,128,.3)', borderRadius: 8, padding: '5px 10px', fontSize: 13, fontFamily: 'monospace', wordBreak: 'break-all' }
@@ -77,12 +100,34 @@ return function Panel({ settings, save, toast }) {
       h('p', { className: 'ab-small', style: { fontWeight: 600 } }, '怎么用：'),
       h('ol', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', paddingLeft: 20, lineHeight: 1.8 } },
         h('li', null, '手机装好「口袋aurabot」app（或直接用手机浏览器开上面的地址也行）'),
-        h('li', null, 'app 配对页把地址填进去——在家填「家里 WiFi」那条；在外面填「公网 IPv6」那条；拿不准就把几条都填上，逗号隔开'),
+        h('li', null, 'app 配对页把地址填进去——在家填「家里 WiFi」那条；在外面填「公网 IPv6」或「隧道」地址；拿不准就把几条都填上，逗号隔开（中英文逗号都行）'),
         h('li', null, '密钥抄下面这条（或点上面的「复制配对链接」，手机浏览器打开就自动填好）'),
         h('li', null, '点「连上她」即可；换密钥后所有设备要重新配对'),
       ),
-      h('p', { className: 'ab-small ab-muted', style: { marginTop: 6 } },
-        '小提示：在外面连不上时，先看光猫/路由器有没有放行 ' + port + ' 端口的 IPv6 入站（浏览器开 IPv6 测试网站确认家里宽带有没有公网 IPv6）。'),
+    ),
+
+    // ---- 外网访问：两种备用方案 ----
+    h('div', { style: { marginTop: 14 } },
+      h('p', { className: 'ab-small', style: { fontWeight: 600 } }, '在外面连电脑（两种方式，都能用，选顺手的）：'),
+      h('ul', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', paddingLeft: 20, lineHeight: 1.8 } },
+        h('li', null, h('b', null, '公网 IPv6（上面带「公网 IPv6」标注的地址）'), '：地址固定、不用额外软件；但要求手机的流量有 IPv6（很多手机套餐没有），还要在光猫/路由器里放行 ' + port + ' 端口'),
+        h('li', null, h('b', null, '隧道（下面按钮）'), '：手机任何网络都能连，不用公网 IP、不碰光猫；https 地址，手机浏览器打开网页也能直接录语音。代价：免费临时域名，电脑重启后要重新点一次「启动隧道」，把新地址填回 app'),
+      ),
+
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' } },
+        h(ui.Btn, { onClick: toggleTunnel, disabled: tunBusy }, tunBusy ? '处理中…（首次约 10 秒）' : tun.running ? '停止隧道' : '启动隧道'),
+        tun.running && tunnelPair ? h('code', { style: cell }, tunnelPair) : null,
+        tun.running && tunnelPair
+          ? h(ui.Btn, { onClick: () => { navigator.clipboard?.writeText(tunnelPair).then(() => toast('隧道地址已复制，填进 app 或手机浏览器打开')) } }, '复制隧道地址')
+          : null,
+        h('span', { className: 'ab-small ab-muted' },
+          !tun.installed ? '未安装 cloudflared' : tun.running ? (tunnelPair ? '运行中' : '连接中…') : '未启动'),
+      ),
+      !tun.installed
+        ? h('p', { className: 'ab-small ab-muted', style: { marginTop: 6 } },
+            '隧道需要 cloudflared：到 https://github.com/cloudflare/cloudflared/releases/latest 下载 cloudflared-windows-amd64.exe，放到任意位置（如 C:\\Users\\你\\auratools\\bin\\），面板会自动找到；找不到就在模块设置里把完整路径填进「cloudflaredPath」。')
+        : null,
+      tun.error ? h('p', { className: 'ab-small', style: { marginTop: 6, color: '#c0392b' } }, tun.error) : null,
     ),
 
     // ---- 人物色调预设 ----

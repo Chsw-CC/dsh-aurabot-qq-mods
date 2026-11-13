@@ -11,9 +11,9 @@
 import { randomBytes } from 'node:crypto'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { join, extname, normalize, sep } from 'node:path'
-import { networkInterfaces, tmpdir } from 'node:os'
+import { homedir, networkInterfaces, tmpdir } from 'node:os'
 import { createServer } from 'node:http'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 
 const RING_MAX = 500
@@ -394,7 +394,7 @@ const MIME = {
 export default {
   id: 'pocket',
   name: '口袋aurabot',
-  version: '1.3.0',
+  version: '1.4.0',
   api: 1,
   description: '把她的对话流接进手机 app：app 消息走她原生流程（记忆、心情、表情包、语音、模组全在），回复与主动搭话实时推回手机；记忆与 QQ 端共用一套。',
   category: 'platform',
@@ -605,7 +605,7 @@ export default {
       health: () => ({
         ok: true,
         app: 'pocket',
-        version: '1.3.0',
+        version: '1.4.0',
         persona: String(cfg().persona?.current || ''),
         owner: String(cfg().ownerName || '主人'),
         tone: tone(),
@@ -744,7 +744,143 @@ export default {
       }
     }
 
-    api.route('/net-info', () => ({ ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone() }))
+    // ---- 外网隧道（cloudflared quick tunnel：手机在外面没 IPv6 也能连，https 直达） ----
+    // cloudflared 是独立进程，模组热重载/重启不影响它；pid 存 tunnel.json，面板随时能停。
+    const tunnelFile = () => join(api.dataDir(), 'tunnel.json')
+    let tunnelProc = null
+    let tunnelUrl = ''
+    let tunnelErr = ''
+    let cfPathCache = { path: '', at: 0 }
+
+    function readTunnelFile() {
+      try {
+        const j = JSON.parse(readFileSync(tunnelFile(), 'utf8'))
+        return j && typeof j === 'object' ? j : {}
+      } catch {
+        return {}
+      }
+    }
+
+    function pidAlive(pid) {
+      const n = Number(pid)
+      if (!n || n === process.pid) return false
+      try {
+        process.kill(n, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    function findCloudflared() {
+      if (cfPathCache.path && Date.now() - cfPathCache.at < 60000) return cfPathCache.path
+      let found = ''
+      const custom = String((api.config().ext || {}).pocket?.cloudflaredPath || '').trim()
+      if (custom && existsSync(custom)) found = custom
+      if (!found) {
+        try {
+          // where.exe 很快，且结果缓存 60 秒
+          const out = execFileSync('where.exe', ['cloudflared'], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
+          const first = String(out).split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0]
+          if (first && existsSync(first)) found = first
+        } catch {}
+      }
+      if (!found) {
+        for (const p of [join(homedir(), 'auratools', 'bin', 'cloudflared.exe'), join(homedir(), '.cloudflared', 'cloudflared.exe'), 'C:\\cloudflared\\cloudflared.exe']) {
+          if (existsSync(p)) { found = p; break }
+        }
+      }
+      cfPathCache = { path: found, at: Date.now() }
+      return found
+    }
+
+    function tunnelInfo() {
+      const saved = readTunnelFile()
+      if (!tunnelProc && !tunnelUrl && saved.pid && pidAlive(saved.pid)) {
+        tunnelUrl = String(saved.url || '')
+      }
+      return {
+        ok: true,
+        installed: !!findCloudflared(),
+        running: !!tunnelProc || (!!saved.pid && pidAlive(saved.pid) && !!tunnelUrl),
+        url: tunnelUrl || (saved.pid && pidAlive(saved.pid) ? String(saved.url || '') : ''),
+        error: tunnelErr,
+        pid: tunnelProc?.pid || (pidAlive(saved.pid) ? saved.pid : 0),
+      }
+    }
+
+    async function tunnelStart() {
+      const cur = tunnelInfo()
+      if (cur.running) return { ok: true, url: cur.url, message: '隧道已经在跑' }
+      const exe = findCloudflared()
+      if (!exe) {
+        return {
+          ok: false,
+          installed: false,
+          message: '没找到 cloudflared：去 https://github.com/cloudflare/cloudflared/releases/latest 下载 cloudflared-windows-amd64.exe，随便放个位置（比如 C:\\Users\\你\\auratools\\bin\\），然后在面板设置里把路径填进「cloudflaredPath」；或直接放进 PATH。',
+        }
+      }
+      tunnelUrl = ''
+      tunnelErr = ''
+      const p = spawn(exe, ['tunnel', '--url', `http://127.0.0.1:${port()}`, '--no-autoupdate'], { windowsHide: true })
+      tunnelProc = p
+      const grab = (buf) => {
+        const m = String(buf).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i)
+        if (m && !tunnelUrl) {
+          tunnelUrl = m[0]
+          try {
+            writeFileSync(tunnelFile(), JSON.stringify({ url: tunnelUrl, pid: p.pid, at: Date.now() }))
+          } catch {}
+        }
+      }
+      p.stderr?.on('data', grab)
+      p.stdout?.on('data', grab)
+      p.on('exit', (code) => {
+        if (tunnelProc === p) {
+          tunnelProc = null
+          tunnelErr = code ? `隧道进程退出了（code ${code}）` : ''
+        }
+      })
+      p.on('error', (e) => {
+        if (tunnelProc === p) {
+          tunnelProc = null
+          tunnelErr = '启动失败：' + (e?.message || e)
+        }
+      })
+      for (let i = 0; i < 30 && !tunnelUrl && tunnelProc === p; i++) {
+        await new Promise((r) => setTimeout(r, 500))
+      }
+      if (tunnelUrl) return { ok: true, url: tunnelUrl }
+      if (tunnelProc) return { ok: true, url: '', message: '隧道在连了，地址一会儿就好，稍后刷新面板' }
+      return { ok: false, message: tunnelErr || '隧道没能起来' }
+    }
+
+    function tunnelStop() {
+      const saved = readTunnelFile()
+      const targets = new Set([tunnelProc?.pid, saved.pid].filter(Boolean))
+      tunnelProc = null
+      tunnelUrl = ''
+      tunnelErr = ''
+      let killed = 0
+      for (const pid of targets) {
+        try {
+          process.kill(Number(pid))
+          killed++
+        } catch {}
+      }
+      try {
+        unlinkSync(tunnelFile())
+      } catch {}
+      return { ok: true, message: killed ? '隧道已停' : '本来就没在跑' }
+    }
+
+    api.route('/net-info', () => ({ ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo() }))
+    api.route('/tunnel', async (req) => {
+      const b = await bodyOf(req).catch(() => ({}))
+      if (b.action === 'start') return tunnelStart()
+      if (b.action === 'stop') return tunnelStop()
+      return tunnelInfo()
+    })
     api.route('/state', (req, res) => (guard(req, res) ? ops.state() : undefined))
     api.route('/events', (req, res) => (guard(req, res) ? ops.events(urlOf(req).searchParams.get('after')) : undefined))
     api.route('/history', (req, res) => (guard(req, res) ? ops.history(Number(urlOf(req).searchParams.get('days') || 3) || 3) : undefined))
