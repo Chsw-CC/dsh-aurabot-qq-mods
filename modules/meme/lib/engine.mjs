@@ -3,6 +3,7 @@ import { fork } from 'node:child_process';
 import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { ensureEngineConfig } from './engine-config.mjs';
 
 import { stopProcessTree as stopWorker } from './process.mjs';
 export class Engine {
@@ -18,6 +19,7 @@ export class Engine {
     const inventory = JSON.parse(readFileSync(ready, 'utf8'));
     if (inventory.version !== '0.2.3' || !inventory.files?.length) throw new Error('离线资源版本不匹配，请重新安装');
     for (const file of inventory.files) if (!existsSync(join(home, file.path))) throw new Error(`缺少离线资源：${file.path}，请重新安装`);
+    ensureEngineConfig(home);
     const child = fork(fileURLToPath(new URL('./worker.mjs', import.meta.url)), [], {
       execArgv: [], windowsHide: true, detached: process.platform !== 'win32', serialization: 'json',
       env: { ...process.env, MEME_RUNTIME_DIR: this.runtimeDir, MEME_EXTENSION_ENABLED: this.extensionEnabled ? '1' : '0', MEME_HOME: home, MEME_MODULE_DIR: this.dir, ELECTRON_RUN_AS_NODE: '1', RAYON_NUM_THREADS: '2' },

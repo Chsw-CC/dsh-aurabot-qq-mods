@@ -1,4 +1,5 @@
 import {downloadArtifact} from './download-artifact.mjs';
+import {ensureEngineConfig} from '../lib/engine-config.mjs';
 // Shared by explicit installation and automatic first-run preparation.
 import { readFile, mkdir, rename, writeFile, rm } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
@@ -41,7 +42,7 @@ export async function prepare(root,{onProgress=()=>{}}={}) {
   }
   onProgress({phase:'checking',message:'正在完成安装…',completed:0,total:0});
   await mkdir(home,{recursive:true});
-  await writeFile(join(home,'config.toml'),'[meme]\nload_external_memes = true\n[font]\nuse_local_fonts = false\n[encoder]\ngif_max_frames = 200\n');
+  ensureEngineConfig(home);
   const ready={version:inventory.version,baseKeys,packs:packs.map(({id,release,keys})=>({id,release,keys})),files:files.map(({path,size})=>({path,size}))};
   await writeFile(join(home,'ready.json.part'),JSON.stringify(ready));await rename(join(home,'ready.json.part'),join(home,'ready.json'));
   console.log(`基础库准备完成：${keys.size} 个模板，${files.length} 个文件`);
