@@ -106,6 +106,9 @@
     color: #c0392b; font-size: 19px; margin-left: 6px; display: inline-block;
     transform: rotate(12deg); text-shadow: 0 0 2px rgba(192,57,43,.4);
   }
+  .entry .lockmark {
+    font-size: 12px; margin-left: 5px; opacity: .8; transform: rotate(-8deg); display: inline-block;
+  }
   .entry.gone { opacity: .42; filter: grayscale(.35); }
   .entry.gone .txt { color: #555; position: relative; }
   /* 划掉的粗粝红线 */
@@ -244,13 +247,14 @@
     const tags = (e.tags || []).length ? `<span class="tags">#${e.tags.map(esc).join(' #')}</span>` : ''
     const due = e.due ? `<span class="due">${esc(e.due)}</span>` : ''
     const star = e.important ? '<span class="star">★</span>' : ''
+    const lock = e.locked ? '<span class="lockmark" title="已锁定，不会被淘汰">🔒</span>' : ''
     const stamp = `<span class="stamp" style="color:${KIND_COLOR[e.kind] || KIND_COLOR.note}">${KIND[e.kind] || '随手记'}</span>`
     const about = e.about ? `<span class="about">关于${esc(e.about)}</span>` : ''
     const when = `<span class="when">${dayText(e.at)} ${timeText(e.at)}</span>`
     return `<div class="entry${gone}" data-id="${esc(e.id)}" data-chat="${esc(e.chatId || '')}"
       style="color:${ink}; transform: rotate(${rot}deg)"
       onclick="openMenu(event, this)">
-      <div class="txt">${stamp}${about}${esc(e.text)}${tags}${due}${star}${when}
+      <div class="txt">${stamp}${about}${esc(e.text)}${tags}${due}${star}${lock}${when}
         ${e.deletedAt ? strikeSvg(e.id) : ''}
       </div>
     </div>`
@@ -325,6 +329,7 @@
     menu.innerHTML = `
       <button class="red" onclick="toggleDel()">${gone ? '↩ 不划了' : '✕ 划掉这条'}</button>
       <button onclick="togglePin()">${e.important ? '☆ 去掉星' : '★ 标个星'}</button>
+      <button onclick="toggleLock()">${e.locked ? '🔓 解开锁' : '🔒 锁死这条'}</button>
       <button onclick="closeMenu()">算了</button>`
     menu.hidden = false
     const r = menu.getBoundingClientRect()
@@ -366,6 +371,20 @@
     await post('pin', { chatId: menuFor.chatId, id: menuFor.id })
     closeMenu()
     load()
+  }
+  async function toggleLock() {
+    if (!menuFor) return
+    const r = await post('lock', { chatId: menuFor.chatId, id: menuFor.id }).catch(() => null)
+    if (r?.ok) toastLock(r.locked)
+    closeMenu()
+    load()
+  }
+  function toastLock(locked) {
+    const t = document.createElement('div')
+    t.textContent = locked ? '🔒 锁住了：这条永远不会被淘汰' : '🔓 已解锁'
+    t.style.cssText = 'position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#2b3a67;color:#fdf8ee;padding:8px 18px;border-radius:18px;font-size:14px;letter-spacing:1px;box-shadow:0 6px 16px rgba(0,0,0,.3);z-index:60;font-family:inherit'
+    document.body.appendChild(t)
+    setTimeout(() => t.remove(), 2200)
   }
 
   async function load() {

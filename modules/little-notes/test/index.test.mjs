@@ -153,6 +153,40 @@ test('超过上限丢最旧的普通条目，标星的保留', async () => {
   assert.ok(after.some((e) => e.text === 's3'), '更新的星标保留')
 })
 
+test('锁定的条目永不淘汰，本子超上限也保', async () => {
+  const db = dbFile()
+  const list = Array.from({ length: 499 }, (_, i) => ({
+    id: 'n' + i, at: i, kind: 'note', text: 'n' + i, tags: [], important: false,
+  }))
+  list.unshift({ id: 'L1', at: -2, kind: 'promise', text: '锁住的约定A', tags: [], important: true, locked: true })
+  list.unshift({ id: 'L2', at: -1, kind: 'note', text: '锁住的B', tags: [], important: false, locked: true })
+  writeFileSync(join(dir, 'notes.json'), JSON.stringify({ 'private:123': list }))
+  await byName(tools, 'note_add').execute({ text: '新来的' })
+  let after = dbFile()['private:123']
+  assert.equal(after.length, 500)
+  assert.ok(after.some((e) => e.text === '锁住的约定A'), '锁住的星标保留')
+  assert.ok(after.some((e) => e.text === '锁住的B'), '锁住的普通条也保留')
+
+  // 锁的太多实在放不下：宁超上限也不丢锁的
+  const locked500 = Array.from({ length: 500 }, (_, i) => ({
+    id: 'k' + i, at: i, kind: 'note', text: 'k' + i, tags: [], important: true, locked: true,
+  }))
+  writeFileSync(join(dir, 'notes.json'), JSON.stringify({ 'private:123': locked500 }))
+  await byName(tools, 'note_add').execute({ text: '新来的第二条' })
+  after = dbFile()['private:123']
+  assert.equal(after.length, 501)
+  assert.ok(after.some((e) => e.text === 'k0'), '锁住的最旧的也保留')
+  assert.ok(after.some((e) => e.text === '新来的第二条'))
+
+  // /lock 接口切换
+  const entry = after.find((e) => e.text === '新来的第二条')
+  const rLock = await routes['/lock']({ __body: { chatId: 'private:123', id: entry.id } })
+  assert.equal(rLock.ok, true)
+  assert.equal(rLock.locked, true)
+  const rUn = await routes['/lock']({ __body: { chatId: 'private:123', id: entry.id } })
+  assert.equal(rUn.locked, false)
+})
+
 test('面板接口：汇总 / 补记 / 标星 / 划掉留痕 / 恢复', async () => {
   writeFileSync(join(dir, 'notes.json'), JSON.stringify({ 'private:123': [], 'group:1': [] }))
   const rNotes = await routes['/notes']()

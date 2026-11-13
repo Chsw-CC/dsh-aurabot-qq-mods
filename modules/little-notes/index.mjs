@@ -47,14 +47,16 @@ function newId() {
 }
 
 // 超上限时丢最旧的普通条目；标了星的（important）尽量保住；刚写入的这条（protectId）永不丢。
-// 星标实在放不下时才丢最旧的星标。返回时保持原有时间顺序。
+// 锁定的（locked）绝对不丢——就算本子超上限也保着，宁可暂时多几条。
 function trim(list, max, protectId) {
   if (list.length <= max) return list
   const over = list.length - max
-  const normals = list.filter((e) => !e.important && e.id !== protectId)
-  const stars = list.filter((e) => e.important && e.id !== protectId)
+  const free = (e) => !e.locked && e.id !== protectId
+  const normals = list.filter((e) => free(e) && !e.important)
+  const stars = list.filter((e) => free(e) && e.important)
   const dropFrom = normals.length >= over ? normals : normals.concat(stars)
   const drop = new Set(dropFrom.slice(0, over).map((e) => e.id))
+  if (!drop.size) return list
   return list.filter((e) => !drop.has(e.id))
 }
 
@@ -68,6 +70,7 @@ function fmt(e, withId) {
   const head = [KIND_LABEL[e.kind] || '随手记']
   if (e.about) head.push(`关于${e.about}`)
   if (e.due) head.push(`日子 ${e.due}`)
+  if (e.locked) head.push('已锁定')
   const tags = Array.isArray(e.tags) && e.tags.length ? ` #${e.tags.join(' #')}` : ''
   const star = e.important ? ' ⭐' : ''
   const id = withId ? `(${e.id}) ` : ''
@@ -99,7 +102,7 @@ function match(e, q) {
 export default {
   id: 'little-notes',
   name: '小本本',
-  version: '1.2.1',
+  version: '1.2.2',
   api: 1,
   description: '她想到就记一笔的小本本：他说过的话、她答应的事、关于他的事，按人按事翻得出来。不是每天一篇的日记。',
   category: 'manage',
@@ -455,6 +458,19 @@ export default {
       e.important = !e.important
       writeDb(dir, db)
       return { ok: true, important: e.important }
+    })
+
+    api.route('/lock', async (req) => {
+      const b = await bodyOf(req)
+      const chatId = String(b.chatId || '')
+      const id = String(b.id || '')
+      const db = readDb(dir)
+      const list = listOf(db, chatId)
+      const e = list.find((x) => x.id === id)
+      if (!e) return { ok: false, message: '没找到这条' }
+      e.locked = !e.locked
+      writeDb(dir, db)
+      return { ok: true, locked: e.locked }
     })
 
     api.route('/undel', async (req) => {
