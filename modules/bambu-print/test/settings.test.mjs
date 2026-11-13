@@ -26,6 +26,9 @@ test('规则表：键和 kind 与约定完全一致，且没有 enabled 键（�
     tutkBridgePath: 'text',
     tutkLibPath: 'text',
     tutkTimeoutMs: 'int',
+    enrollBaseUrl: 'text',
+    enrollTtlMinutes: 'int',
+    enrollMaxTtlMinutes: 'int',
   }
   assert.deepEqual(RULE_KEYS, Object.keys(expected))
   for (const [key, kind] of Object.entries(expected)) assert.equal(SETTING_RULES[key].kind, kind, key + ' 的 kind 不对')

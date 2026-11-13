@@ -179,10 +179,36 @@ const runningReport = () => ({
   },
 })
 
-/** 给某个用户设置安全码并解锁（面板/命令两条路径都走真实 vault）。 */
-async function setupUser (api, qq, { owner = false } = {}) {
+/** 造一段真实信封（用 /enroll 拿到的公钥加密，和网页上跑的是同一份实现）。 */
+async function makeEnvelope (api, fields) {
+  const bbx = await import('../assets/enroll/bbx.js')
+  const r = await route(api, '/enroll')
+  assert.equal(r.ok, true, '拿到公钥应当成功：' + JSON.stringify(r))
+  const nowSec = Math.floor(Date.now() / 1000)
+  const ttlMin = Number.isFinite(fields.ttlMin) ? fields.ttlMin : 10
+  return bbx.sealEnvelope(r.publicKey, {
+    code: fields.code === undefined ? SECRET : fields.code,
+    account: fields.account || '',
+    password: fields.password || '',
+    ttlMin,
+    iat: Number.isFinite(fields.iat) ? fields.iat : nowSec,
+    exp: Number.isFinite(fields.exp) ? fields.exp : nowSec + ttlMin * 60,
+    region: fields.region || 'cn',
+  })
+}
+
+/**
+ * 建号 + 登录（走真实信封：一个信封同时完成建号和云端登录）。
+ * 信封现在只有「登录」一种用途，账号密码必填；想在登录时就带出指定设备，
+ * 传 devices（否则用 makeApi 里那份默认设备列表）。
+ */
+async function setupUser (api, qq, { owner = false, devices } = {}) {
   const over = { userId: qq, chatId: 'private:' + qq }
-  await say(api, '/打印机 设置安全码 ' + SECRET, over)
+  if (devices) api.__devices.list = devices
+  const env = await makeEnvelope(api, { account: 'me@example.com', password: 'pw-' + qq, region: 'us' })
+  await say(api, '/打印机 登录 ' + env, over)
+  const reply = lastText(api)
+  assert.match(reply, /登录成功/, '建号+登录应当成功：' + reply)
   return { api, qq, over }
 }
 
@@ -210,6 +236,14 @@ const bambuToolAt = (api, chat) => toolsAt(api, chat).find((t) => t.name === 'ba
 
 /** 直接调 api.context 注册的 handler，模拟宿主拼出来的群上下文。 */
 const contextAt = (api, chat) => api.__contexts.map((fn) => String(fn({ chat }) || '')).join('')
+
+/** 清掉某个用户的云端绑定，模拟「只绑局域网打印机」的场景。 */
+async function clearCloudBindings (api, qq) {
+  const list = await route(api, '/bindings', { qq })
+  for (const b of list.bindings || []) {
+    if (b.mode === 'cloud') await route(api, '/unbind', { qq, bindingId: b.id })
+  }
+}
 
 /** 主人用局域网绑定（只有主人可用）。 */
 async function bindOwnerLan (api) {
@@ -262,7 +296,6 @@ test('群聊默认脱敏：文件名/项目名不出现，进度、已打印、�
   try {
     const api = await boot(dir)
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
     await say(api, '/打印机 状态', { kind: 'group', chatId: 'group:' + GROUP, groupId: GROUP, role: 'member', messageId: 'm2' })
     const reply = lastText(api)
@@ -280,7 +313,6 @@ test('群聊只读：全局 status 拒绝暂停；用户把自己的群权限调
   try {
     const api = await boot(dir)
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
     const groupOver = { kind: 'group', chatId: 'group:' + GROUP, groupId: GROUP, role: 'member', messageId: 'm3' }
     await say(api, '/打印机 暂停', groupOver)
@@ -299,11 +331,12 @@ test('多台打印机：无选择时用合并转发列出每台，回复「1」�
   const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
   try {
     const api = await boot(dir)
-    await setupUser(api, USER)
-    await loginCloud(api, USER, [
-      { serial: '01S00C000000001', name: 'X1C', model: 'X1C', ip: '192.168.1.60', accessCode: LANCODE },
-      { serial: '01S00C000000002', name: 'P1S', model: 'P1S', ip: '192.168.1.61', accessCode: LANCODE },
-    ])
+    await setupUser(api, USER, {
+      devices: [
+        { serial: '01S00C000000001', name: 'X1C', model: 'X1C', ip: '192.168.1.60', accessCode: LANCODE },
+        { serial: '01S00C000000002', name: 'P1S', model: 'P1S', ip: '192.168.1.61', accessCode: LANCODE },
+      ],
+    })
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
 
     await say(api, '/打印机 状态')
@@ -362,7 +395,6 @@ test('别人（含主人）默认看不到 token，也不能操作；被授权�
   try {
     const api = await boot(dir, { users: USER + ',' + OTHER })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
 
     // 主人也没绑定：列表为空、状态被拦住
@@ -417,13 +449,13 @@ test('接口选择：非主人恒云端；主人可切本地并落到 mode=lan',
   try {
     const api = await boot(dir)
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
     // 非主人切本地 → 拒绝
     await say(api, '/打印机 接口 本地')
     assert.match(lastText(api), /只有主人/)
-    // 主人：设安全码 → 局域网绑定 → 切本地 → 状态走 LAN
+    // 主人：登录 → 去掉云端绑定（只留局域网）→ 绑局域网 → 切本地 → 状态走 LAN
     await setupUser(api, OWNER)
+    await clearCloudBindings(api, OWNER)
     assert.equal((await bindOwnerLan(api)).ok, true)
     await say(api, '/打印机 接口 本地', { userId: OWNER, chatId: 'private:' + OWNER })
     assert.match(lastText(api), /本地接口/)
@@ -449,7 +481,6 @@ test('面板 /groupperm：需解锁、只接受合法值、返回最新偏好', 
   try {
     const api = await boot(dir)
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     const locked = await route(api, '/groupperm', { qq: USER, groupMode: 'control' })
     assert.equal(locked.ok, true, '刚登录完是解锁状态')
     assert.equal(locked.prefs.groupMode, 'control')
@@ -513,7 +544,6 @@ test('多用户模式开关：关掉后只服务主人，别人的绑定/命令�
     const api = await boot(dir, { users: USER + ',' + OWNER })
     assert.equal(api.__settings.multiUser, true, '默认应当是多用户模式')
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
     await say(api, '/打印机 状态', { userId: USER, chatId: 'private:' + USER })
     assert.match(lastText(api), /42%/, '多用户模式下普通用户能用')
@@ -529,8 +559,9 @@ test('多用户模式开关：关掉后只服务主人，别人的绑定/命令�
     await say(api, '/打印机 状态', { kind: 'group', chatId: 'group:' + GROUP, groupId: GROUP, userId: USER, role: 'member' })
     assert.equal(api.__replies.length, beforeGroup, '单用户模式下群里也不响应')
 
-    // 主人仍然能用
+    // 主人仍然能用（只留局域网，避免云端+局域网两条凭据导致「哪一台」歧义）
     await setupUser(api, OWNER)
+    await clearCloudBindings(api, OWNER)
     await bindOwnerLan(api)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
     await say(api, '/打印机 状态', { userId: OWNER, chatId: 'private:' + OWNER })
@@ -539,6 +570,49 @@ test('多用户模式开关：关掉后只服务主人，别人的绑定/命令�
     // 模型工具也拿不到（不能从工具入口绕过）
     const tools = api.__tools.flatMap((fn) => { try { const r = fn({ chat: { kind: 'private', userId: USER } }); return [].concat(r || []) } catch { return [] } })
     assert.equal(tools.length, 0, '单用户模式下普通用户不该拿到 bambu_printer 工具：' + JSON.stringify(tools.map((t) => t.name)))
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test('只发 /打印机 等同于 /打印机 帮助：走合并转发，不刷屏', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
+  try {
+    const api = await boot(dir)
+    await setupUser(api, USER)
+
+    await say(api, '/打印机', { userId: USER, chatId: 'private:' + USER })
+    const fwd = lastForward(api)
+    assert.ok(fwd.call, '只发命令名也要走合并转发：' + JSON.stringify(api.__onebot.map((c) => c.action)))
+    assert.ok(fwd.nodes.length > 1, '应当是多页帮助，实际 ' + fwd.nodes.length)
+
+    // 和 /打印机 帮助 的输出完全一致（页数、内容都不该有差别）
+    const bare = fwd.text
+    await say(api, '/打印机 帮助', { userId: USER, chatId: 'private:' + USER })
+    assert.equal(lastForward(api).text, bare, '两种写法的帮助内容应当完全一样')
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test('/打印机 登录 会给出公钥指纹，用户能核对网页是不是这台机器的', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
+  try {
+    const api = await boot(dir)
+    await say(api, '/打印机 登录', { userId: USER, chatId: 'private:' + USER })
+    const text = lastText(api)
+
+    // 回复里要有 8 位十六进制指纹
+    const m = text.match(/公钥指纹 ([0-9a-f]{8})/)
+    assert.ok(m, '登录回复里应当写明公钥指纹：' + text)
+
+    // 这个指纹必须真的等于信封服务算出来的那个（页面用同一份算法）
+    const expected = (await route(api, '/enroll')).fingerprint
+    assert.equal(m[1], expected, '指纹要和信封服务一致')
+    assert.match(expected, /^[0-9a-f]{8}$/)
+
+    // 链接也要在，且带 #k=
+    const link = text.match(/#k=([A-Za-z0-9_-]{87})/)
+    assert.ok(link, '要给出带公钥的链接')
+
+    // 这一条只是给链接：不该出现真的密文（提示里的「BBX1.…」是占位符，不算）
+    assert.equal(/BBX1\.[A-Za-z0-9_-]{40,}/.test(text), false, '这一条只是给链接，不该出现真实密文')
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
@@ -561,21 +635,21 @@ test('帮助用合并转发：默认一条塞进全部页，含风险与存储�
     assert.match(all, /风险/)
     assert.match(all, /私聊记录会以明文留存/)
     assert.match(all, /撤回并不能可靠消除风险/)
-    assert.match(all, /事后立即修改密码/)
+    assert.match(all, /账号密码现在不经过聊天/)
     assert.match(all, /访问码 = 打印机控制权/)
     // 第 2 页：本地存储策略
     assert.match(all, /② 数据存在哪/)
-    assert.match(all, /modules-data/)
-    assert.match(all, /host-key/)
+    assert.match(all, /只加密存在本机/)
+    assert.match(all, /不落明文、不进日志、不上传/)
     // 第 6 页：安全码与解锁
-    assert.match(all, /⑥ 安全码与解锁/)
+    assert.match(all, /⑥ 凭据怎么保管/)
     assert.match(all, /暂停 · 继续 · 停止/)
     assert.match(all, /0 表示关加热/)
-    assert.match(all, /群里只能暂停\/继续，停止必须私聊/)
+    assert.match(all, /群权限改成「控制」后才能暂停、继续、停止/)
     assert.match(all, /OAuth/)
-    assert.match(all, /默认 30 分钟、只给看状态/)
+    assert.match(all, /默认 30 分钟、给看状态和控制/)
     assert.match(all, /默认 10 条/)
-    assert.match(all, /至少 8 位/)
+    assert.match(all, /没有安全码/)
 
     // 每页都不长（一页一条折叠卡片，太长照样没人看）
     for (const node of fwd.nodes) assert.ok(String(node).split('\n').length <= 16, '单页太长：' + String(node).slice(0, 40))
@@ -590,7 +664,6 @@ test('合并转发按会话类型选 action；失败时退回文本且仍能指�
   try {
     const api = await boot(dir, { groupAllow: GROUP })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
 
     // 群聊：用 send_group_forward_msg，带 group_id
@@ -611,7 +684,7 @@ test('合并转发按会话类型选 action；失败时退回文本且仍能指�
     await say(api, '/打印机 帮助 2')
     const fallback = lastText(api)
     assert.match(fallback, /帮助 2\/6/, '退回文本时仍要认页码')
-    assert.match(fallback, /modules-data/)
+    assert.match(fallback, /只加密存在本机/)
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
@@ -646,6 +719,7 @@ test('拍照（LAN）：纯局域网打印机摄像头证书学不到 → 拒绝
   try {
     const api = await boot(dir)
     await setupUser(api, OWNER)
+    await clearCloudBindings(api, OWNER)
     assert.equal((await bindOwnerLan(api)).ok, true)
     // 学证书失败：这是 review P1-4 / P2-4 的关键分支（旧实现会拿空锚点直接抓帧）
     api.__bambuTestHooks.learnCameraCert = async () => ({ ok: false, code: 'TLS_NO_CERT', error: '端口 6000 没回证书' })
@@ -668,9 +742,9 @@ test('拍照（云端 + LAN 地址）：LAN 证书学不到 → 不走局域网�
   const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
   try {
     const api = await boot(dir, { tutkBridgePath: '/opt/tutk-bridge' })
-    await setupUser(api, USER)
+    // 云端设备带局域网信息（ip + accessCode）：用来验证「证书学不到就别走 LAN」
+    await setupUser(api, USER, { devices: [{ serial: '01S00C000000001', name: 'X1C', model: 'X1C', ip: '192.168.1.60', accessCode: LANCODE }] })
     // 云端设备带局域网信息：旧实现会优先拿空锚点走 LAN，把访问码发给未校验的对端
-    await loginCloud(api, USER)
     api.__bambuTestHooks.learnCameraCert = async () => ({ ok: false, code: 'TLS_NO_CERT', error: '端口 6000 没回证书' })
     const capture = api.__capture
     const mint = api.__tutkMint
@@ -693,9 +767,8 @@ test('拍照（TUTK 分支）：纯云端设备（无 LAN 地址）→ 真铸码
   const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
   try {
     const api = await boot(dir, { tutkBridgePath: '/opt/tutk-bridge' })
-    await setupUser(api, USER)
     // 纯云端设备：没有 ip / accessCode，只能走 TUTK
-    await loginCloud(api, USER, [{ serial: '01S00C000000002', name: 'P1S', model: 'P1S' }])
+    await setupUser(api, USER, { devices: [{ serial: '01S00C000000002', name: 'P1S', model: 'P1S' }] })
     const mint = api.__tutkMint
     const capture = api.__capture
     const before = { mint: mint.count, capture: capture.count }
@@ -732,12 +805,14 @@ test('回复里不再出现撤回相关文案，也不再调 delete_msg', async 
     await say(api, '/打印机 设置安全码 ' + SECRET)
     const regText = lastText(api)
     assert.doesNotMatch(regText, /撤回/, '设置安全码的回复里不该提撤回：' + regText)
-    assert.equal(regText.includes(SECRET), false, '回复里不能回显安全码')
+    assert.equal(regText.includes(SECRET), false, '回复里不能回显那段明文')
+    assert.match(regText, /安全码已经取消/, '旧命令要明确说明已经取消')
 
-    await say(api, '/打印机 解锁 ' + SECRET)
+    await setupUser(api, USER)
+    await say(api, '/打印机 解锁', { userId: USER, chatId: 'private:' + USER })
     const unlockText = lastText(api)
     assert.doesNotMatch(unlockText, /撤回/, '解锁的回复里不该提撤回：' + unlockText)
-    assert.match(unlockText, /已解锁/)
+    assert.match(unlockText, /不用解锁|直接就能用/, '要告诉用户已经不需要解锁：' + unlockText)
 
     assert.equal(api.__onebot.filter((c) => c.action === 'delete_msg').length, 0, '不该再调用撤回接口')
   } finally { await rm(dir, { recursive: true, force: true }) }
@@ -836,7 +911,6 @@ test('授权依赖所有者保持解锁：主人锁上后受权人收到明确�
   try {
     const api = await boot(dir, { users: USER + ',' + OTHER })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
     await say(api, '/打印机 授权 ' + OTHER + ' 30 status')
     assert.match(lastText(api), /已授权给/)
@@ -854,7 +928,6 @@ test('授权范围严格生效：只给 status 就不能控制，只给 photo �
   try {
     const api = await boot(dir, { users: USER + ',' + OTHER })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
 
     await say(api, '/打印机 授权 ' + OTHER + ' 30 status')
@@ -890,7 +963,6 @@ test('私聊准入继承 Aurabot 白名单：不在 allow.private 里的人用�
 
     // 授权也不会把人变成可用用户：授权只是共享别人的打印机，仍需在 Aurabot 白名单里
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     await say(api, '/打印机 授权 ' + OUTSIDER + ' 30 status')
     assert.match(lastText(api), /已授权给/)
     const gut = await route(api, '/overview')
@@ -903,7 +975,6 @@ test('只读出口与绑定入口：dashboard() 只给打码值，bindLan() 只�
   try {
     const api = await boot(dir, { users: USER })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     const exp = api.__exports
     assert.equal(typeof exp.dashboard, 'function')
     assert.equal(typeof exp.bindLan, 'function')
@@ -954,7 +1025,6 @@ test('群聊准入继承 Aurabot 的群白名单：不在 allow.groups 里的群
     // Aurabot 只放行了 700001；模块自己没有群名单了
     const api = await boot(dir, { users: USER })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
 
     const inGroup = { kind: 'group', chatId: 'group:' + GROUP, groupId: GROUP, userId: USER, role: 'member' }
@@ -983,6 +1053,7 @@ test('自签名证书：第一次连局域网自动固定，之后就能看到�
       return { ok: true, pem: cert.certPem, fingerprint256: cert.fingerprint256, subject: '01S00A123456789' }
     }
     await setupUser(api, OWNER)
+    await clearCloudBindings(api, OWNER)
     await bindOwnerLan(api)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
 
@@ -1002,7 +1073,6 @@ test('证书命令只给主人：其他人用不了，帮助里也不提', async
   try {
     const api = await boot(dir, { users: USER })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
 
     // 非主人：两条都被挡住，且不泄露任何指纹
@@ -1025,6 +1095,7 @@ test('证书命令只给主人：其他人用不了，帮助里也不提', async
 
     // 群聊里主人也用不了（证书只走私聊）
     await setupUser(api, OWNER)
+    await clearCloudBindings(api, OWNER)
     await bindOwnerLan(api)
     api.__bambuTestHooks.printerManager.learnCert = async () => ({ ok: true, pem: '-----BEGIN CERTIFICATE-----\nAA\n-----END CERTIFICATE-----', fingerprint256: 'a'.repeat(64) })
     await say(api, '/打印机 状态', { userId: OWNER, chatId: 'private:' + OWNER })
@@ -1099,7 +1170,6 @@ test('升级回归：defaults 里不写 active，老配置的 enabled:true 不�
     // 命令也照常工作（不会被总开关拦下）
     await setupUser(api, USER)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
-    await loginCloud(api, USER)
     await say(api, '/打印机 状态')
     assert.doesNotMatch(lastText(api), /没开总开关/)
   } finally { await rm(dir, { recursive: true, force: true }) }
@@ -1243,7 +1313,6 @@ test('P1-1 模型工具：已绑定用户在未获准群拿不到 bambu_printer�
   try {
     const api = await boot(dir, { users: USER })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
 
     // Aurabot 只放行了 GROUP；999999 不在白名单里
     const outChat = { kind: 'group', groupId: '999999', userId: USER }
@@ -1263,7 +1332,6 @@ test('P1-1 群上下文：未获准群返回空串；获准群里有打印机名
   try {
     const api = await boot(dir, { users: USER })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
 
     assert.equal(contextAt(api, { kind: 'group', groupId: '999999', userId: USER }), '', '未获准群不给任何打印机名字')
 
@@ -1279,7 +1347,6 @@ test('P1-1 群模式 control + 有控制权限：未获准群依然拿不到工�
   try {
     const api = await boot(dir, { users: USER, groupMode: 'control' })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     // 绑定者本人把群权限确认到 control（这条路径本身要能用）
     const gp = await route(api, '/groupperm', { qq: USER, groupMode: 'control' })
     assert.equal(gp.ok, true, JSON.stringify(gp))
@@ -1303,7 +1370,6 @@ test('P1-1 回归：私聊工具清单不受群白名单影响', async () => {
     // 群白名单为空，私聊照样能用
     const api = await boot(dir, { users: USER, groupAllow: '' })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     const tool = bambuToolAt(api, { kind: 'private', userId: USER })
     assert.ok(tool, '私聊不该被群白名单牵连')
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
@@ -1320,7 +1386,6 @@ test('P2-1 私聊工具 stop：一律拒绝并要求命令二次确认，且不�
   try {
     const api = await boot(dir, { users: USER + ',' + OTHER })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     // USER 把 control 授权给 OTHER：受权人私聊里本来是有控制权限的
     await say(api, '/打印机 授权 ' + OTHER + ' 30 status,control')
     assert.match(lastText(api), /已授权给/)
@@ -1341,7 +1406,6 @@ test('P2-1 回归：私聊工具 status 仍正常，pause 仍可下发', async (
   try {
     const api = await boot(dir, { users: USER })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
     const tool = bambuToolAt(api, { kind: 'private', userId: USER })
     assert.ok(tool)
@@ -1358,7 +1422,6 @@ test('暂停中的打印机不显示纪元级已打印时长（startOf 返回 nu
   try {
     const api = await boot(dir, { users: USER })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     // PAUSE、没有 gcode_start_time、进度 42%、剩余 30 分钟 —— review 的复现输入
     api.__printer.status = {
       ok: true, stale: false, receivedAt: Date.now(), status: null,
@@ -1381,7 +1444,6 @@ test('私聊控制权限：自己绑定的白名单用户在私聊 pause / 拍�
     // 于是自己绑定的用户私聊里控制/拍照全被拒。
     const api = await boot(dir, { users: USER })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
     const over = { userId: USER, chatId: 'private:' + USER }
     await say(api, '/打印机 暂停', over)
@@ -1397,16 +1459,15 @@ test('私聊控制权限：自己绑定的白名单用户在私聊 pause / 拍�
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
-test('免安全码主人：面板开启后不用解锁就能绑局域网、查状态；别的用户仍要安全码', async () => {
+test('没有安全码：主人建号后直接能绑局域网、查状态', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
   try {
     const api = await boot(dir, { users: USER })
-    // 主人直接开启免码
+    // 没有安全码了，「开个账号」就是这个动作；保留 /owner/nocode 作为兼容入口
     const opened = await route(api, '/owner/nocode', {})
     assert.equal(opened.ok, true, JSON.stringify(opened))
-    assert.equal(opened.mode, 'host')
-    assert.equal(api.__vault.isUnlocked(OWNER), true, '开启后会话应当直接开着')
-    assert.equal(api.__vault.isCodeless(OWNER), true)
+    assert.equal(api.__vault.isUnlocked(OWNER), true, '建号后会话应当直接开着')
+    assert.equal(api.__vault.hasUser(OWNER), true)
 
     // 不用输任何安全码就能绑局域网
     const bound = await bindOwnerLan(api)
@@ -1431,22 +1492,52 @@ test('免安全码主人：面板开启后不用解锁就能绑局域网、查�
     await say(api, '/打印机 状态', { userId: OWNER, chatId: 'private:' + OWNER })
     assert.equal(api.__vault.isUnlocked(OWNER), true, '免码主人下次命令应当自动开会话')
 
-    // 别的用户没设安全码：绝不会被免码路径打开
-    assert.equal(api.__vault.isCodeless(USER), false)
+    // 别的用户还没建号：查状态应当被拒绝（不是「被免码路径打开」的问题，而是根本没账号）
+    assert.equal(api.__vault.hasUser(USER), false)
     await say(api, '/打印机 状态', { userId: USER, chatId: 'private:' + USER })
-    assert.doesNotMatch(lastText(api), /42%/, '未设安全码的用户不该能查状态')
+    assert.doesNotMatch(lastText(api), /42%/, '没建号的用户不该能查状态')
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
-test('免安全码：已经设过安全码的主人不会被悄悄改成免码（防绕过）', async () => {
+test('非主人会话锁定/过期后也会自动恢复：命令和模型工具都不再要求重新登录', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
   try {
     const api = await boot(dir, { users: USER })
-    await setupUser(api, OWNER)   // 主人自己设了安全码
+    await setupUser(api, USER)
+    api.__printer.status = { ok: true, stale: false, receivedAt: Date.now(), report: runningReport(), status: null }
+
+    // 正常查一次
+    await say(api, '/打印机 状态', { userId: USER, chatId: 'private:' + USER })
+    assert.match(lastText(api), /42%/)
+
+    // 锁定这个用户的内存会话 → 下一条命令应当自动恢复，而不是回「你还没有登录过」
+    const locked = await route(api, '/lock', { qq: USER })
+    assert.equal(locked.ok, true)
+    assert.equal(api.__vault.isUnlocked(USER), false, '锁定后内存里不该还有会话')
+    await say(api, '/打印机 状态', { userId: USER, chatId: 'private:' + USER })
+    assert.equal(api.__vault.isUnlocked(USER), true, '非主人发命令也应当自动恢复会话')
+    assert.match(lastText(api), /42%/)
+    assert.doesNotMatch(lastText(api), /还没有登录过/, '已经有账号的人不该被要求重新登录')
+
+    // 模型工具走同一条恢复路径
+    await route(api, '/lock', { qq: USER })
+    assert.equal(api.__vault.isUnlocked(USER), false)
+    const tool = toolsAt(api, { kind: 'private', userId: USER, chatId: 'private:' + USER })[0]
+    const res = await tool.execute({ action: 'status' })
+    assert.equal(res.ok, true, '工具也应当自动恢复会话：' + JSON.stringify(res))
+    assert.equal(api.__vault.isUnlocked(USER), true)
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test('/owner/nocode 是幂等的：已经有账号也不会重置数据', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
+  try {
+    const api = await boot(dir, { users: USER })
+    await setupUser(api, OWNER)
+    const before = api.__vault.listBindings(OWNER).length
     const r = await route(api, '/owner/nocode', {})
-    assert.equal(r.ok, false)
-    assert.equal(r.code, 'NEED_CODE')
-    assert.equal(api.__vault.isCodeless(OWNER), false)
+    assert.equal(r.ok, true)
+    assert.equal(api.__vault.listBindings(OWNER).length, before, '重复开启不能动已有数据')
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
@@ -1505,7 +1596,6 @@ test('审计接口：操作者给完整 QQ（不打码），且仍然不含任�
   try {
     const api = await boot(dir, { users: USER })
     await setupUser(api, USER)
-    await loginCloud(api, USER)
     // 造一条能看出操作者的记录（解锁会写一条）
     await route(api, '/lock', { qq: USER })
     await route(api, '/unlock', { qq: USER, code: SECRET })
@@ -1527,20 +1617,22 @@ test('审计接口：操作者给完整 QQ（不打码），且仍然不含任�
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
-test('/owner/unlock：错码给 BAD_CODE，对的码返回 until + unlockDays', async () => {
+test('/owner/unlock：没有安全码了，只要账号在就直接给 until + unlockDays', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
   try {
     const api = await boot(dir, { unlockDays: 3 })
     await setupUser(api, OWNER)
     await route(api, '/owner/lock', {})
-    const bad = await route(api, '/owner/unlock', { code: 'wrong-code' })
-    assert.equal(bad.ok, false)
-    assert.equal(bad.code, 'BAD_CODE')
-    assert.match(bad.message, /安全码不对/)
-    const good = await route(api, '/owner/unlock', { code: SECRET })
+    // 锁过之后不再需要任何安全码：直接恢复正常会话
+    const good = await route(api, '/owner/unlock', {})
     assert.equal(good.ok, true, JSON.stringify(good))
     assert.equal(good.unlockDays, 3, '按设置里的天数返回')
     assert.ok(good.until > Date.now())
     assert.equal(JSON.stringify(good).includes(SECRET), false, '返回里不能回显安全码')
+    // 没有账号时给 NO_USER 而不是假装成功
+    const empty = await boot(await mkdtemp(path.join(os.tmpdir(), 'bambu-int-')), {})
+    const none = await route(empty, '/owner/unlock', {})
+    assert.equal(none.ok, false)
+    assert.equal(none.code, 'NO_USER')
   } finally { await rm(dir, { recursive: true, force: true }) }
 })

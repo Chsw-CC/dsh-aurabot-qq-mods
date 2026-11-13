@@ -24,8 +24,7 @@
 import { chmod, mkdir, open as openFile, readFile, rename, stat, appendFile, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import {
-  checkCodeStrength, clearBuffer, CryptoError, deriveKey, maskSecret, newSalt,
-  normalizeCode, open, randomBytes, sealJson, unwrapKey, wrapKey
+  clearBuffer, CryptoError, maskSecret, open, randomBytes, sealJson, unwrapKey, wrapKey
 } from './crypto.mjs'
 
 /** 授权范围 */
@@ -189,22 +188,12 @@ function readPrefs (value) {
 
 /** 空安全库。 */
 function emptyVault () {
-  return { v: 1, users: {}, attempts: {} }
+  return { v: 1, users: {} }
 }
 
 /** 空授权库。 */
 function emptyGrants () {
   return { v: 1, grants: [] }
-}
-
-/**
- * KDF 包装：默认 scrypt(安全码, salt)，测试可以注入更轻的参数。
- * 返回 async (code, salt) -> Buffer(32)。
- */
-function makeKdf (custom) {
-  if (typeof custom === 'function') return custom
-  const params = isPlainObject(custom) ? custom : null
-  return async (code, salt) => deriveKey(code, salt, params || {})
 }
 
 export class Vault {
@@ -225,7 +214,6 @@ export class Vault {
     this.now = typeof options.now === 'function' ? options.now : Date.now
     this.lockMinutes = clampSoft(options.lockMinutes, DEFAULT_LOCK_MINUTES, MIN_LOCK_MINUTES, MAX_LOCK_MINUTES)
     this.maxBindings = Math.max(1, Math.floor(Number(options.maxBindings) || 5))
-    this.kdf = makeKdf(options.kdf)
 
     this.db = emptyVault()
     this.grantsDb = emptyGrants()
@@ -253,6 +241,8 @@ export class Vault {
     this.#normalizeDb()
     this.auditRows = await this.#readAudit()
     this.loaded = true
+    // 没有安全码了：能解开的记录在加载时就预热会话，同步读取路径才不用到处 await。
+    await this.#warmAll()
     this.#logInfo('已加载：用户 ' + Object.keys(this.db.users).length + ' 个，授权 ' + this.grantsDb.grants.length + ' 条')
     return { ok: true, users: Object.keys(this.db.users).length, grants: this.grantsDb.grants.length }
   }
@@ -311,7 +301,6 @@ export class Vault {
 
   #normalizeDb () {
     if (!isPlainObject(this.db.users)) this.db.users = {}
-    if (!isPlainObject(this.db.attempts)) this.db.attempts = {}
     this.db.v = 1
     for (const [qq, rec] of Object.entries(this.db.users)) {
       if (!isPlainObject(rec)) throw new VaultError('BAD_FILE', '用户记录损坏：' + qq)
@@ -321,12 +310,6 @@ export class Vault {
       rec.createdAt = Number(rec.createdAt) || 0
       rec.updatedAt = Number(rec.updatedAt) || 0
       rec.lastSeenAt = Number(rec.lastSeenAt) || 0
-    }
-    for (const [qq, att] of Object.entries(this.db.attempts)) {
-      this.db.attempts[qq] = {
-        fails: Math.max(0, Math.floor(Number(att && att.fails) || 0)),
-        lockedUntil: Math.max(0, Number(att && att.lockedUntil) || 0)
-      }
     }
     if (!Array.isArray(this.grantsDb.grants)) this.grantsDb.grants = []
     this.grantsDb.v = 1
@@ -444,7 +427,6 @@ export class Vault {
       const rec = this.db.users[qq]
       const list = rec.meta && Array.isArray(rec.meta.bindings) ? rec.meta.bindings : []
       const printers = list.reduce((sum, b) => sum + (Array.isArray(b.printers) ? b.printers.length : 0), 0)
-      const att = this.db.attempts[qq]
       return {
         qq,
         createdAt: rec.createdAt,
@@ -453,7 +435,7 @@ export class Vault {
         bindings: list.length,
         printers,
         unlocked: this.isUnlocked(qq),
-        lockedUntil: att && att.lockedUntil > now ? att.lockedUntil : 0
+        lockedUntil: 0
       }
     })
   }
@@ -474,6 +456,31 @@ export class Vault {
 
   #liveSessionQQs () {
     return [...this.sessions.keys()].filter((qq) => !!this.#liveSession(qq))
+  }
+
+  /**
+   * 预热：把本机主密钥能解开的记录解一次放进会话（启动时跑）。
+   * 单条失败不影响别人（host-key 被换过、或那条记录被外部改坏）。
+   */
+  async #warmAll () {
+    const until = this.now() + this.lockMinutes * 60000
+    for (const [qq, rec] of Object.entries(this.db.users)) {
+      if (!rec) continue
+      try {
+        const kek = await this.#hostKek()
+        let dek
+        try {
+          dek = unwrapKey(kek, rec.wrapped, userAad(qq))
+        } finally {
+          clearBuffer(kek)
+        }
+        const previous = this.sessions.get(qq)
+        if (previous) clearBuffer(previous.dek)
+        this.sessions.set(qq, { dek, until })
+      } catch {
+        this.#logWarn('预热失败，跳过：' + qq)
+      }
+    }
   }
 
   isUnlocked (qq) {
@@ -570,13 +577,14 @@ export class Vault {
    * 拿得到这个目录的人就能解开免码账号的秘密 —— 这是「免安全码」的必然代价，不是疏漏。
    */
   async #hostKek () {
-    if (this._hostKey) return this._hostKey
+    // 返回副本：调用方普遍 clearBuffer(kek)，直接交出内部缓存会把主密钥清零。
+    if (this._hostKey) return Buffer.from(this._hostKey)
     try {
       const buf = await readFile(this.files.hostKey)
       if (Buffer.isBuffer(buf) && buf.length === 32) {
         this._hostKey = buf
         await chmod(this.files.hostKey, 0o600).catch(() => {})
-        return buf
+        return Buffer.from(buf)
       }
     } catch (error) {
       if (!error || error.code !== 'ENOENT') throw new VaultError('BAD_FILE', '读取本机主密钥失败：' + ((error && error.message) || error))
@@ -593,70 +601,44 @@ export class Vault {
     await rename(tmp, this.files.hostKey)
     await chmod(this.files.hostKey, 0o600).catch(() => {})
     this._hostKey = fresh
-    return fresh
+    return Buffer.from(fresh)
   }
 
-  #deriveKek (code, saltB64) {
-    const salt = Buffer.from(String(saltB64 || ''), 'base64')
-    if (salt.length < 8) return Promise.reject(new VaultError('BAD_FILE', '用户记录里的盐损坏'))
-    return this.kdf(normalizeCode(code), salt)
-  }
 
-  #failAttempt (qq) {
-    const now = this.now()
-    const current = this.db.attempts[qq] || { fails: 0, lockedUntil: 0 }
-    const fails = Math.max(0, Number(current.fails) || 0) + 1
-    // 只在 5 的倍数上锁：第 5/15/20… 次 15 分钟，第 10/20/30… 次 60 分钟。
-    // 不在每次失败都重新上锁，否则用户会被 15 分钟无限循环卡死、永远到不了第 10 次。
-    let lockedUntil = 0
-    if (fails % 5 === 0) {
-      const tier = fails % 10 === 0 ? 60 : 15
-      lockedUntil = now + tier * 60000
+  /** 这条记录的 DEK 能不能用给定的主密钥解开（解不开 = 老版本遗留，需要重建）。 */
+  #canDecrypt (kek, key, rec) {
+    if (!kek || !rec || !rec.wrapped) return false
+    try {
+      unwrapKey(kek, rec.wrapped, userAad(key))
+      return true
+    } catch {
+      return false
     }
-    this.db.attempts[qq] = { fails, lockedUntil }
-    return { fails, lockedUntil }
   }
 
-  #clearFails (qq) {
-    this.db.attempts[qq] = { fails: 0, lockedUntil: 0 }
-  }
+  // ------------------------------------------------------------ 注册 / 解锁
 
-  #assertNotLockedOut (qq) {
-    const att = this.db.attempts[qq]
-    if (!att || !(att.lockedUntil > this.now())) return
-    const minutes = Math.max(1, Math.ceil((att.lockedUntil - this.now()) / 60000))
-    throw new VaultError('LOCKED_OUT', '尝试次数过多，请 ' + minutes + ' 分钟后再试')
-  }
-
-  #badCodeError (fails, lockedUntil) {
-    const now = this.now()
-    if (lockedUntil && lockedUntil > now) {
-      const minutes = Math.max(1, Math.ceil((lockedUntil - now) / 60000))
-      return new VaultError('LOCKED_OUT', '尝试次数过多，请 ' + minutes + ' 分钟后再试')
-    }
-    const left = fails < 5 ? 5 - fails : null
-    return new VaultError('BAD_CODE', left ? '安全码不正确（再错 ' + left + ' 次将锁定 15 分钟）' : '安全码不正确')
-  }
-
-  // ------------------------------------------------------------ 注册 / 解锁 / 改码
-
-  async register (qq, code) {
+  /**
+   * 建号（幂等）。
+   *
+   * 顺带处理一种历史状态：老版本用安全码加密的记录，现在没有安全码已经解不开了。
+   * 遇到这种记录就**替换**成一条新记录（等于让用户重新登录一次），
+   * 而不是把人卡在「有记录但永远解不开」的死路上。
+   */
+  async register (qq) {
     this.#assertLoaded()
     const key = assertQQ(qq)
-    const strength = checkCodeStrength(code)
-    if (!strength.ok) throw new VaultError('WEAK_CODE', strength.reason)
-    const normalized = normalizeCode(code)
-    await this.#enqueue(async () => {
-      if (this.#record(key)) throw new VaultError('EXISTS')
+    const existed = await this.#enqueue(async () => {
       const now = this.now()
-      const salt = newSalt()
       const dek = randomBytes(32)
       let kek = null
       try {
-        kek = await this.kdf(normalized, salt)
+        kek = await this.#hostKek()
+        const existing = this.#record(key)
+        // 已有且解得开 → 幂等返回；解不开（老版本遗留）→ 覆盖重建
+        if (existing && this.#canDecrypt(kek, key, existing)) return true
         this.db.users[key] = {
           v: 1,
-          salt: salt.toString('base64'),
           wrapped: wrapKey(kek, dek, userAad(key)),
           payload: sealJson(dek, { v: 1, bindings: [] }, userAad(key)),
           meta: this.#metaFromPayload([]),
@@ -665,76 +647,44 @@ export class Vault {
           lastSeenAt: 0,
           prefs: defaultPrefs()
         }
-        this.#clearFails(key)
         await this.#writeVaultNow()
-      } finally {
-        clearBuffer(kek)
+        // 建号即可用：把刚生成的 DEK 直接放进会话，调用方不用再 unlock 一次
+        const previous = this.sessions.get(key)
+        if (previous) clearBuffer(previous.dek)
+        this.sessions.set(key, { dek, until: now + this.lockMinutes * 60000 })
+        return false
+      } catch (error) {
         clearBuffer(dek)
+        throw error
+      } finally {
+        if (kek) clearBuffer(kek)
       }
     })
-    await this.audit({ actor: key, action: 'register', ok: true, note: '设置安全码' })
-    return { ok: true }
+    return { ok: true, existed }
   }
 
-  /**
-   * 「免安全码」注册：主人的绑定直接用机器主密钥包 DEK，不需要用户记任何东西。
-   *
-   * record 里多一个 mode 字段：
-   *   mode: 'code'（默认，用安全码派生 KEK）
-   *   mode: 'host'（免码，用 host-key.bin 当 KEK）
-   * 两种都可以共存，vault 里谁的秘密还是各自一把 DEK。
-   */
-  async registerWithoutCode (qq) {
-    this.#assertLoaded()
-    const key = assertQQ(qq)
-    await this.#enqueue(async () => {
-      if (this.#record(key)) throw new VaultError('EXISTS')
-      const now = this.now()
-      const dek = randomBytes(32)
-      const kek = await this.#hostKek()
-      try {
-        this.db.users[key] = {
-          v: 1,
-          mode: 'host',
-          // 免码账号没有用户盐（不用 KDF），留空串保持记录形状一致
-          salt: '',
-          wrapped: wrapKey(kek, dek, userAad(key)),
-          payload: sealJson(dek, { v: 1, bindings: [] }, userAad(key)),
-          meta: this.#metaFromPayload([]),
-          createdAt: now,
-          updatedAt: now,
-          lastSeenAt: 0,
-          prefs: defaultPrefs()
-        }
-        this.#clearFails(key)
-        await this.#writeVaultNow()
-      } finally {
-        clearBuffer(dek)
-      }
-    })
-    await this.audit({ actor: key, action: 'register', ok: true, note: '免安全码（本机主密钥）' })
-    return { ok: true, mode: 'host' }
-  }
 
   /**
-   * 免码账号的「解锁」：用机器主密钥解出 DEK 放进会话。
-   * 不需要、也不接受用户输入；对 mode !== 'host' 的账号直接拒绝（不能绕过安全码）。
+   * 「解锁」= 把这个用户的 DEK 解进内存会话。没有用户输入：钥匙在本机 host-key.bin。
+   * 会话只决定 DEK 缓存多久，以及授权路径「所有者数据现解现用」的语义。
    */
-  async unlockWithoutCode (qq) {
+  async unlock (qq) {
     this.#assertLoaded()
     const key = assertQQ(qq)
-    const outcome = await this.#enqueue(async () => {
+    return this.#enqueue(async () => {
       const rec = this.#record(key)
       if (!rec) throw new VaultError('NO_USER')
-      if (rec.mode !== 'host') throw new VaultError('NEED_CODE', '这个账号设了安全码，必须用安全码解锁')
-      this.#assertNotLockedOut(key)
-      const kek = await this.#hostKek()
-      let dek
+      let dek = null
+      let kek = null
       try {
+        kek = await this.#hostKek()
         dek = unwrapKey(kek, rec.wrapped, userAad(key))
       } catch {
         throw new VaultError('BAD_FILE', '本机主密钥解不开这个账号的数据（host-key.bin 可能被换过）')
+      } finally {
+        if (kek) clearBuffer(kek)
       }
+
       const until = this.now() + this.lockMinutes * 60000
       const previous = this.sessions.get(key)
       if (previous) clearBuffer(previous.dek)
@@ -743,116 +693,8 @@ export class Vault {
       await this.#writeVaultNow()
       return { ok: true, until }
     })
-    await this.audit({ actor: key, action: 'unlock', ok: true, note: '免安全码解锁' })
-    return outcome
   }
 
-  /** 这个账号是不是免安全码的。 */
-  isCodeless (qq) {
-    if (!this.loaded) return false
-    const rec = this.#record(qq == null ? '' : String(qq).trim())
-    return Boolean(rec && rec.mode === 'host')
-  }
-
-  async unlock (qq, code) {
-    this.#assertLoaded()
-    const key = assertQQ(qq)
-    const normalized = normalizeCode(code)
-    const outcome = await this.#enqueue(async () => {
-      const rec = this.#record(key)
-      if (!rec) throw new VaultError('NO_USER')
-      this.#assertNotLockedOut(key)
-
-      if (!normalized) {
-        const failed = this.#failAttempt(key)
-        await this.#writeVaultNow()
-        return { ok: false, fails: failed.fails, lockedUntil: failed.lockedUntil }
-      }
-
-      let kek = null
-      let dek = null
-      try {
-        kek = await this.#deriveKek(normalized, rec.salt)
-        dek = unwrapKey(kek, rec.wrapped, userAad(key))
-      } catch {
-        const failed = this.#failAttempt(key)
-        await this.#writeVaultNow()
-        return { ok: false, fails: failed.fails, lockedUntil: failed.lockedUntil }
-      } finally {
-        clearBuffer(kek)
-      }
-
-      const until = this.now() + this.lockMinutes * 60000
-      const previous = this.sessions.get(key)
-      if (previous) clearBuffer(previous.dek)
-      this.sessions.set(key, { dek, until })
-      this.#clearFails(key)
-      rec.lastSeenAt = this.now()
-      await this.#writeVaultNow()
-      return { ok: true, until }
-    })
-
-    if (!outcome.ok) {
-      await this.audit({
-        actor: key,
-        action: 'unlock',
-        ok: false,
-        note: outcome.lockedUntil > this.now() ? '密码错误，已锁定' : '安全码错误（第 ' + outcome.fails + ' 次）'
-      })
-      throw this.#badCodeError(outcome.fails, outcome.lockedUntil)
-    }
-    await this.audit({ actor: key, action: 'unlock', ok: true, note: '解锁 ' + this.lockMinutes + ' 分钟' })
-    return { ok: true, until: outcome.until }
-  }
-
-  async changeCode (qq, oldCode, newCode) {
-    this.#assertLoaded()
-    const key = assertQQ(qq)
-    const strength = checkCodeStrength(newCode)
-    if (!strength.ok) throw new VaultError('WEAK_CODE', strength.reason)
-    const oldNormalized = normalizeCode(oldCode)
-    const newNormalized = normalizeCode(newCode)
-
-    const outcome = await this.#enqueue(async () => {
-      const rec = this.#mustRecord(key)
-      this.#assertNotLockedOut(key)
-      let kekOld = null
-      let dek = null
-      try {
-        kekOld = await this.#deriveKek(oldNormalized, rec.salt)
-        dek = unwrapKey(kekOld, rec.wrapped, userAad(key))
-      } catch {
-        const failed = this.#failAttempt(key)
-        await this.#writeVaultNow()
-        return { ok: false, fails: failed.fails, lockedUntil: failed.lockedUntil }
-      } finally {
-        clearBuffer(kekOld)
-      }
-      let kekNew = null
-      try {
-        // 只重新包 DEK，payload 不动（不需要重加密全部绑定）
-        const salt = newSalt()
-        kekNew = await this.kdf(newNormalized, salt)
-        rec.salt = salt.toString('base64')
-        rec.wrapped = wrapKey(kekNew, dek, userAad(key))
-        rec.updatedAt = this.now()
-        this.#clearFails(key)
-        await this.#writeVaultNow()
-      } finally {
-        clearBuffer(kekNew)
-        clearBuffer(dek)
-      }
-      return { ok: true }
-    })
-
-    if (!outcome.ok) {
-      await this.audit({ actor: key, action: 'change-code', ok: false, note: '旧安全码错误' })
-      throw this.#badCodeError(outcome.fails, outcome.lockedUntil)
-    }
-    this.lock(key) // 改码后旧会话作废，需要用新码重新解锁
-    await this.audit({ actor: key, action: 'change-code', ok: true, note: '安全码已更换，旧会话已清除' })
-    return { ok: true }
-  }
 
   async wipeUser (qq) {
     this.#assertLoaded()
@@ -860,7 +702,6 @@ export class Vault {
     const removed = await this.#enqueue(async () => {
       if (!this.#record(key)) throw new VaultError('NO_USER')
       delete this.db.users[key]
-      delete this.db.attempts[key]
       const before = this.grantsDb.grants.length
       this.grantsDb.grants = this.grantsDb.grants.filter(
         (grant) => String(grant.ownerQQ) !== key && String(grant.granteeQQ) !== key
@@ -965,6 +806,9 @@ export class Vault {
   async addBinding (qq, input = {}) {
     this.#assertLoaded()
     const key = assertQQ(qq)
+    // 没有安全码之后，「有没有会话」只是缓存状态：过期或被 lock 过就自动续上，
+    // 不该让用户在写操作时撞到 LOCKED。
+    if (!this.#liveSession(key)) await this.unlock(key)
     if (!isPlainObject(input)) throw new VaultError('BAD_INPUT')
     const prep = this.#prepareBinding(input, this.#bindingCount(key))
     const now = this.now()
@@ -1433,7 +1277,7 @@ export class Vault {
       payload = this.#payloadFor(owner).payload
     } catch (error) {
       if (error instanceof VaultError && error.code === 'LOCKED') {
-        throw new VaultError('OWNER_LOCKED', '这台打印机的主人当前没解锁：请让他私聊发「/打印机 解锁」后再试')
+        throw new VaultError('OWNER_LOCKED', '这台打印机的主人现在没解锁，凭据取不出来：让对方私聊随便发一条打印机命令（比如「/打印机 状态」），密钥会自动恢复，再试一次就行。')
       }
       throw error
     }

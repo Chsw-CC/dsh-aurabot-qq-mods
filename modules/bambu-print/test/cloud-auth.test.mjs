@@ -88,12 +88,37 @@ test('验证码：先发码再提交，失败码 1/2 有对应错误', async () 
   await assert.rejects(() => session.submitCode(''), (e) => e.code === 'NO_CODE')
 })
 
-test('验证码：手机号走短信接口', async () => {
+test('验证码：手机号必须走中国站 /api/v1/.../sendsmscode（否则 400）', async () => {
   const { impl, calls } = fakeFetch([{ match: '/sendsmscode', body: {} }])
   const session = createCloudLogin({ account: '13800138000', password: PASSWORD, fetchImpl: impl })
   const r = await session.requestCode()
   assert.equal(r.channel, 'sms')
-  assert.match(calls[0].url, /sendsmscode$/)
+  // 完整 URL 断言：以前只断言 endsWith，所以「走错站 + 少一层 /api」的 bug 测不出来。
+  assert.equal(calls[0].url, 'https://api.bambulab.cn/api/v1/user-service/user/sendsmscode')
+  assert.doesNotMatch(calls[0].url, /api\.bambulab\.com/, '短信验证码不该打国际站')
+})
+
+test('验证码：手机号即使传了 us，也要用中国站（发码和换 token 同站）', async () => {
+  const { impl, calls } = fakeFetch([
+    { match: '/sendsmscode', body: {} },
+    { match: '/login', body: { accessToken: TOKEN } },
+  ])
+  const session = createCloudLogin({ account: '13800138000', password: PASSWORD, region: 'us', fetchImpl: impl })
+  await session.requestCode()
+  assert.equal(calls[0].url, 'https://api.bambulab.cn/api/v1/user-service/user/sendsmscode')
+  // 换 token 也在同一站，否则发码成功、提交却失败
+  const ok = await session.submitCode('000000')
+  assert.equal(ok.ok, true)
+  assert.equal(ok.region, 'cn', '手机号账号的 region 应当是 cn')
+  assert.match(calls[1].url, /^https:\/\/api\.bambulab\.cn\//, '换 token 也要走中国站：' + calls[1].url)
+})
+
+test('验证码：邮箱仍按区域走，不受手机号规则影响', async () => {
+  const { impl, calls } = fakeFetch([{ match: '/sendemail/code', body: {} }])
+  const session = createCloudLogin({ account: 'me@example.com', password: PASSWORD, region: 'us', fetchImpl: impl })
+  const r = await session.requestCode()
+  assert.equal(r.channel, 'email')
+  assert.equal(calls[0].url, 'https://api.bambulab.com/v1/user-service/user/sendemail/code')
 })
 
 test('两步验证：CSRF + cookie + tfaKey，token 从 Set-Cookie 取', async () => {

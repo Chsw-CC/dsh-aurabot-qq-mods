@@ -1,57 +1,164 @@
-# bambu-print 内部架构与接口契约
+# 拓竹打印机：代码是怎么搭起来的
 
-模块 id：`bambu-print`，中文名「拓竹打印机」。Aurabot 用户模块（api 1，minPluginVersion 1.2.0）。
-只用 Node 内置模块（node:net / node:tls / node:crypto / node:fs），**不允许 npm 依赖**。
-用户可见文字一律中文。仓库根：`F:/dsh-aurabot-qq-mods`。
+给改代码的人看的内部说明。想装、想用，先看 [README.md](../README.md)；登录网页怎么走，看 [ENROLL.md](ENROLL.md)；信封格式，看 [ENVELOPE.md](ENVELOPE.md)。
 
-本文件是协议层（lib/mqtt.mjs、printer.mjs、camera.mjs、cloud.mjs、status.mjs）与安全层
-（lib/crypto.mjs、vault.mjs、policy.mjs）之间的契约。改动导出签名必须先改本文件。
+模块声明在 [module.json](../module.json)：id 是 `bambu-print`，名字「拓竹」，版本 1.1.1，api 1，minPluginVersion 1.2.0，能力是 network / filesystem / process / plugin-config / plugin-internals。代码只 import `node:` 内置模块和仓库里的相对路径，没有第三方依赖。
 
-## 局域网 TLS：打印机自签名证书
+三句话先记住：
 
-拓竹打印机的 8883（MQTT）和 6000（摄像头）都是**打印机自己生成的自签名证书**：
+1. **数据从哪来**：QQ 消息进 `index.mjs`，它按需去连打印机（云端 MQTT，或局域网 8883 / 6000 / 322 三个端口）；云端账号登录走 `lib/cloud-auth.mjs`。
+2. **权限在哪判**：`lib/policy.mjs` 算「这个人能不能做这类事」，`index.mjs` 的 `gate()`、`ensureControl()`、`ensurePhoto()` 决定「这一次给不给」。
+3. **秘密怎么存**：每个 QQ 一把随机 32 字节的 DEK（数据密钥），DEK 由本机的 `host-key.bin` 包着；token 和访问码只在进程内存里出现，落盘的是密文。
 
-- 没有公共 CA 链，证书里的 CN 是序列号而不是 IP —— 默认校验必然失败；
-- 直接 `rejectUnauthorized: false` 等于不校验，同网段任何人都能中间人冒充打印机，访问码就交出去了。
+## 0. 安全底线（改任何文件之前先看）
 
-所以走 **TOFU（首次连接自动固定）**：
+这五条不是建议，是写在代码和测试里的规则：
 
-| 阶段 | 行为 |
-|---|---|
-| 第一次连接 | `learnOnly` 只做 TLS 握手，拿到对端证书立刻断开，**一个字节的 MQTT 都不发**（访问码不出门） |
-| 落盘 | 证书 PEM + SHA-256 指纹经 `vault.setPrinterCert()` 与访问码一起加密存在 payload 里 |
-| 之后每次连接 | 把该证书当 `ca` 锚点，`rejectUnauthorized: true`，指纹同时固定校验 |
-| 证书变了 | `CERT_CHANGED` 拒绝覆盖，提示「可能重刷固件，也可能有人在冒充」，主人确认后 `/打印机 证书 信任` 重新固定 |
+1. 明文秘密只活在局部变量里。不进日志、不进返回值、不进面板、不进审计备注、不进命令行参数。
+2. 落盘只有密文。数据目录 0700，文件 0600，写入先写临时文件再改名，避免写一半。
+3. 没确认过对端身份，就不发凭据。局域网证书没固定过，宁可报错也不「先连上试试」。
+4. 拿不到数据就说「不知道」。缺字段写 null 或「未知」，不用 0 和假数据顶上去。
+5. 群聊默认脱敏。要显示文件名，得三个条件同时成立（见第 5 节）。
 
-摄像头（6000）单独一个槽位（`certs.camera`），第一次拍照时同样先学后用。
+## 1. 一条消息的旅程
 
-证书相关命令**只给主人**：局域网接口本身就只有主人能用，其他人走云端不需要处理本地证书。
-非主人发「/打印机 证书」会被告知「只提供给主人」，帮助文本里也不会出现这几行；
-被授权的打印机如果证书变了，提示语会指向**绑定者**（他才能重新固定），而不是受权人。
+一条「/打印机 状态」大概这样走：
 
-`lib/tls-cert.mjs` 另外提供纯 Node 的自签名证书生成器（不依赖 openssl），
-生成的证书带 `CA:TRUE` + SAN + `digitalSignature/keyCertSign`，
-`openssl verify` 能通过、Node 端 `authorized=true`，可作为 TLS 客户端证书材料使用。
+```
+QQ 消息
+  │
+  ▼
+index.mjs   api.on('message') → handleCommand()
+  │  ① 总开关关着？回一句，结束
+  │  ② gate()：私聊/群聊、白名单、多用户模式
+  │  ③ 找打印机：vault.printers()，多台就反问
+  ▼
+endpointOf() 选接口：云端还是局域网
+  │
+  ▼
+printer.mjs → mqtt.mjs（8883）或云端区域主机
+  │  ④ 局域网第一次连接：ensureCert() 只握手读证书
+  ▼
+normalizeStatus() → formatStatus()：中文、行数固定、按需脱敏
+  │
+  ▼
+audit() 记一行 → api.reply() / 合并转发 / 图片
+```
 
-## 0. 安全底线（所有文件都必须遵守）
+面板和网页走同一条骨架：路由进来，先 `ready()`，再判主人和会话，再调保险箱或协议层，最后只回元数据。
 
-1. **明文 token/访问码/安全码永不落盘、永不写日志、永不出现在返回给聊天或面板的字符串里。**
-   宁可少一个功能，也不要把秘密交给调用方。日志里只能出现 `maskSecret()` 后的值。
-2. 每个 QQ 用户的秘密独立加密。密钥只由该用户自己的安全码经 scrypt 派生；不引入机器主密钥，
-   否则拿到整份数据目录就能解密。任何时候都拿不到别人的秘密。
-3. 解密后的秘密只存在进程内存（vault 的解锁会话 / 授权会话），到期、锁定、重置、模块卸载即清零。
-4. 私聊里用户发来的安全码、访问码要 `api.onebot('delete_msg', ...)` 尝试撤回（由 index 做），
-   失败就提示用户手动撤回；日志只记「已收到，已脱敏」。
-5. 面板接口只返回元数据（QQ 打码、绑定数、打印机数、解锁状态、授权、审计摘要），
-   绝不返回 secret。没有任何「导出/查看 token」接口。
+## 2. 四块，各自解决一个麻烦
 
-## 1. 数据文件（api.dataDir()）
+### 2.1 准入与权限：谁能在哪台机器上做什么
 
-- `vault.json`：用户记录 + 加密后的绑定向导（见下）。权限 0600，目录 0700，原子写（tmp+rename）。
-- `grants.json`：授权记录（谁授权给谁、哪几个绑定、范围、到期；**不含秘密，也没有可解密的密文**）。
-- `audit.jsonl`：一行一条 JSON，超 2MB 轮转为 `audit.1.jsonl`。
+**为什么需要它**：机器人一开口就代表机器。不先判身份，任何陌生人都能用别人绑定的打印机，或者把访问码骗出来。
 
-### vault.json 结构
+入口只有一个 `index.mjs`。它在 `setup(api)` 里读设置、建保险箱、建信封服务、建打印机管理器，然后注册命令、模型工具和面板路由。
+
+- **名单不自己存**。`hostPrivateAllow()` 直接读宿主的 `cfg.allow.private`，再加上 `ownerQQ`；`hostGroupAllow()` 读 `cfg.allow.groups`。这两份组成 `settings.users` / `settings.groups` 交给 policy，所以不会出现「宿主放行、插件拦下」的两套名单。
+- **身份只有三种**：主人、白名单用户、路人。没有「管理员」这一级。想让别人用你的打印机，走授权，不要提权。
+- **私聊**：主人或名单里的人。**群聊**：群在名单里，且发起人自己有绑定或有效授权。
+- **群模式** `groupMode` 三档：`off` 不响应、`status` 只读、`control` 允许控制。绑定者可以在私聊用 `/打印机 群权限` 给自己的打印机再收紧或放宽，判定顺序是「绑定者的偏好 > 全局设置」。控制永远只作用于发起人自己的（或别人授权给他的）打印机，不会落到第三个人头上。
+- **敏感操作只走私聊**：登录、绑定、解绑、授权、撤销、接口、群权限、证书、锁定、验证码。群里发会先在 `handleCommand` 顶部被拦掉，回「这个操作只能在私聊里做」。
+- **两根刹车**：同一个人 60 秒 20 条（只防刷屏，不参与安全判定）；停止打印要 1 分钟内再发一次带「确认」的，代码里用 `pendingStop` 记着。
+- **多台要选**：选择结果按 `chatId` 记 `selectedTtlMinutes` 分钟（默认 10，可调 1~60）。
+- **两个开关的差别**：`active` 关掉，连帮助都不回；`multiUser` 关掉，只服务主人，其他人（包括已经绑定、拿着授权的）一律静默不理，理由是别让人知道这儿有个只服务主人的机器人。
+
+### 2.2 保险箱：秘密只在这里进出
+
+**为什么需要它**：聊天记录是长期明文，秘密不能待在那里；但机器人重启后还得能读，所以只能「落盘即密文，用时才解开」。
+
+- 每个 QQ 在 `vault.json` 里一条记录，里面有两个盒子：
+  - `wrapped`：这把 DEK 被 `host-key.bin` 包起来的密文（AES-256-GCM，AAD 是 `user:<qq>`）。
+  - `payload`：绑定数据（含 token、访问码、证书 PEM）被 DEK 加密的密文，AAD 一样。
+  - 另外有一份 `meta` 明文镜像，只放 id、名称、模式、序列号、IP、名字、型号，用来在会话没开的时候列清单。它永远不含秘密。
+- `host-key.bin` 是 32 字节随机数，0600，第一次用到时生成，和 `vault.json` 放一起。它包所有人的 DEK。
+- **所以隔离靠代码，不靠密码学**：一把主机钥匙能解开所有人的记录。拿到整个数据目录的人，等于拿到所有人的凭据。这条要一直写在帮助第 2 页里，别删。
+- `sessions` 里只放 DEK 和到期时间，默认 7 天（`unlockDays`，可调 1~30 天）。`/打印机 锁定` 立刻清，扩展被卸载时（`api.onDispose`）也会清。
+- 启动时 `load()` 会调用 `#warmAll()`，把所有能解开的记录预热进会话；除此之外，聊天命令、选打印机的那条回复、模型工具在执行前都会 `ensureSession()` 再补一次。也就是说「解锁」只是一个缓存开关，不是身份验证。
+- **会话对所有账号一视同仁地自动续**：锁过、闲置到期之后，下一条聊天命令、下一条「第几台」、或者一次模型工具调用都会先把会话补回来，不会要求用户重新登录。还没收敛的是**面板 HTTP 路由**：它们不会自动补会话（`/status`、`/control`、`/photo` 需要调用方先 `/unlock` 或发一条命令），排查时要知道这个差别。
+- **授权（grant）**：`grants.json` 里只记「谁授权给谁、哪几个绑定、什么范围（`status` / `control` / `photo`）、到什么时候」，没有秘密，也没有能解出秘密的密钥。受权人操作时，用所有者的 DEK 现解现用，所以所有者必须处在一个有效会话里，否则报 `OWNER_LOCKED`。默认 30 分钟，最长 1440 分钟，随时能撤销，到期自动失效。
+- **审计**：`audit.jsonl` 一行一条，字段只有 `at / actor / action / ok / target / note`。`note` 会把换行压成空格、截到 160 字；token、访问码、文件名都不往里写。文件到 2MB 就改名成 `audit.1.jsonl`，只留一代；内存里最多保留最近 2000 条给面板读。
+- **登录信封的私钥**单独一份 `bbx-key.json`，用过的 `jti` 记在 `bbx-used.json`，细节见 [ENVELOPE.md](ENVELOPE.md)。
+
+密钥材料都在 `lib/crypto.mjs`：AES-256-GCM（12 字节 IV，16 字节 tag），scrypt 参数常量 `DEFAULT_KDF` 还在（N=32768、r=8、p=1）。但 `vault` 已经不再调用 `deriveKey()` / `checkCodeStrength()`；这两个函数只剩单元测试在覆盖，留着是为了不改导出。
+
+坏文件不会被悄悄清空：`load()` 遇到解析失败直接抛 `BAD_FILE`，让你去修，而不是把用户数据重置成空库。
+
+### 2.3 协议：怎么跟打印机说话
+
+**为什么需要它**：打印机不认 QQ 号，只认 token 或访问码；而它的局域网证书是自己签的，公共 CA 验不过。这一层负责把「用户身份」换成「对某个对端的凭据」，并且不把凭据交给不认识的对端。
+
+五条链路，保护方式不一样：
+
+| 链路 | 端口 | 对端 | 用什么凭据 | 怎么确认对端 |
+|---|---|---|---|---|
+| 云端 MQTT | 8883 | `us/eu/cn.mqtt.bambulab.com` | 用户名 `u_<uid>`，密码是 access token | 系统 CA + 主机名校验 |
+| 局域网 MQTT | 8883 | 打印机 IP | 用户名 `bblp`，密码是访问码 | 先学后固定（见第 3 节） |
+| 摄像头 MJPEG | 6000 | 打印机 IP | 80 字节认证包（里面是访问码） | 没有锚点就不抓 |
+| 摄像头 RTSPS | 322 | 打印机 IP | ffmpeg 从 stdin 读到的 concat 脚本（里面有 URL） | 启动 ffmpeg 之前先比对指纹 |
+| 云端画面 | TUTK | ThroughTek 的 P2P | 云端铸的 ttcode | 交给抓帧桥，细节见 [TUTK.md](TUTK.md) |
+
+- **云端登录** `lib/cloud-auth.mjs`：`POST /v1/user-service/user/login`。云端可能要求邮箱或短信验证码（短信只有中国站提供，路径多一层 `/api`），也可能要求两步验证（先 `GET /api/csrf`，再 `POST /api/sign-in/tfa`）。等验证码或两步验证的登录会话只在内存里留 5 分钟，密码只用于这一次登录。OAuth 注册的账号要先去 Bambu 手机 App 里设密码。
+- **区域** `lib/cloud.mjs`：`us` / `eu` 的 API 是 `https://api.bambulab.com`，`cn` 是 `https://api.bambulab.cn`；MQTT 主机分别是 `us.mqtt.bambulab.com` / `eu.mqtt.bambulab.com` / `cn.mqtt.bambulab.com`，端口都是 8883。两步验证走网页域名 `bambulab.com` / `bambulab.cn`。
+- **设备列表** `lib/cloud.mjs`：`GET /v1/iot-service/api/user/bind`，超时 12 秒；错误信息只报状态码，不回显 token。
+- **状态** `lib/status.mjs`：纯函数。`normalizeStatus()` 把 MQTT 上报的 JSON 归一成固定字段，字符串数字转 number，缺的一律 null；`formatStatus()` 负责排版，并用 `redactName` / `redactProject` 控制脱敏。
+- **命令** `lib/printer.mjs`：同一台打印机复用连接，状态缓存 3 秒，空闲 120 秒断开，命令回执最多等 2.5 秒（超时算发出去了但没回执）。gcode 一次不超过 2000 字符；速度 1~4；温度喷嘴上限 300、热床上限 120。
+- **MQTT 细节** `lib/mqtt.mjs`：keepalive 60 秒（每 30 秒发一次 PINGREQ），连接超时 8 秒，单个报文上限 4 MB。订阅 `device/<serial>/report`，往 `device/<serial>/request` 发命令；回执用 `sequence_id` 匹配。带凭据又没有锚点时，客户端在发 CONNECT 之前就抛 `INSECURE_CREDENTIALS`（只有 `learnOnly` 的读证书握手例外）；云端从不用锚点，只信系统 CA。
+- **命令负载** `printer.buildCommand()`：`pause` / `resume` / `stop`、`light`（`ledctrl` 的 `chamber_light`）、`speed`（`print_speed` 1~4）、`temperature`（`gcode_line` 发 `M140` / `M104`）、`gcode`、`home`（`G28`）、`pushall`。
+- **选接口** `endpointOf()`：非主人只能云端；主人按「自己的偏好 > `defaultInterface`」选，`auto` 是有云端凭据就云端；`ownerLocalAllowed=false` 时连主人也强制云端。被授权的打印机按「和绑定者同等」处理，否则主人绑的局域网打印机一授权出去就不能用。
+- **抓帧** `lib/camera.mjs`：6000 是「80 字节认证包 + 16 字节帧头 + JPEG」，只接受 JPEG，单帧上限 8MB；322 是 H.264，必须借本机 ffmpeg 截一帧（默认超时 20 秒，上层传 15 秒）。
+- **云端画面** `lib/tutk.mjs` + `lib/tutk-bridge.mjs`：先用 token 铸 ttcode，把 `bambu:///tutk?...` 写进 0600 临时文件（不放进命令行参数），交给 `assets/tutk-bridge` 里的小 C 程序；它运行时加载 BambuSource 库，H.264 再交给 ffmpeg。库可以通过面板下载，默认落在数据目录的 `bambusource/`。打洞失败时会走 ThroughTek 的公网中继，公开资料记作 :3478；这一条不在本仓库代码里，属于桥和厂商库的行为（未确认）。
+- **发现** `lib/discover.mjs`：往 `239.255.255.250:1990` 发 SSDP 探测，打印机在 UDP 2021 回包。只拿到序列号、IP、名字、型号、信号，访问码不会广播。
+
+### 2.4 界面：把结果变成一句话
+
+**为什么需要它**：同一个事实要在聊天、面板、网页三个地方出现，三处必须一个口径；否则用户看到的就是「按钮说一套、机器人做一套」。
+
+- **聊天**：`handleCommand()` 一条命令一个 `if`，参数解析很土但直白。帮助固定 6 页（主人多看第 7 页「局域网」），用合并转发一次发完；宿主不支持就退回分页纯文本。多台打印机也用合并转发列，回复编号照样能选。
+- **自然语言**：注册了一个 `bambu_printer` 工具，只在消息里明确提到打印机时才接管；工具不下发停止（停止必须本人用命令二次确认）。
+- **面板** `panel.js`：6 个页签，总览 / 登录信封 / 局域网绑定 / 设置 / 审计 / 帮助。设置页不自己维护表单规则，从 `/overview.rules` 读第 6 节那张表；改值只进草稿，落盘靠宿主页面底部的「保存设置」。
+- **面板接口**：清单和错误码见 [ROUTES.md](ROUTES.md)。共同约定是只回元数据：QQ 打码、token 掩码、序列号打码、IP 打码；只有「操作者是谁」给完整 QQ，因为面板跑在本机主人自己的浏览器里，打码了反而认不出人。没有导出 token / 访问码的接口。
+- **登录网页** `assets/enroll/`：纯静态文件，只能用公钥加密。流程、可信边界见 [ENROLL.md](ENROLL.md)。
+- 回复有三种形态：字符串、`{ image }`、`{ forwardNodes, fallback }`。
+
+## 3. 局域网证书：先学后固定
+
+打印机的 8883 / 6000 / 322 用的都是它自己生成的证书，CN 是序列号不是 IP，公共 CA 链不存在。直接关掉校验（`rejectUnauthorized: false`）等于不校验，同网段任何人都能冒充打印机，访问码就交出去了。
+
+所以走 TOFU，意思是「第一次连接时记住打印机这张证书，以后只认这一张」。三个端口分开做，因为端口不同、证书也可能不同：
+
+| 端口 | 用途 | 第一次怎么学 | 以后怎么校验 | 没有固定记录时 |
+|---|---|---|---|---|
+| 8883 | MQTT 状态与控制 | `learnOnly` 只做 TLS 握手，拿到证书立刻断开，一个字节的 MQTT 都不发 | 拿这张证书当 `ca` 锚点，`rejectUnauthorized: true`，同时核对指纹 | 不建连接、不发访问码（`CERT_UNPINNED`） |
+| 6000 | A1 / A1 mini / P1P / P1S 的 MJPEG 画面 | 同样只握手读证书 | 锚点严格校验，通过后才发 80 字节认证包 | 直接不抓拍（`CAMERA_UNPINNED`） |
+| 322 | X1 系列 / H2 / H2D / P2S / X2D 的 RTSPS 画面 | 同样只握手读证书 | ffmpeg 不认自签名 CA 也没有 pin，所以**在启动 ffmpeg 之前**自己握手、比对指纹 | 不启动 ffmpeg（`RTSPS_UNPINNED`），访问码连 stdin 都没进过 |
+
+几个容易踩的点：
+
+- 证书存在每个用户保险箱里：`printer.certs.mqtt` / `certs.camera` / `certs.rtsps`，每个槽放 PEM、SHA-256 指纹、subject、到期时间、固定时间。**三个槽不能混**：322 的证书和 6000 的不是同一张，以前共用一个槽会把控制面的锚点覆盖掉。
+- 证书永远记在**绑定者**名下（`printer.ownerQQ`）。受权人代拍时，如果绑定者当前没有会话，证书只挂在这一台的内存对象上，不落盘，下一次还要重新学。
+- 证书变了报 `CERT_CHANGED`，不覆盖旧记录。确认是自己重刷了固件，再私聊发 `/打印机 证书 信任` 重新固定；`/打印机 证书` 能看到三个端口各自的指纹。被授权用户看到提示时，话术指向绑定者，因为他才能重新固定。
+- 云端正好相反：只信系统 CA，target 上误带的 `tlsCa` / `tlsFingerprint` 一律忽略，绝不因此降级。
+- 这条链路真正的前提是「第一次连接那一刻没有中间人」。要彻底排除，只能带外核对指纹：`/打印机 证书` 显示的指纹，和你从打印机屏幕上看到的核对一致。
+- 322 这条比另外两条弱一档：校验做在 ffmpeg 外面，所以它能挡住「握手时对端换了」，但挡不住同网段有人做主动中间人（ARP 欺骗之类）后伪造整条画面。日常看进度、暂停、调温根本不走 322。
+
+## 4. 数据目录与文件
+
+数据都在 `api.dataDir()` 下，默认是 `modules-data/bambu-print/`。目录 0700，文件 0600，所有写入都是「临时文件 + fsync + 改名」。
+
+| 文件 | 里面是什么 | 有没有秘密 |
+|---|---|---|
+| `vault.json` | 用户记录、加密的 DEK、加密的绑定数据、明文 meta 镜像、偏好 | 只有密文和元数据 |
+| `grants.json` | 授权的元数据（谁给谁、哪几个绑定、范围、到期） | 没有，也没有能解密的材料 |
+| `audit.jsonl` | 操作记录，一行一条 JSON | 没有 |
+| `audit.1.jsonl` | 上一代审计，超过 2MB 时轮转出来 | 没有 |
+| `host-key.bin` | 32 字节主机密钥，包所有人的 DEK | **是秘密** |
+| `bbx-key.json` | 登录信封的 P-256 私钥（JWK），0600 | **是秘密** |
+| `bbx-used.json` | 用过的信封 jti 和它们的过期时间 | 没有 |
+| `bambusource/` | 面板下载的 BambuSource 库，运行时被桥加载 | 没有 |
+
+`vault.json` 的形状：
 
 ```json
 {
@@ -59,371 +166,164 @@
   "users": {
     "<qq>": {
       "v": 1,
-      "salt": "<base64 16B>",
       "wrapped": { "v": 1, "iv": "<b64>", "tag": "<b64>", "data": "<b64>" },
-      "createdAt": 0,
-      "updatedAt": 0,
-      "lastSeenAt": 0,
-      "prefs": { "groupShowName": false, "selectedPrinter": "" }
+      "payload": { "v": 1, "iv": "<b64>", "tag": "<b64>", "data": "<b64>" },
+      "meta": { "bindings": [ { "id": "b_xxx", "label": "我的 A1", "mode": "lan",
+                  "createdAt": 0, "printers": [ { "serial": "...", "ip": "192.168.1.50",
+                  "name": "A1", "model": "A1" } ] } ] },
+      "createdAt": 0, "updatedAt": 0, "lastSeenAt": 0,
+      "prefs": { "groupShowName": false, "selectedPrinter": "", "interface": "",
+                 "groupMode": "", "groupPhoto": null }
     }
-  },
-  "attempts": { "<qq>": { "fails": 0, "lockedUntil": 0 } }
+  }
 }
 ```
 
-- `wrapped` = AES-256-GCM(DEK, JSON payload, aad=`user:<qq>`)。
-- DEK = 随机 32B；KEK = scrypt(安全码, salt, N=32768, r=8, p=1, keyLen=32, maxmem>=64MB)；
-  `wrapped` 存的是把 DEK 用 KEK 包起来的结果（AAD 同上）。**没有**独立的密码 hash，
-  解密失败（GCM tag）就是安全码错误。
-- payload 明文结构（只在内存里出现）：
+- `payload` 解开后是 `{ v: 1, bindings: [...] }`。每条绑定有 `id / label / mode / secret / printers / createdAt`；云端绑定多一个 `discoveredAt`。
+- 每台打印机可以带 `certs`（三个槽）和自己单独的 `accessCode`（覆盖绑定级访问码）。
+- 代码不再写 `attempts`、失败计数或锁定时间。旧文件里就算还留着这些字段，也没人读；`listUsers()` 返回的 `lockedUntil` 恒为 0。
+- 坏文件不静默重置：空文件、非 JSON、结构不对，都抛 `BAD_FILE`。
+
+`grants.json` 的形状：
 
 ```json
-{
-  "v": 1,
-  "bindings": [
-    {
-      "id": "b_xxxxxxxx",
-      "label": "我的 A1",
-      "mode": "lan",
-      "secret": { "accessCode": "12345678" },
-      "printers": [ { "serial": "01S00A123456789", "ip": "192.168.1.50", "name": "A1", "model": "A1" } ],
-      "createdAt": 0
-    },
-    {
-      "id": "b_yyyyyyyy",
-      "label": "云端账号",
-      "mode": "cloud",
-      "secret": { "accessToken": "…", "uid": "123456", "region": "us" },
-      "printers": [ { "serial": "…", "name": "X1C", "model": "X1C" } ],
-      "createdAt": 0,
-      "discoveredAt": 0
-    }
-  ]
-}
+{ "v": 1, "grants": [ { "id": "g_xxx", "ownerQQ": "111", "granteeQQ": "222",
+  "scopes": ["status", "control"], "bindings": [ { "id": "b_x", "label": "我的 A1",
+  "mode": "lan", "printers": [ { "serial": "...", "name": "A1", "model": "A1" } ] } ],
+  "createdAt": 0, "expiresAt": 0, "revokedAt": 0 } ] }
 ```
 
-- LAN 模式：`secret.accessCode` 是该凭据下打印机的访问码；`printers[]` 每台带 `serial`+`ip`，
-  可选单独 `accessCode` 覆盖（vault.secret 只返回凭据级；index 用 `printer.ref` 里的 effectiveSecret）。
-- 云端模式：一个 token 对应多台打印机；`printers[]` 由 cloud.listDevices 发现后写入。
-- 安全码强度：长度 >= 8；纯数字必须 >= 10 位；不能是同一字符重复、不能是 12345678/87654321/
-  qwerty 之类常见串。`normalizeCode()` 只 trim，不改大小写（大小写敏感）。
-- 连续输错 5 次锁 15 分钟，第 10 次锁 60 分钟；锁定期内 unlock 抛 `LOCKED_OUT`。
-  失败次数/锁定时间持久化在 vault.json 的 attempts 里（不含秘密）。
-
-### grants.json 结构
+审计一行长这样，`note` 是唯一自由文本，已经在入口截断和去换行：
 
 ```json
-{
-  "v": 1,
-  "grants": [
-    {
-      "id": "g_xxxxxxxx",
-      "ownerQQ": "111",
-      "granteeQQ": "222",
-      "scopes": ["status", "control", "photo"],
-      "bindings": [ { "id": "b_x", "label": "我的 A1", "mode": "lan",
-                      "printers": [ { "serial": "01S…", "name": "A1", "model": "A1" } ] } ],
-      "createdAt": 0,
-      "expiresAt": 0,
-      "revokedAt": 0
-    }
-  ]
-}
+{ "at": 1710000000000, "actor": "111", "action": "bind", "ok": true,
+  "target": "b_xxx", "note": "lan 绑定「我的 A1」1 台" }
 ```
 
-- 用户（owner）解锁后发起授权：只记「授权给谁、哪几个绑定（id + 展示元数据）、什么范围、到什么时候」，
-  **不写秘密，也不写任何能解出秘密的密钥**。受权人操作时，秘密从 owner 自己的保险箱现解现用
-  （所以 owner 要保持解锁）；revoke / 到期立即失效。
-- 受权人（grantee）不需要兑换：grants 里属于自己、未撤销、未过期的记录本身就是许可；
-  需要秘密时由**所有者的 DEK** 现解（所以所有者必须在解锁状态）
-  （GCM tag 校验），命中的那条把 printerRefs+scopes 放进内存 grant session（到期清空）。
-- 没有授权码：授权按 QQ 直接生效，少一个能泄露的字符串，也少一步人工转发。
-- 授权范围只含被选中的绑定，**不是整个 vault**，所以对方最多拿到 owner 主动给的那几台。
-- grant 默认 30 分钟，上限 24 小时；owner 可随时 revoke。grantee 没有名单限制（不能是自己）；
-  旧版的 `settings.admins` 已废弃，不再提升任何人的权限
-  （或主人），由 index 校验。
+卸载模块不会删这个目录。要彻底清掉就手动删，删了无法恢复，只能重新登录和绑定。
 
-## 2. lib/crypto.mjs
+## 5. 脱敏规则
 
-```js
-export const DEFAULT_KDF = { N: 32768, r: 8, p: 1, keyLen: 32 }
-export function randomBytes(n) -> Buffer
-export function randomToken(bytes = 32) -> string        // base64url
-export function randomGrantCode() -> string              // 12 位 Crockford Base32，去掉 ILOU
-export function newSalt() -> Buffer                      // 16B
-export function normalizeCode(input) -> string           // trim；空串原样返回
-export function checkCodeStrength(code) -> { ok: boolean, reason: string }  // 见上，reason 中文
-export async function deriveKey(code, salt, opts = {}) -> Buffer(32)        // scrypt，opts 覆盖 DEFAULT_KDF
-export function seal(key, plaintext, aad) -> { v:1, iv, tag, data }         // 均为 b64；key 32B
-export function open(key, box, aad) -> Buffer                               // 解密失败抛 CryptoError('BAD_TAG')
-export function sealJson(key, value, aad) -> box
-export function openJson(key, box, aad) -> any
-export function wrapKey(kek, dek, aad) -> box
-export function unwrapKey(kek, box, aad) -> Buffer(32)
-export function maskSecret(value, keep = 4) -> string   // '••••' + 末 keep 位；短值全遮
-export function clearBuffer(buf)                        // 全 0
-export class CryptoError extends Error { code }
+一条原则：**秘密永远不出现，人只看得出「是谁的哪一台」**。
+
+| 东西 | 怎么显示 | 代码 |
+|---|---|---|
+| QQ 号 | `123****456`（太短整段遮住） | `policy.maskQQ` |
+| IP | `192.168.*.*`（IPv6 只留前两组） | `policy.maskIp` |
+| 序列号 | 前 4 位 + `••••` + 后 3 位（6 位以内只留前 2 位 + `••`） | `index.maskSerial` |
+| token / 访问码 | `••••` + 末 4 位；短值整段遮 | `crypto.maskSecret` |
+
+群聊状态默认两个都藏：文件名显示「已脱敏」，项目名永远不显示。要放开文件名，必须同时满足三个条件：
+
+1. 提问的人就是这台打印机的绑定者；
+2. 他自己开了 `prefs.groupShowName`（`/打印机 群权限 文件名 开`）；
+3. 全局设置 `allowGroupName` 也开着。
+
+`hideProject` 在群里恒为 true（`policy.redaction`）。私聊不脱敏。
+
+面板和接口只给打码值：`tokenMask`、`serialMasked`、`ipMasked`；审计的 `actor` 给完整 QQ。信封的日志只记错误码、类型、ttl 和 jti 的前 6 个字符；协议层的错误文本会先把访问码、token 擦掉再往外抛（`printer.sanitizeError`、`camera.scrub`、`tutk.scrubSecrets`）。
+
+## 6. 设置：一张表说了算
+
+`lib/settings.mjs` 的 `SETTING_RULES` 是唯一真相。面板、`/overview.rules`、启动归一化、运行时夹取，读的都是这一份。
+
+- `normalizeSettings(raw)` 只输出表里列出的键，越界夹取，类型不对回默认值。宿主或旧版本塞进来的 `enabled`、`users`、`__panelGroup` 这类键会被丢掉。
+- 面板从 `/overview.rules` 拿 `describeRules()` 的结果渲染输入框，所以「能填什么」「保存时怎么夹」不会两样。
+- 启动时会把存量设置按表归一化，只写有差异的键，不整份覆盖。
+- 总开关叫 `active`，不叫 `enabled`。原因很现实：宿主看到 `enabled` 会在页面标题栏再画一个总开关，和面板里那个各写各的。`effectiveEnabled()` 只在老配置完全没有 `active` 时才回落到 `enabled`，升级不会把开着的人静默关掉。`index.mjs` 的 `defaults` 里故意不写 `active` 和 `enabled`。
+- 交叉约束：`enrollMaxTtlMinutes` 不会小于 `enrollTtlMinutes`。
+- 生效时机：点页面底部的「保存设置」。`unlockDays` 特殊一点，改完不用重启，最晚下一次解锁时生效。
+
+| 键 | 类型 | 默认 | 范围 / 可选值 | 作用 |
+|---|---|---|---|---|
+| `active` | 开关 | 关 | 真 / 假 | 总开关 |
+| `multiUser` | 开关 | 开 | 真 / 假 | 关掉只服务主人 |
+| `groupMode` | 单选 | `status` | `off` / `status` / `control` | 群里的默认权限 |
+| `groupPhoto` | 开关 | 开 | 真 / 假 | 群里能不能要画面 |
+| `allowGroupName` | 开关 | 关 | 真 / 假 | 群里能不能显示文件名 |
+| `defaultInterface` | 单选 | `cloud` | `cloud` / `lan` | 默认走哪个接口 |
+| `ownerInterface` | 单选可空 | 空 | 空 / `cloud` / `lan` | 只影响主人 |
+| `ownerLocalAllowed` | 开关 | 开 | 真 / 假 | 关掉后连主人也走云端 |
+| `ownerNoCode` | 开关 | 开 | 真 / 假 | 见下方说明：现在不影响行为 |
+| `unlockDays` | 整数 | 7 | 1~30（天） | 会话有效期 |
+| `maxBindings` | 整数 | 5 | 1~20 | 每人最多几条凭据 |
+| `requestTimeoutMs` | 整数 | 6000 | 2000~20000 | 等打印机回话的毫秒数 |
+| `selectedTtlMinutes` | 整数 | 10 | 1~60 | 群里选过打印机后记多久 |
+| `tutkBridgePath` | 文本 | 空 | 绝对路径或空 | 换一个抓帧桥 |
+| `tutkLibPath` | 文本 | 空 | 文件路径或空 | BambuSource 库在哪 |
+| `tutkTimeoutMs` | 整数 | 20000 | 3000~60000 | 云端抓一帧的毫秒数 |
+| `enrollBaseUrl` | 文本 | 空 | http(s) 地址，长度小于 300 | 登录网页前缀 |
+| `enrollTtlMinutes` | 整数 | 60 | 1~1440 | 只用于展示「建议生存时间」 |
+| `enrollMaxTtlMinutes` | 整数 | 1440 | 1~1440 | 服务端接受的信封上限 |
+
+两个要说明的地方：
+
+- 面板的「设置」页目前没有渲染 `enrollBaseUrl` / `enrollTtlMinutes` / `enrollMaxTtlMinutes` 这三个键，它们只在规则表和接口里。要换登录网页地址，得直接改模块配置（见 [ENROLL.md](ENROLL.md)）。
+- `ownerNoCode` 现在不影响任何行为：所有账号都由 `host-key.bin` 包着，解锁不收任何码；面板判断里还留着一个恒为 true 的 `codeless` 兼容字段，所以这个开关关掉也不会让谁「需要安全码」。
+
+## 7. 文件清单
+
+| 文件 | 干什么 |
+|---|---|
+| `index.mjs` | 装配层。准入、命令、模型工具、面板路由、证书学习、抓帧顺序、登录信封落地 |
+| `panel.js` | 面板 6 个页签的全部界面 |
+| `module.json` / `package.json` | 模块声明（id、版本、能力、默认设置） |
+| `lib/settings.mjs` | 设置规则表与归一化 |
+| `lib/policy.mjs` | 权限、群模式、脱敏、打码、限流、时长解析（纯函数） |
+| `lib/vault.mjs` | 保险箱：用户记录、绑定、授权、审计、主机密钥、会话 |
+| `lib/envelope.mjs` | 登录信封服务端：私钥文件、一次性、有效期、对外形状 |
+| `lib/crypto.mjs` | AES-256-GCM、scrypt、包/解 DEK、掩码、擦 Buffer |
+| `lib/tls-cert.mjs` | 自签名证书生成、解析、指纹、从 socket 取对端证书 |
+| `lib/mqtt.mjs` | 最小 MQTT 3.1.1 客户端（CONNECT / SUBSCRIBE / PUBLISH / PING） |
+| `lib/printer.mjs` | 连接复用、状态缓存、命令下发、证书门 |
+| `lib/camera.mjs` | 6000 MJPEG 与 322 RTSPS 抓帧、读证书 |
+| `lib/cloud.mjs` | 区域表、云端设备列表 |
+| `lib/cloud-auth.mjs` | 云端账号登录、验证码、两步验证 |
+| `lib/tutk.mjs` | 铸 ttcode、拼 `bambu://` URL |
+| `lib/tutk-bridge.mjs` | 调抓帧桥、临时文件、超时 |
+| `lib/tutk-lib.mjs` | 下载并放置 BambuSource 库 |
+| `lib/discover.mjs` | 局域网 SSDP 发现 |
+| `lib/status.mjs` | 状态归一化与中文排版（纯函数） |
+| `assets/enroll/` | 静态登录网页（只加密） |
+| `assets/tutk-bridge/` | 预编译的抓帧桥 + C 源码 |
+
+## 8. 测试
+
+在 `modules/bambu-print` 下跑：
+
+```bash
+node --test "test/*.test.mjs"
 ```
 
-scrypt 用 `node:crypto` 的异步版（promisify），`maxmem` 至少 `128*N*r*2`。
-所有 b64 字段用标准 base64。
+- 每个 lib 和入口都有对应的 `test/*.test.mjs`：正常、边界、错误码、失败路径。
+- 「没有秘密泄漏」是硬断言：`vault.json`、`audit.jsonl`、`dashboard()`、`/overview` 的输出里都不许出现测试用的 token、访问码。
+- scrypt 在测试里用低 N（1024）提速；MQTT 用假的 Duplex / 假客户端，不需要真打印机。
+- 信封有互操作测试：浏览器那份 `bbx.js` 在 Node 里加密，服务端用真私钥解开；页面本身有静态检查（不许联网、不许本地存储、不许有安全码输入框），本机装了 Edge/Chrome 时会跑一次真浏览器端到端。
+- 证书相关的负面用例都覆盖到了：没锚点不发访问码、证书变了拒绝覆盖、322 没 pin 不启动 ffmpeg。
 
-## 3. lib/vault.mjs
+## 9. 旧说法对照（改文档时最容易踩的坑）
 
-```js
-export class VaultError extends Error { code }  // NO_USER / EXISTS / BAD_CODE / LOCKED_OUT / LOCKED / WEAK_CODE / NOT_FOUND / BAD_INPUT / EXPIRED
-export const MIN_LOCK_MINUTES = 1440      // 1 天
-export const DEFAULT_LOCK_MINUTES = 10080 // 7 天
-export const MAX_LOCK_MINUTES = 43200     // 30 天
-export function createVault({ dir, log = console, now = Date.now, kdf, lockMinutes = DEFAULT_LOCK_MINUTES, maxBindings = 5 })
-```
+| 旧文档里的说法 | 现在 |
+|---|---|
+| 每人一个安全码，用安全码加密/解锁 | 没有安全码。每人一把 DEK，由 `host-key.bin` 包着；`/打印机 解锁` 只回一句「已经取消」 |
+| 连续错 5 次锁 15 分钟、第 10 次锁 60 分钟 | 没有失败计数。`FAIL_LOCK_TIERS` 常量还在 `vault.mjs` 顶部，但没有任何地方调用 |
+| 授权码 + 兑换 | 没有授权码。`createGrant()` 返回 `grantId`，授权按 QQ 直接生效 |
+| 有「管理员」这一级 | 只有主人、白名单用户、路人 |
+| 插件自己维护私聊/群名单（`settings.users`） | 名单来自宿主的 `allow.private` / `allow.groups` |
+| 私聊里帮忙撤回敏感消息（`delete_msg`） | 撤回整体移除，改成在风险提示里说明「私聊也会留明文」 |
+| 云端模式不支持拍照 | 会回退到云端 TUTK 画面 |
+| `/打印机 登录 <账号> <密码>` | 不再收。带参数时必须是 `BBX1.` 信封，否则回「这段不像是这台机器生成的登录信封（应该以 `BBX1.` 开头）」 |
+| 设置里点「重置密钥」 | 面板没有这个按钮，也没有对应路由。`envelope.rotate()` 只有库函数 |
+| `enrollKeyMode` / `enrollKeyPath` 是设置项 | 规则表里没有这两个键。信封服务构造时支持 `keyMode` / `keyPath`，但面板和命令都没有入口 |
+| 测试文件不进发布包 | 未确认。`package.json` 里没有 `files` 字段 |
 
-方法（未标注 async 的为同步）：
+## 10. 代码注释里的旧节号
 
-- `await load()`：读 vault.json / grants.json，坏文件抛错（不要静默清空）。
-- `hasUser(qq)`、`userCount()`
-- `summary()` -> `{ users, boundUsers, bindings, printers, unlocked, activeGrants }`
-- `listUsers()` -> `[{ qq, createdAt, updatedAt, lastSeenAt, bindings, printers, unlocked, lockedUntil }]`
-  （不含任何 secret；qq 由调用方决定是否打码）
-- `isUnlocked(qq)`、`lock(qq)`、`lockAll()`
-- `setLockMinutes(minutes)`：解锁滑窗长度（分钟），夹到 1 天~30 天（1440~43200），默认 7 天（10080）
-- `async register(qq, code)` -> `{ ok: true }`（已存在抛 EXISTS；弱码抛 WEAK_CODE）
-- `async unlock(qq, code)` -> `{ ok: true, until }`（失败计数/锁定；成功后滑窗续期）
-- `async changeCode(qq, oldCode, newCode)` -> `{ ok }`（重新包 DEK，不重加密 payload）
-- `async wipeUser(qq)`：删除该用户记录/授权/会话（用于「忘记安全码」重置；不需要安全码，
-  index 必须二次确认；删除是不可恢复的）
-- `async addBinding(qq, input)` -> `{ ok, id }`（必须已解锁）
-  input = `{ label, mode: 'lan'|'cloud', accessCode?, accessToken?, uid?, region?, printers? }`
-  LAN 必须 accessCode + 至少一台 {serial, ip}；cloud 必须 accessToken + uid，printers 可空，
-  由 index 调 cloud.listDevices 后再 `setDiscoveredPrinters(qq, id, printers)`。
-- `async setDiscoveredPrinters(qq, id, printers)`、`async removeBinding(qq, id)`、
-  `async renameBinding(qq, id, label)`（assemble 时都要求已解锁）
-- `listBindings(qq)` -> `[{ id, label, mode, printers: [{ serial, ip, name, model }], createdAt, tokenMask: '••••1234' }]`
-  只返回元数据；tokenMask 来自 secret 的掩码（不解密，仅授权会话/解锁时可算；未解锁返回 ''）。
-- `printers(qq)` -> `[{ ref: "b_x:0", bindingId, bindingLabel, mode, index, serial, ip, name, model, accessCode?, tokenMask }]`
-  （accessCode 只在**已解锁**时给；否则不出现该字段）
-- `resolve(qq, selector)` -> `{ match: printerRef|null, candidates: printerRef[] }`
-  selector：空 / 1 开始的序号 / serial / 名称子串（大小写不敏感）/ binding label / ref；多个命中返回 candidates。
-  一次性给出全部候选（不发秘密），由 index 决定是否反问。
-- `secretOf(qq, bindingId)` -> `{ mode, accessCode?, accessToken?, uid?, region? }`（必须解锁，否则 LOCKED）
-- `prefs(qq)` -> `{ groupShowName, selectedPrinter }`；`async setPrefs(qq, patch)`（无需解锁；只是偏好）
-- `async createGrant({ ownerQQ, granteeQQ, bindingIds, scopes, minutes })` -> `{ ok, code, grantId, expiresAt }`
-  必须 owner 已解锁；bindingIds 空 = 该用户全部绑定；minutes 1..1440；scopes ⊆
-  ['status','control','photo']；只把选中绑定的 printerRefs（含秘密）加密进 grant。
-  失败抛 BAD_CODE；不把其中秘密返回给调用方。
-- `grantSessions(granteeQQ)` -> `[{ grantId, ownerQQ, scopes, expiresAt }]`（不含秘密）
-- `grantTargets(granteeQQ, grantIdOrOwnerQQ)` -> `{ match, candidates, scopes, ownerQQ, grantId }`
-  内部用；match 含 `secret` 字段（只在模块内部使用，index 不得把 secret 拼进消息）。
-  支持 selector 为空时：若只有一个可用 grant，直接返回其全部打印机（供反问）。
-- `async revokeGrant({ byQQ, grantId })`：owner 或 grantee 或主人调用（index 校验角色），
-  删除记录并清内存会话。
-- `listGrants()` -> 元数据 `[{ id, ownerQQ, granteeQQ, scopes, bindings, createdAt, expiresAt, revoked }]`
-- `async audit(entry)`：`{ actor, action, target?, ok, note? }`，自动补 at；note 必须已脱敏，
-  不含 token/安全码/文件名（index 传入前自行截断）。
-- `auditList(limit = 50)` -> 最近记录（倒序）。
+几个 lib 文件头部还按老编号引用 ARCHITECTURE 的章节，改文档时别把它们当失效链接：
 
-写盘必须串行（内部 promise 队列），原子替换，文件 0600。`load()` 之前的方法抛 NOT_LOADED。
-
-## 4. lib/policy.mjs（纯函数，无 IO）
-
-```js
-export function parseIdList(text) -> string[]            // 逗号/中文逗号/空白/换行分割，只留 4~15 位数字
-export function roleOf({ userId, isOwner, settings }) -> 'owner'|'admin'|'user'|'guest'
-export function checkPrivate({ userId, isOwner, settings, hasBinding }) -> { ok, reason }
-export function checkGroup({ groupId, userId, settings, hasBinding }) -> { ok, reason }
-export function groupMode(settings) -> 'off'|'status'|'control'
-export function canControl({ chat, role, settings }) -> { ok, reason }
-export function canPhoto({ chat, role, settings }) -> { ok, reason }
-export function canBind({ chat, role }) -> { ok, reason }              // 只私聊
-export function canGrant({ chat, role, settings }) -> { ok, reason }  // 只私聊、owner/admin
-export function redaction({ chat, requesterQQ, ownerQQ, prefs, settings })
-  -> { hideName: boolean, hideProject: boolean }
-export function maskQQ(qq) -> string                    // 123****456
-export function maskIp(ip) -> string                    // 192.168.*.*
-export function createRateLimiter({ now = Date.now } = {})
-  // -> { hit(key, limit, windowMs) -> { ok, retryMs }, reset(key) }
-export function parseMinutes(text, fallback, max) -> number
-```
-
-规则：
-- owner 恒可私聊；其他用户必须在 `settings.users` 里（没有「管理员」这一级）。
-- 群：`groupId` 必须在 `settings.groups`；用户必须已有自己的绑定；groupMode off 一律拒。
-  status 模式禁止暂停/继续/停止/灯/温度/速度/gcode；control 模式允许，但仍只作用于**发起人自己的**
-  绑定（或别人给的授权），绝不回落到别人。
-- 群消息拍照：需要 `settings.groupPhoto !== false` 且 groupMode != 'off'。
-- 群默认脱敏 `hideName=true, hideProject=true`；只有 `requesterQQ === ownerQQ`
-  且 `prefs.groupShowName === true` 且 `settings.allowGroupName === true` 时才 hideName=false；
-  hideProject 在群里恒为 true。私聊不脱敏。
-- 绑定/解绑/安全码/授权：只私聊，群里直接拒绝并提示私聊。
-
-## 5. lib/status.mjs（纯函数）
-
-```js
-export function normalizeStatus(report, opts = {}) -> object | null
-```
-
-输入是 MQTT report 的 JSON（可能只有 `print` 部分；P1 系列是增量）。输出：
-
-```json
-{
-  "state": "RUNNING", "stateText": "打印中",
-  "percent": 42, "remainingMin": 98,
-  "elapsedSec": 4320, "startedAt": 1710000000000,
-  "layer": 56, "totalLayers": 132,
-  "nozzle": 215.4, "nozzleTarget": 220, "bed": 60.1, "bedTarget": 60, "chamber": 32,
-  "fileName": "Benchy.3mf", "projectName": "Benchy", "gcodeFile": "Metadata/plate_1.gcode",
-  "subtask": "Benchy", "weight": 42.5,
-  "ams": [ { "id": 0, "type": "PLA", "color": "#FF0000FF", "remain": 80 } ],
-  "errors": [ "0700-8010" ], "wifi": -55, "speedLevel": 2, "light": true
-}
-```
-
-要点：
-- `print` 字段可能字符串数字；统一转 number，缺省 null（不要 0 假装有值）。
-- stateText 映射：IDLE 空闲 / PREPARE 准备中 / RUNNING 打印中 / PAUSE 已暂停 / FINISH 已完成 /
-  FAILED 失败 / SLICING 切片中 / 其他原样或「未知」。
-- elapsedSec 优先级：`gcode_start_time`（Unix 秒，>0 时）-> opts.observedStart（模块观察到的开始时间）
-  -> `remainingMin * percent / (100 - percent)` 估算（仅在 0<percent<100 且 remaining>0）-> null。
-- 错误：`print_error` 非 0 → 16 进制格式；`hms` 数组每项 `{attr, code}` → `AAAA-BBBB` 字符串。
-- 空 report/无 print 返回 null。
-
-```js
-export function formatDuration(seconds) -> string     // 0→'0 分钟'; <60m→'23 分钟'; 否则 '2 小时 5 分钟'; >24h '1 天 3 小时'
-export function formatStatus(status, opts) -> string
-```
-
-formatStatus 选项：`{ printerName, redactName = false, redactProject = false, stale = false, now = Date.now() }`。
-输出示例（多行，纯文本，不用 markdown 表格）：
-
-```
-🖨️ A1 · 打印中（42%）
-第 56/132 层
-已打印 1 小时 12 分钟 · 剩余 1 小时 38 分钟
-预计 16:20 完成
-喷嘴 215/220℃ · 热床 60/60℃ · 仓温 32℃
-文件：Benchy.3mf
-```
-
-- 群聊脱敏时文件行显示 `文件：已脱敏`，且不显示 gcode/project/subtask 任何真实名字。
-- 没有进度/时间时不要编造：省略对应行或写「进度未知」「剩余时间未知」。
-- stale=true 时首行加「（数据可能过期）」。
-- IDLE 时显示「空闲」+ 喷嘴/热床温度，不显示剩余时间。
-- 错误非空时加一行 `⚠️ 错误：…`。
-
-```js
-export function formatBrief(status, { printerName, redactName }) -> string   // 单行：🖨️ A1 · 打印中 42% · 剩余 1小时38分钟
-export function formatChoiceList(printers) -> string                        // 编号列表，带打印机名/型号/序列号打码
-```
-
-## 6. lib/mqtt.mjs
-
-最小 MQTT 3.1.1 客户端（只依赖 node:tls / node:net），Bambu 局域网使用：
-host 打印机 IP，port 8883，username `bblp`，password = 访问码，TLS 自签名。
-
-**对端校验是 fail-closed，不是 `rejectUnauthorized:false`：**
-
-- **局域网**：第一次只握手读证书（TOFU 学习），之后每次都用学到的证书当 `ca` 锚点、
-  `rejectUnauthorized: true`，同时核对指纹。**没有锚点时根本不发访问码**——
-  `tlsOptionsFor()` 在带凭据的连接前会抛 `CERT_UNPINNED` / fail-closed，
-  不存在「先连上试试」或「用老字段降级」的分支。
-- **云端**：走 Node 默认的系统 CA + 主机名校验，从不覆盖 `checkServerIdentity`，
-  也忽略 target 上带来的 CA / pin 降级字段。
-
-（早期版本确实写过 `rejectUnauthorized:false` + `tlsFingerprint` 兜底，那是历史实现，
-现已被上面的 fail-closed 取代。）
-
-```js
-export function encodeRemainingLength(n) -> Buffer
-export function decodeRemainingLength(buf, offset) -> { length, size } | null
-export function encodeConnect({ clientId, username, password, keepalive = 60 }) -> Buffer
-export function encodeSubscribe(packetId, topic, qos = 0) -> Buffer
-export function encodePublish(topic, payload, { qos = 0, packetId = 0, retain = false } = {}) -> Buffer
-export function encodePingreq() -> Buffer
-export function encodeDisconnect() -> Buffer
-export function decodePacket(buf) -> { type, flags, body, consumed } | null   // 不完整返回 null
-export function parsePublish(body) -> { topic, payload }                      // QoS0/1
-export function createMqttClient({ host, port = 8883, username, password, clientId,
-  keepalive = 60, ca = [], checkServerIdentity = undefined, connectTimeoutMs = 8000,
-  log = console, connect = null }) -> client
-```
-
-client：
-- `await connect()`：建 TLS、发 CONNECT、等 CONNACK（rc=0 才算成功），失败抛错（带 rc 说明）。
-- `subscribe(topic, qos=0)`、`publish(topic, payload)`、`isOpen()`、`close()`。
-- 事件：`on('message', (topic, payloadBuffer) => {})`、`on('close', ...)`、`on('error', ...)`；
-  收到 PINGRESP 忽略；每 keepalive/2 发 PINGREQ；用 setInterval().unref()。
-- 自动拒绝超过 4MB 的包；断线时所有 promise 拒绝。
-- `connect` 参数用于测试注入（返回 Duplex），默认 tls.connect。
-- 加密/明文由 `tls` 选项决定：`tls: false` 时用 net.connect（只给测试用）。
-
-## 7. lib/printer.mjs
-
-```js
-export function createPrinterManager({ log = console, now = Date.now, clientFactory, statusTtlMs = 3000, idleCloseMs = 120000, lock = null })
-```
-- `clientFactory(opts)` 默认 `createMqttClient`；测试注入假客户端。
-- `lock` 可选：`(key) => promise`，用于串行化同一台打印机的命令。
-
-方法：
-- `async status(target, { timeoutMs = 6000, force = false })`
-  target = `{ mode:'lan'|'cloud', host, port, serial, accessCode?, accessToken?, uid?, region?, caAnchors? }`
-  返回 `{ ok:true, status, receivedAt, stale } | { ok:false, error }`。
-- `async command(target, action, params)`，action：
-  `pause | resume | stop | light | speed | temperature | gcode | home | pushall | raw`。
-  返回 `{ ok, message, acked } | { ok:false, error }`。命令负载见下。同一 target 复用连接，
-  空闲 idleCloseMs 后断开；status 用短缓存，force 跳缓存。
-- `async snapshot(target, { timeoutMs = 15000 })` -> `{ ok, jpeg: Buffer } | { ok:false, error }`
-  仅 LAN（云端直接返回错误「云端模式暂不支持拍照」）。
-- `closeAll()`
-- 导出的纯函数便于测试：`buildCommand(action, params)` -> `{ payload, expect? }`、
-  `mergeReport(prev, incoming)`、`targetKey(target)`。
-
-命令负载（sequence_id 自增字符串）：
-- pause: `{print:{command:'pause'}}`；resume: `resume`；stop: `stop`
-- light: `{system:{command:'ledctrl',led_node:'chamber_light',led_mode:'on'|'off',led_on_time:500,led_off_time:500,loop_times:0,interval_time:0}}`
-- speed: `{print:{command:'print_speed',param:'1'..'4'}}`
-- temperature: `{print:{command:'gcode_line',param:'M140 S<bed>\nM104 S<nozzle>\n'}}`（缺省项用当前值或省略）
-- gcode: `{print:{command:'gcode_line',param: lines.join('\n')+'\n'}}`（总长 <= 2000 字符）
-- home: gcode `G28\n`
-- pushall: `{pushing:{command:'pushall',version:1,push_target:1}}`
-- raw: 调用方给完整 payload 对象（仅内部/测试）
-命令发布后最多等 2.5 秒回执（同 sequence_id 且 result 字段）；超时返回 ok:true, acked:false。
-TLS 自签名是已知风险，README 必须写明；局域网连接用**学到的证书做锚点 + 指纹固定**
-（见上面 fail-closed 那段），不存在关掉校验再靠 `tlsFingerprint` 兜底的路径。
-
-## 8. lib/camera.mjs
-
-```js
-export function buildAuthPacket(username, accessCode) -> Buffer   // 80 字节
-export async function captureFrame({ host, port = 6000, accessCode, username = 'bblp',
-  ca = [], timeoutMs = 15000, connect = null }) -> Buffer  // 返回 JPEG；没有 ca 锚点直接 CAMERA_UNPINNED
-```
-- 协议：TLS 连接 6000，发 80 字节认证包（0x40, 0x3000, 0, 0 各 4B LE；username 32B 补 0；
-  accessCode 32B 补 0）；读 16 字节头（前 3 字节小端 payload 长度），再读 payload，
-  校验 JPEG 魔数 `FFD8FFE0` 与结尾 `FFD9`。超时/错误抛错。
-- 只允许 JPEG，单帧 <= 8MB。
-
-## 9. lib/cloud.mjs
-
-```js
-export const REGIONS = { us: { api: 'https://api.bambulab.com', mqtt: 'us.mqtt.bambulab.com' },
-  eu: { api: 'https://api.bambulab.com', mqtt: 'eu.mqtt.bambulab.com' },
-  cn: { api: 'https://api.bambulab.cn', mqtt: 'cn.mqtt.bambulab.com' } }
-export function regionOf(name) -> { key, api, mqtt }
-export async function listDevices({ accessToken, uid, region, fetchImpl = fetch, timeoutMs = 12000 })
-  -> { ok:true, devices:[{ serial, name, model, ip, accessCode? }] } | { ok:false, error }
-export function cloudTarget({ accessToken, uid, region, device }) -> target  // 给 printerManager
-```
-- GET `{api}/v1/iot-service/api/user/bind`，头 `Authorization: Bearer <token>`；
-  解析 `devices[]` 的 `dev_id / name / dev_model_name / dev_ip / dev_access_code`（名字字段缺失时跳过）。
-- 错误信息不含 token（只报状态码/HTTP 错误）；超时用 AbortSignal.timeout。
-- 云端仅做状态/控制，拍照不支持。
-
-## 10. 测试要求
-
-- 每个 lib 文件都有 `test/*.test.mjs` 覆盖：正常、边界、错误码、无秘密泄漏（断言输出字符串
-  不含测试用 token / 安全码）。
-- scrypt 在测试里用低 N（如 1024）保证速度；vault 构造函数接受 kdf 覆盖。
-- MQTT 用编解码单测 + 假 Duplex/假客户端；不要连真打印机。
-- 所有测试用 `node --test` 跑通：`cd modules/bambu-print && node --test test/*.test.mjs`。
-- 测试文件不进入发布包。
+| 注释里写的 | 现在看这里 |
+|---|---|
+| `crypto.mjs` 的「第 0/2 节」 | 第 0 节（安全底线）+ 第 2.2 节（保险箱） |
+| `vault.mjs` 的「第 0/1/3 节」 | 第 0 节 + 第 2.2 节 + 第 4 节（数据目录） |
+| `policy.mjs` 的「第 4 节」 | 第 2.1 节（准入与权限） |
+| `test/panel.test.mjs` 的「第 0 节」 | 第 0 节（安全底线） |

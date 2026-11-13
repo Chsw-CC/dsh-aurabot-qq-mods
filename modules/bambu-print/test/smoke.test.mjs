@@ -53,11 +53,12 @@ test('装配后所有 route 可调用，且响应/落盘都不含秘密', async 
     // 未解锁时的各个入口都应给出明确 code，而不是抛异常
     const status = await call('/status', { qq: '200002' })
     assert.equal(status.ok, false)
-    assert.equal(status.code, 'LOCKED')
+    assert.equal(status.code, 'NO_USER', '没建号的用户查状态要被拒（不是 LOCKED —— 没有安全码了）')
     const bind = await call('/bind', { qq: '200002', mode: 'lan', accessCode: 'X', printers: [] })
-    assert.equal(bind.code, 'LOCKED')
+    assert.equal(bind.ok, false)
     const loginLocked = await call('/login', { qq: '200002', account: 'a@b.c', password: 'x' })
-    assert.equal(loginLocked.code, 'LOCKED')
+    assert.equal(loginLocked.ok, false)
+    assert.equal(JSON.stringify(loginLocked).includes('a@b.c'), false, '账号不能回显')
     const tutk = await call('/tutk/status')
     assert.equal(tutk.ok, true)
     assert.equal(JSON.stringify(tutk).includes('TOKEN-XYZ'), false)
@@ -67,13 +68,17 @@ test('装配后所有 route 可调用，且响应/落盘都不含秘密', async 
     assert.equal(tutk.lib.ok, false)
     assert.match(tutk.lib.download, /open-bamboo-networking/)
     await call('/unlock', { qq: '200002', code: 'x' }).catch(() => {})
-    // 落盘文件：只有三份，且没有 secret 字样
+    // 落盘文件：不含 secret 字样。除 vault/grants/审计外，还有登录信封的私钥与已用记录。
     const files = await readdir(dir)
-    assert.deepEqual(files.sort(), ['audit.jsonl', 'grants.json', 'vault.json'])
+    assert.deepEqual(files.sort(), ['audit.jsonl', 'bbx-key.json', 'grants.json', 'vault.json'])
     for (const f of files) {
       const raw = await readFile(path.join(dir, f), 'utf8')
       assert.equal(raw.includes('TOKEN-XYZ'), false, f + ' 不能有明文 token')
     }
+    // 信封私钥文件里绝不能出现任何明文秘密
+    const keyRaw = await readFile(path.join(dir, 'bbx-key.json'), 'utf8')
+    assert.match(keyRaw, /privateJwk/)
+    assert.equal(keyRaw.includes('a@b.c'), false)
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 test('TUTK 组件自检：桥和 BambuSource 都在时应报 ok', async () => {

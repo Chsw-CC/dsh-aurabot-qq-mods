@@ -69,8 +69,8 @@ export const SETTING_RULES = {
   ownerNoCode: {
     kind: 'bool',
     def: true,
-    label: '主人不用安全码',
-    hint: '开着：主人绑定/查状态/控制都不用解锁，面板点一下就开。代价是主人的绑定由这台机器的主密钥保管——能读到本模块数据目录的人可以解开主人的那份（其他人的安全码仍然互不可见、也解不开别人的）。关掉后主人也要先设安全码。',
+    label: '主人免码（历史开关）',
+    hint: '安全码已经取消：所有账号的凭据都由这台机器的主密钥保管，主人也一样免码。这一项现在没有任何作用，代码里没有分支读它，面板上的免码状态也恒为开；关掉不会让谁需要输入安全码。',
   },
   unlockDays: {
     kind: 'int',
@@ -113,8 +113,8 @@ export const SETTING_RULES = {
   tutkLibPath: {
     kind: 'text',
     def: '',
-    label: 'BambuSource 库路径（留空 = 桥旁边自动找）',
-    hint: '本模块不打包它（OBN 是 AGPL-3.0）。面板里的「下载」会自动取回并放到桥同目录，国内走加速代理。',
+    label: 'BambuSource 库路径（留空 = 先看环境变量，再看桥旁边）',
+    hint: '这里不打包它（OBN 的许可证是 AGPL-3.0）。点面板里的「下载」会取回到数据目录的 bambusource/，并把路径自动填进这一项；也可以手动指向已有的库文件。',
   },
   tutkTimeoutMs: {
     kind: 'int',
@@ -123,6 +123,28 @@ export const SETTING_RULES = {
     max: 60000,
     label: '抓帧超时（毫秒）',
     hint: '云端抓一帧最长等多久（3000~60000）。',
+  },
+  enrollBaseUrl: {
+    kind: 'text',
+    def: '',
+    label: '登录网页地址（留空 = 用内置的 GitHub Pages）',
+    hint: '用户发「/打印机 登录」时收到的链接前缀，机器人只往后拼 #k=<公钥>。建议填你自己 fork 部署的那份，别人就改不了你要点开的页面。',
+  },
+  enrollTtlMinutes: {
+    kind: 'int',
+    def: 60,
+    min: 1,
+    max: 1440,
+    label: '信封生存时间（分钟，历史设置）',
+    hint: '登录网页已经固定生成 10 分钟有效的信封；这一项现在只作参考/兼容，改了也不会改变网页的 10 分钟。',
+  },
+  enrollMaxTtlMinutes: {
+    kind: 'int',
+    def: 1440,
+    min: 1,
+    max: 1440,
+    label: '信封最大生存时间（分钟）',
+    hint: '服务端只接受不超过这个值的信封（1~1440 分钟）。会自动不低于上面那项。',
   },
 }
 
@@ -172,6 +194,11 @@ export function normalizeSettings (raw) {
   const source = raw && typeof raw === 'object' ? raw : {}
   const out = {}
   for (const key of RULE_KEYS) out[key] = normalizeValue(SETTING_RULES[key], source[key])
+  // 交叉约束：最大生存时间不能小于建议生存时间，否则按网页默认值生成的信封
+  // 会被服务端自己拒掉（BAD_PAYLOAD），而界面上两处都写着合法范围。
+  const ttl = Number(out.enrollTtlMinutes)
+  const max = Number(out.enrollMaxTtlMinutes)
+  if (Number.isFinite(ttl) && Number.isFinite(max) && max < ttl) out.enrollMaxTtlMinutes = ttl
   return out
 }
 
