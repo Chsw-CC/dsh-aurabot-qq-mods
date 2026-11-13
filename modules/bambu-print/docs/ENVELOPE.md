@@ -1,6 +1,6 @@
 # 信封（envelope）：离线加密登录凭证
 
-模块 `bambu-print` 的安全码 / Bambu 账号 / 密码**永远不经过聊天**。
+模块 `bambu-print` 的 Bambu 账号 / 密码**永远不经过聊天**。
 用户在 GitHub Pages 的静态网页里填写，网页在浏览器本地用**本机公钥**加密成一段短文本
 （下称「信封」），用户只把这段密文贴给机器人。机器人用自己的私钥解开，用完即弃。
 
@@ -12,7 +12,7 @@
 | 方案 | 问题 |
 |---|---|
 | 对称加密 + 共享密钥 | 共享密钥必须写进静态网页（公开仓库）→ 谁都能解 |
-| 对称加密 + 安全码派生 | 机器人拿不到安全码就解不开，等于没解决「安全码不进聊天」 |
+| 对称加密 + 口令派生 | 机器人拿不到口令就解不开，等于没解决「密码不进聊天」 |
 | **公钥（本机生成，只公开公钥）** | 网页只能加密；只有这台机器上的私钥能解。静态网页公开也不影响 |
 
 私钥 `bbx-key.json` 只落在 `api.dataDir()`，0600，永不导出、永不出现在日志 / 聊天 / 面板。
@@ -61,40 +61,36 @@ info 必须逐字节等于 `bambu-print/envelope/v1`（UTF-8）。
 |---|---|---|---|
 | 0 | 4 | magic | ASCII `BBXB` |
 | 4 | 1 | bodyVer | `1` |
-| 5 | 1 | flags | 保留位；bit0=有账号，bit1=有密码，bit2=有新安全码。**只做一致性校验**，判定以长度为准 |
+| 5 | 1 | flags | 保留位；bit1 恒为 1（带账号）。**只做一致性校验** |
 | 6 | 4 | iat | 签发时间，Unix **秒**（u32） |
 | 10 | 4 | exp | 失效时间，Unix **秒**（u32），`exp = iat + ttl*60` |
 | 14 | 2 | ttlMin | 生存时间（分钟，u16），1..1440 |
 | 16 | 1 | region | `0`=us，`1`=eu，`2`=cn |
 | 17 | 16 | jti | 一次性随机值（16B），服务端据此防重放 |
-| 33 | 1 | codeLen | 安全码 UTF-8 字节数，0..128 |
-| 34 | * | code | 安全码（`normalizeCode`：仅 trim，大小写敏感） |
-| .. | 2 | accountLen | Bambu 账号 UTF-8 字节数，0..200 |
+| 33 | 2 | accountLen | Bambu 账号 UTF-8 字节数，1..200 |
 | .. | * | account | 账号（邮箱或手机号） |
-| .. | 2 | passwordLen | 密码 UTF-8 字节数，0..256 |
+| .. | 2 | passwordLen | 密码 UTF-8 字节数，1..256 |
 | .. | * | password | 密码 |
-| .. | 1 | newCodeLen | 新安全码字节数，0..128（改码模式用，0 = 无） |
-| .. | * | newCode | 新安全码 |
 
-定长前缀 33 字节 + 4 个长度前缀 6 字节 = 39 字节起。
+定长前缀 33 字节 + 2 个长度前缀 4 字节 = 37 字节起。
 
-三种用法（由字段是否为空决定，服务端按顺序判定）：
+只有一种用法：**登录**（账号 + 密码，两者都必须有）。
 
-| 用法 | code | account | password | newCode |
-|---|---|---|---|---|
-| 登录（首次自动建号） | ✓ | ✓ | ✓ | 空 |
-| 只解锁 | ✓ | 空 | 空 | 空 |
-| 改安全码 | ✓（旧） | 空 | 空 | ✓（新） |
 
-`code` 为空一律拒绝（`NO_CODE`）。account 与 password 必须同时有或同时没有（`BAD_PAYLOAD`）。
+
+
+
+
+
+account 或 password 缺一个就是 `BAD_PAYLOAD`。
 
 ## 3. 服务端策略（`lib/envelope.mjs`）
 
 - `ensureKeyPair(dir)` → 首次生成并落盘 `bbx-key.json`（0600），之后复用。
 - `publicKeyOf()` → 87 字符 b64url 点；`enrollLink(baseUrl, publicKey)` → `<base>#k=<pub>`。
-- `open(text)` → 解密 + 解析 + 校验，返回 `{ code, account, password, newCode, iat, exp, ttlMin, region, jti }`。
+- `open(text)` → 解密 + 解析 + 校验，返回 `{ account, password, iat, exp, ttlMin, region, jti }`。
   错误码：`BAD_FORMAT` / `BAD_VERSION` / `BAD_SUITE` / `TOO_LARGE` / `BAD_TAG` / `BAD_PAYLOAD` /
-  `EXPIRED` / `NOT_YET` / `REPLAYED` / `NO_CODE` / `BAD_INPUT`。
+  `EXPIRED` / `NOT_YET` / `REPLAYED` / `BAD_INPUT`。
 - 时间检查：`now > exp + SKEW(120s)` → `EXPIRED`；`iat > now + SKEW` → `NOT_YET`。
   生存时间上限由设置 `enrollMaxTtlMinutes`（默认 1440，上限 1440）兜底：`ttlMin > 上限` 视为 `BAD_PAYLOAD`。
   网页上默认填的是另一个设置 `enrollTtlMinutes`（默认 60）——这两个键在 `normalizeSettings` 里做了

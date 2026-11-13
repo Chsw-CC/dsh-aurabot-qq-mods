@@ -600,14 +600,14 @@ test('帮助用合并转发：默认一条塞进全部页，含风险与存储�
     assert.match(all, /modules-data/)
     assert.match(all, /host-key/)
     // 第 6 页：安全码与解锁
-    assert.match(all, /⑥ 安全码（已取消）/)
+    assert.match(all, /⑥ 凭据怎么保管/)
     assert.match(all, /暂停 · 继续 · 停止/)
     assert.match(all, /0 表示关加热/)
     assert.match(all, /群里只能暂停\/继续，停止必须私聊/)
     assert.match(all, /OAuth/)
     assert.match(all, /默认 30 分钟、只给看状态/)
     assert.match(all, /默认 10 条/)
-    assert.match(all, /安全码已经取消/)
+    assert.match(all, /没有安全码/)
 
     // 每页都不长（一页一条折叠卡片，太长照样没人看）
     for (const node of fwd.nodes) assert.ok(String(node).split('\n').length <= 16, '单页太长：' + String(node).slice(0, 40))
@@ -1425,7 +1425,7 @@ test('没有安全码：主人建号后直接能绑局域网、查状态', async
     const opened = await route(api, '/owner/nocode', {})
     assert.equal(opened.ok, true, JSON.stringify(opened))
     assert.equal(api.__vault.isUnlocked(OWNER), true, '建号后会话应当直接开着')
-    assert.equal(api.__vault.needsMigration(OWNER), false)
+    assert.equal(api.__vault.hasUser(OWNER), true)
 
     // 不用输任何安全码就能绑局域网
     const bound = await bindOwnerLan(api)

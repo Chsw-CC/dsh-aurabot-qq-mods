@@ -3,58 +3,34 @@
 // 这里**不 import bbx.js**：本文件只做字符串与数值判断，加解密一律交给 bbx.js，
 // 这样它能同时在浏览器（index.html）和 Node 单测里直接 import 使用。
 //
-// 判定口径与 docs/ENVELOPE.md 一致：
-// 现在只有一件事：填 Bambu 账号 + 密码，生成一段登录信封。
-// （安全码已取消；「只建号」「改安全码」这些用法也一并去掉，账号密码是必填。）
-// 安全码强度只做前端提示（errors 只放结构性错误，warnings 放「太弱」这类建议），
-// 最终以服务端 checkCodeStrength / vault 的判定为准。
+// 只有一件事：填 Bambu 账号 + 密码，生成一段登录信封。
+// （安全码已经取消；「只建号」「改安全码」这些用法也一并去掉了。）
 
 export const TTL_MIN = 1
 export const TTL_MAX = 1440
-export const CODE_MIN = 8
-export const CODE_MAX = 128
-export const CODE_DIGITS_MIN = 10
 export const ACCOUNT_MAX = 200
 export const PASSWORD_MAX = 256
 export const REGIONS = ['cn', 'us', 'eu']
-/** 页面下拉框的默认值，和 index.html 里 <option selected> 那一项一致。 */
+export const DEFAULT_REGION = 'cn'
+export const DEFAULT_TTL_MIN = 10
+
+/** 页面下拉框的选项，和 index.html 保持一致（默认中国大陆）。 */
 export const REGION_OPTIONS = [
   { value: 'cn', label: '中国大陆（bambulab.cn）' },
   { value: 'us', label: '国际（bambulab.com）' },
   { value: 'eu', label: '欧洲' },
 ]
-// 网页没给区域时按中国大陆处理（大多数用户是国服账号）。
-// 注意：这不是 lib/cloud.mjs 的 DEFAULT_REGION（那一个故意保持 us，见那边的注释）；
-// 这里只是这份网页表单的默认值，用户能在页面上改。
-export const DEFAULT_REGION = 'cn'
-export const DEFAULT_TTL_MIN = 10
 
-/** 三种信封用途的短标签（界面直接用，避免各处再写一遍）。 */
-export const KIND_LABELS = {
-  login: '登录',
-  unlock: '解锁',
-  changecode: '改安全码',
-}
+/** 唯一用途。保留常量是为了让调用点读起来明确。 */
+export const KIND_LABEL = { login: '登录' }
 
-/** 每种用途的一句话说明（界面提示用）。 */
+/** 一句话说明（界面提示用）。 */
 export const KIND_HINTS = {
   login: '登录 Bambu 云端，自动同步账号下的打印机。',
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
 const PHONE_RE = /^\d{5,15}$/
-
-// 与服务端 checkCodeStrength 保持同一份常见弱串表（只用于提示，不拦截）。
-const WEAK_SUBSTRINGS = [
-  'qwerty', 'qwertyui', 'asdfgh', 'zxcvbn', 'password', 'passwd', 'letmein',
-  'admin', 'abc123', '123456', '654321', '111111', '222222', '000000', '888888',
-  '999999', '666666',
-]
-const SEQUENCES = [
-  '0123456789', '9876543210',
-  'abcdefghijklmnopqrstuvwxyz', 'zyxwvutsrqponmlkjihgfedcba',
-  'qwertyuiop', 'poiuytrewq', 'asdfghjkl', 'lkjhgfdsa', 'zxcvbnm', 'mnbvcxz',
-]
 
 const utf8 = typeof TextEncoder === 'function' ? new TextEncoder() : null
 
@@ -71,97 +47,39 @@ function byteLength (value) {
   return utf8 ? utf8.encode(string).length : string.length
 }
 
-/**
- * 有账号或有密码就算「想登录」；有新安全码就算「改安全码」。
- * 只做用途归类，不做合法性判定（冲突由 validateInputs 报错）。
- * @param {{code?:string, account?:string, password?:string, newCode?:string}} input
- * @returns {'login'|'unlock'|'changecode'}
- */
-export function classify (input = {}) {
-  const account = trimmed(input.account)
-  const password = text(input.password)
-  const newCode = trimmed(input.newCode)
-  if (newCode) return 'changecode'
+/** 现在只有登录这一种信封。 */
+export function classify () {
   return 'login'
-}
-
-/** 安全码结构问题（与服务端 checkCodeStrength 的「硬规则」部分一致，只做提示）。返回问题条数。 */
-function pushCodeShapeErrors (value, label, errors) {
-  const before = errors.length
-  if (!value) {
-    errors.push(label + '不能为空')
-    return errors.length - before
-  }
-  if (value.length < CODE_MIN) errors.push(label + '至少 ' + CODE_MIN + ' 位（现在 ' + value.length + ' 位）')
-  if (value.length > CODE_MAX || byteLength(value) > CODE_MAX) errors.push(label + '最多 ' + CODE_MAX + ' 位')
-  if (/\s/.test(value)) errors.push(label + '不能包含空格或换行')
-  if (/^\d+$/.test(value) && value.length < CODE_DIGITS_MIN) {
-    errors.push('纯数字' + label + '至少 ' + CODE_DIGITS_MIN + ' 位')
-  }
-  return errors.length - before
-}
-
-/** 弱码原因（不带安全码原文，只描述问题），没问题返回空串。 */
-function weaknessOf (value) {
-  if (!value) return ''
-  if (new Set(value).size === 1) return '是同一个字符重复'
-  const lower = value.toLowerCase()
-  if (WEAK_SUBSTRINGS.some((weak) => lower.includes(weak))) return '含有 123456 / qwerty / password 这类常见串'
-  if (SEQUENCES.some((seq) => seq.includes(lower))) return '是连续序列（如 12345678 / abcdefgh）'
-  if (/^\d+$/.test(value) && new Set(value).size <= 2) return '纯数字里用到的数字太少'
-  return ''
 }
 
 /**
  * 校验一份表单。不抛错，全部问题都放进返回值。
+ * 永远不把账号 / 密码原文写进 errors 或 warnings（界面会直接显示这些文字）。
  *
- * 永远不把安全码 / 密码原文写进 errors 或 warnings（界面会直接显示这些文字）。
- *
- * @param {{code?:string, account?:string, password?:string, newCode?:string, ttlMin?:string|number|null}} input
- * @returns {{ok:boolean, errors:string[], kind:'login'|'unlock'|'changecode', warnings:string[]}}
+ * @param {{account?:string, password?:string, ttlMin?:string|number|null}} input
+ * @returns {{ok:boolean, errors:string[], kind:'login', warnings:string[]}}
  */
 export function validateInputs (input = {}) {
-  const code = trimmed(input.code)
   const account = trimmed(input.account)
-  const password = text(input.password) // 密码不 trim：首尾空格也是密码的一部分
-  const newCode = trimmed(input.newCode)
+  // 密码不 trim：首尾空格也是密码的一部分
+  const password = text(input.password)
   const ttlRaw = input.ttlMin
 
   const errors = []
   const warnings = []
-  const kind = classify({ code, account, password, newCode })
 
-  const hasAccount = account.length > 0
-  const hasPassword = password.length > 0
-  const hasNewCode = newCode.length > 0
+  // ---- 账号和密码都是必填
+  if (!account && !password) errors.push('请填写 Bambu 账号和密码')
+  else if (!account) errors.push('请填写 Bambu 账号')
+  else if (!password) errors.push('请填写 Bambu 密码')
 
-  // ---- 账号和密码都是必填（页面只做登录这件事）
-  if (!hasAccount && !hasPassword) errors.push('请填写 Bambu 账号和密码')
-  if (!hasAccount && hasPassword) errors.push('请填写 Bambu 账号')
-  if (hasAccount && !hasPassword) errors.push('请填写 Bambu 密码')
-  const codeProblems = 0
-
-  // ---- 账号与密码必须成对
-  if (hasAccount && hasPassword) {
+  if (account) {
     if (!EMAIL_RE.test(account) && !PHONE_RE.test(account)) {
       errors.push('Bambu 账号要填邮箱（如 name@example.com）或 5~15 位数字的手机号')
     }
     if (byteLength(account) > ACCOUNT_MAX) errors.push('Bambu 账号太长（最多 ' + ACCOUNT_MAX + ' 字节）')
     if (byteLength(password) > PASSWORD_MAX) errors.push('Bambu 密码太长（最多 ' + PASSWORD_MAX + ' 字节）')
-    if (hasPassword && !password.trim()) warnings.push('Bambu 密码只有空格，确认一下没填错。')
-  }
-
-  // ---- 新安全码（改码用）
-  if (hasNewCode) {
-    if (hasAccount || hasPassword) {
-      errors.push('改安全码时不要填 Bambu 账号或密码：一个信封只能做一件事')
-    }
-    const newProblems = pushCodeShapeErrors(newCode, '新安全码', errors)
-    if (newCode && code && newCode === code) warnings.push('新安全码和旧安全码一样，改了等于没改。')
-    const weakNew = newProblems ? '' : weaknessOf(newCode)
-    if (weakNew && newCode.length >= CODE_MIN) {
-      warnings.push('新安全码偏弱（' + weakNew + '），改码时服务端可能直接拒绝。')
-    }
+    if (password && !password.trim()) warnings.push('Bambu 密码只有空格，确认一下没填错。')
   }
 
   // ---- 生存时间
@@ -175,22 +93,19 @@ export function validateInputs (input = {}) {
     errors.push('生存时间要在 ' + TTL_MIN + '~' + TTL_MAX + ' 分钟之间')
   }
 
-  // ---- 强度提示（不拦截：最终以服务端为准；结构本身就不对时不再叠一条弱码提示）
-
-  return { ok: errors.length === 0, errors, kind, warnings }
+  return { ok: errors.length === 0, errors, kind: 'login', warnings }
 }
 
 /**
  * 组装 bbx.sealEnvelope 需要的明文 body。
  * 只拼数据，不做合法性判定（先调 validateInputs）。
  *
- * @param {{code?:string, account?:string, password?:string, newCode?:string, ttlMin?:string|number, region?:string, now?:number}} input
+ * @param {{account?:string, password?:string, ttlMin?:string|number, region?:string, now?:number}} input
  *        now：Unix 秒，缺省取当前时间；单测可注入。
- * @returns {{code:string, account:string, password:string, newCode:string, ttlMin:number, region:string, iat:number, exp:number}}
  */
 export function buildPayload (input = {}) {
   const ttlRaw = Math.round(Number(input.ttlMin))
-  // 没传就用默认 10 分钟（页面现在固定这个值，但直接调这个函数时也要有合理默认）
+  // 没传就用默认 10 分钟（页面固定这个值，但直接调这个函数时也要有合理默认）
   const ttlMin = Number.isFinite(ttlRaw) && ttlRaw >= TTL_MIN && ttlRaw <= TTL_MAX ? ttlRaw : DEFAULT_TTL_MIN
   const nowRaw = Number(input.now)
   const iat = Number.isFinite(nowRaw) && nowRaw > 0 ? Math.floor(nowRaw) : Math.floor(Date.now() / 1000)
@@ -198,10 +113,8 @@ export function buildPayload (input = {}) {
     ? trimmed(input.region).toLowerCase()
     : DEFAULT_REGION
   return {
-    code: trimmed(input.code),
     account: trimmed(input.account),
     password: text(input.password), // 密码原样保留（不 trim）
-    newCode: trimmed(input.newCode),
     ttlMin,
     region,
     iat,

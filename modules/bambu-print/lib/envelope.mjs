@@ -46,7 +46,7 @@ const MAX_BASE_URL = 300
 /** 允许出现在对外错误上的 code（其它一律折算成 IO，避免把内部细节漏出去）。 */
 const ALLOWED_CODES = new Set([
   'NO_CRYPTO', 'NOT_READY', 'BAD_KEY', 'BAD_FORMAT', 'BAD_VERSION', 'BAD_SUITE', 'TOO_LARGE',
-  'BAD_TAG', 'BAD_PAYLOAD', 'EXPIRED', 'NOT_YET', 'REPLAYED', 'NO_CODE', 'BAD_INPUT', 'IO'
+  'BAD_TAG', 'BAD_PAYLOAD', 'EXPIRED', 'NOT_YET', 'REPLAYED', 'BAD_INPUT', 'IO'
 ])
 
 /** 所有对外的中文话术：都不含任何明文秘密，也不解释「具体哪一位不对」。 */
@@ -63,7 +63,6 @@ const MESSAGES = {
   EXPIRED: '信封已过期，请重新生成一个',
   NOT_YET: '信封的签发时间比本机时间还晚，请检查两边的时钟',
   REPLAYED: '这个信封已经用过了，请重新生成一个',
-  NO_CODE: '信封里没有安全码',
   BAD_INPUT: '参数不正确',
   IO: '读写信封数据文件失败（检查数据目录的权限）'
 }
@@ -122,16 +121,9 @@ function resolveBase (value) {
   return clean
 }
 
-/**
- * 信封用途：有账号 → 登录；有新的安全码 → 改码；否则按「解锁」处理（顺序不能变）。
- *
- * 安全码取消之后实际只剩 login 有意义；unlock / changecode 保留给
- * 「旧的安全码格式记录做一次性迁移」那条路径，旧页面生成的信封仍然能认。
- */
-function kindOf (body) {
-  if (body.account) return 'login'
-  if (body.newCode) return 'changecode'
-  return 'unlock'
+/** 信封只有一种用途：登录（账号密码必填，见 bbx.js 的 encodeBody）。 */
+function kindOf () {
+  return 'login'
 }
 
 /** 日志里只留 jti 前 4 字节（base64url 4 字节 = 6 个字符）。 */
@@ -453,10 +445,8 @@ class EnvelopeService {
       this.#logInfo('信封已使用：' + kind + '，ttl=' + body.ttlMin + ' 分钟，jti=' + shortJti(body.jti))
       return {
         kind,
-        code: body.code,
         account: body.account,
         password: body.password,
-        newCode: body.newCode,
         ttlMin: body.ttlMin,
         exp: body.exp,
         region: body.region,
@@ -488,9 +478,8 @@ class EnvelopeService {
         expiresAt: body.exp * 1000,
         region: body.region,
         accountMasked: maskAccount(body.account),
-        hasAccount: !!body.account,
-        hasPassword: !!body.password,
-        hasNewCode: !!body.newCode
+        hasAccount: true,
+        hasPassword: true
       }
     } catch (err) {
       const wrapped = asEnvelopeError(err, 'IO')

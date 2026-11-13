@@ -137,7 +137,7 @@ test('register / unlock / 重复注册 / 非法 QQ', async () => {
   await assert.rejects(() => vault.unlock('999'), expectCode('NO_USER'))
 })
 
-test('vault.json 里没有明文安全码/访问码，只有加密盒子', async () => {
+test('vault.json 里没有明文凭据，只有加密盒子', async () => {
   const { vault, dir, binding } = await unlockedWithLan()
   await vault.register('222')
   await vault.addBinding('222', { label: '云端账号', mode: 'cloud', accessToken: CLOUD_TOKEN, uid: '123456789', region: 'us' })
@@ -152,8 +152,6 @@ test('vault.json 里没有明文安全码/访问码，只有加密盒子', async
   const record = parsed.users['111']
   assert.equal(record.v, 1)
   // 没有用户盐了：DEK 由本机主密钥包着，mode 标记为 host
-  assert.equal(record.mode, 'host')
-  assert.equal(record.salt, '')
   assert.equal(record.wrapped.v, 1)
   assert.equal(record.wrapped.tag.length > 0, true)
   assert.deepEqual(record.prefs, { groupShowName: false, selectedPrinter: '', interface: '', groupMode: '', groupPhoto: null })
@@ -232,40 +230,6 @@ test('lock / lockAll 清空会话', async () => {
   vault.lockAll()
   assert.equal(vault.summary().unlocked, 0)
 })
-
-test('migrateFromCode：旧的安全码记录可以迁移过来，绑定数据不丢', async () => {
-  const { vault, dir } = await unlockedWithLan()
-  const before = vault.printers('111')
-  assert.equal(vault.needsMigration('111'), false, '新记录本来就是 host 模式')
-
-  // 人工造一条旧格式记录（mode='code'，用 scrypt 包 DEK），模拟升级前的数据
-  const raw = JSON.parse(await readFile(path.join(dir, 'vault.json'), 'utf8'))
-  const { deriveKey, wrapKey, unwrapKey } = await import('../lib/crypto.mjs')
-  const kek = await deriveKey(CODE, Buffer.from(raw.users['111'].salt || 'AAAAAAAAAAAAAAAAAAAAAA==', 'base64'), { N: 1024, r: 8, p: 1 })
-  const recorded = JSON.parse(await readFile(path.join(dir, 'vault.json'), 'utf8')).users['111']
-  void kek
-
-  // 更简单可靠的做法：用一个全新实例建 code 模式记录来验证迁移路径
-  const legacy = createVault({ dir: await mkdtemp(path.join(os.tmpdir(), 'legacy-')), kdf: FAST_KDF, log: null })
-  await legacy.load()
-  await legacy.register('111')
-  assert.equal(legacy.needsMigration('111'), false, 'register 建的就是 host')
-
-  // 不能凭空迁移：没给旧码直接拒
-  await assert.rejects(() => vault.migrateFromCode('111', ''), expectCode('BAD_INPUT'))
-  // 已经是 host 模式的记录，迁移是空操作
-  const noop = await vault.migrateFromCode('111', 'whatever-code')
-  assert.equal(noop.migrated, false)
-
-  const after = vault.printers('111')
-  assert.equal(after.length, before.length)
-  assert.equal(after[0].accessCode, ACCESS_CODE, '绑定数据仍然可解')
-  assert.equal(vault.needsMigration('111'), false)
-  void unwrapKey
-  void wrapKey
-})
-
-// ------------------------------------------------------------------ 绑定
 
 test('addBinding 校验 LAN / cloud 输入', async () => {
   const { vault } = await unlockedWithLan()
@@ -691,16 +655,15 @@ test('listUsers 的 printers/bindings 是台数而不是数组', async () => {
 })
 
 
-test('免安全码账号：机器主密钥包装 DEK，直接能绑能用，且不碰安全码账号', async () => {
+test('账号：主机密钥包装 DEK，建号即可绑能用', async () => {
   const { dir, vault, clock } = await setup()
   try {
     // 1) 免码注册 + 免码解锁
-    const reg = await vault.registerWithoutCode('111')
+    const reg = await vault.register('111')
     assert.equal(reg.ok, true)
-    assert.equal(vault.needsMigration('111'), false, '所有人都是 host 模式')
     assert.equal(vault.isUnlocked('111'), true, '建号即可用')
 
-    const opened = await vault.unlockWithoutCode('111')
+    const opened = await vault.unlock('111')
     // 用注入的时钟比较（测试里 now() 是固定的，不能拿 Date.now() 比）
     assert.ok(opened.until > clock.t, '解锁应当给出未来的到期时间')
     assert.equal(vault.isUnlocked('111'), true)
@@ -723,31 +686,30 @@ test('免安全码账号：机器主密钥包装 DEK，直接能绑能用，且�
     assert.equal(raw.includes(ACCESS_CODE), false)
     assert.equal(raw.includes('BEGIN CERTIFICATE'), false)
 
-    // 5) 已经没有「设了安全码的账号」了：所有人都是 host 模式，都能直接开
+    // 5) 多用户互不影响：222 也能直接开
     await vault.register('222')
-    const opened222 = await vault.unlockWithoutCode('222')
+    const opened222 = await vault.unlock('222')
     assert.equal(opened222.ok, true)
     assert.equal(vault.isUnlocked('222'), true)
 
     // 6) 锁定后免码可以再开（这是它和「密码」的区别：可靠性换保密性）
     vault.lock('111')
     assert.equal(vault.isUnlocked('111'), false)
-    await vault.unlockWithoutCode('111')
+    await vault.unlock('111')
     assert.equal(vault.isUnlocked('111'), true)
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
-test('免安全码账号：host-key.bin 被换掉后解不开（不静默降级）', async () => {
+test('host-key.bin 被换掉后解不开（不静默降级）', async () => {
   const { dir, vault } = await setup()
   try {
-    await vault.registerWithoutCode('111')
-    await vault.unlockWithoutCode('111')
+    await vault.register('111')
     await vault.lock('111')
     // 模拟本机主密钥被替换：解不开就如实报错，而不是悄悄重建/丢数据
     await writeFile(path.join(dir, 'host-key.bin'), Buffer.alloc(32, 7))
     const fresh = createVault({ dir, log: null, kdf: FAST_KDF })
     await fresh.load()
-    await assert.rejects(() => fresh.unlockWithoutCode('111'), (err) => err.code === 'BAD_FILE')
+    await assert.rejects(() => fresh.unlock('111'), (err) => err.code === 'BAD_FILE')
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 

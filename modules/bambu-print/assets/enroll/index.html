@@ -162,7 +162,7 @@ if (bbx && formLib) {
 }
 
 async function boot (bbx, formLib) {
-  const state = { key: '', fingerprint: '', kind: 'unlock', frozen: false, busy: false }
+  const state = { key: '', fingerprint: '', kind: 'login', busy: false }
 
   const el = {
     manualKey: $('manual-key'),
@@ -262,11 +262,10 @@ async function boot (bbx, formLib) {
 
   // 现在只有「登录」一种用途，页面不再需要展示判定结果。
 
-  function renderValidation (frozenKind = null) {
+  function renderValidation () {
     const input = readForm()
     const verdict = formLib.validateInputs(input)
-    state.kind = frozenKind || verdict.kind
-    state.frozen = Boolean(frozenKind)
+    state.kind = 'login'
 
     const items = []
     for (const message of verdict.errors) {
@@ -366,10 +365,10 @@ async function boot (bbx, formLib) {
       el.result.hidden = false
       el.copyStatus.textContent = ''
       el.resultMeta.textContent =
-        '这是一段' + (KIND_LABEL[verdict.kind] || verdict.kind) + '信封，' +
+        '这是一段登录信封，' +
         formatExpiry(payload.exp) + ' 前有效，且只能用一次。已清空账号和密码输入框。'
       clearSecrets()
-      renderValidation(verdict.kind)
+      renderValidation()
       el.result.scrollIntoView({ block: 'center' })
     } catch (err) {
       const code = err && err.code ? err.code : ''

@@ -7,7 +7,7 @@
 // 浏览器和 Node 的行为逐字节一致（test/envelope.test.mjs 会在 Node 里跑互操作）。
 //
 // 格式见 docs/ENVELOPE.md：BBX1.<base64url( magic | ver | suite | eph | salt | iv | ct | tag )>
-// 明文 body = BBXB | bodyVer | flags | iat | exp | ttlMin | region | jti | code | account | password | newCode
+// 明文 body = BBXB | bodyVer | flags | iat | exp | ttlMin | region | jti | account | password
 //
 // 约定：本文件任何函数都不打印、不记录明文；错误只抛 EnvelopeError（带 code）。
 
@@ -18,7 +18,6 @@ export const SUITE = 1
 export const KDF_INFO = new TextEncoder().encode('bambu-print/envelope/v1')
 
 export const MAX_TEXT = 4096 // 整段信封文本上限
-export const MAX_CODE = 128
 export const MAX_ACCOUNT = 200
 export const MAX_PASSWORD = 256
 export const MAX_TTL_MIN = 1440
@@ -120,11 +119,6 @@ function bytesOf (text, max, what) {
   return bytes
 }
 
-/** 安全码归一化：只 trim，大小写敏感。和服务端 lib/crypto.mjs 的 normalizeCode 一致。 */
-export function normalizeCode (input) {
-  return input == null ? '' : String(input).trim()
-}
-
 class Writer {
   constructor () { this.parts = []; this.length = 0 }
   raw (bytes) { this.parts.push(bytes); this.length += bytes.length; return this }
@@ -154,22 +148,16 @@ class Reader {
 // ------------------------------------------------------------------ 明文 body
 
 /**
- * 构造 body 明文。code / account / password / newCode 用字符串传（null/'' 视为没有）。
+ * 构造 body 明文。只有四个业务字段：账号、密码、签发/失效时间（+ 区域、jti）。
  * @returns {Uint8Array}
  */
 export function encodeBody (input = {}) {
-  // 安全码按 normalizeCode 的口径只 trim、不改大小写（见 docs/ENVELOPE.md §2.3）。
-  // 密码一个字符都不能动：首尾空格也可能是密码的一部分。
-  const code = bytesOf(normalizeCode(input.code), MAX_CODE, '安全码')
   const account = bytesOf(input.account, MAX_ACCOUNT, '账号')
+  // 密码一个字符都不能动：首尾空格也可能是密码的一部分。
   const password = bytesOf(input.password, MAX_PASSWORD, '密码')
-  const newCode = bytesOf(input.newCode, MAX_CODE, '新安全码')
-  // 安全码已经取消：这段字段现在只是「可选的旧口令」（迁移旧记录时才用），不再必填。
-  // 格式不变，所以已经发出去的旧页面仍然能生成能被解开的新信封。
-  if (Boolean(account.length) !== Boolean(password.length)) {
-    throw new EnvelopeError('BAD_PAYLOAD', '账号和密码必须同时填或同时留空')
-  }
-  if (account.length && newCode.length) throw new EnvelopeError('BAD_PAYLOAD', '登录和改安全码不能装在同一个信封里')
+  // 账号和密码必须都有 —— 这个信封唯一的用途就是登录。
+  if (!account.length) throw new EnvelopeError('BAD_PAYLOAD', '信封里没有 Bambu 账号')
+  if (!password.length) throw new EnvelopeError('BAD_PAYLOAD', '信封里没有 Bambu 密码')
   const ttlMin = Math.round(Number(input.ttlMin))
   if (!Number.isFinite(ttlMin) || ttlMin < 1 || ttlMin > MAX_TTL_MIN) {
     throw new EnvelopeError('BAD_PAYLOAD', '生存时间要在 1~' + MAX_TTL_MIN + ' 分钟之间')
@@ -178,14 +166,13 @@ export function encodeBody (input = {}) {
   if (!Number.isFinite(iat) || iat <= 0) throw new EnvelopeError('BAD_PAYLOAD', '签发时间不正确')
   const exp = Math.floor(Number(input.exp))
   if (!Number.isFinite(exp) || exp <= iat) throw new EnvelopeError('BAD_PAYLOAD', '失效时间不正确')
-  const region = REGIONS[String(input.region || 'us')]
+  const region = REGIONS[String(input.region || 'cn')]
   if (region === undefined) throw new EnvelopeError('BAD_PAYLOAD', '区域只能是 us / eu / cn')
   const jti = input.jti instanceof Uint8Array ? input.jti : randomBytes(JTI_BYTES)
   if (jti.length !== JTI_BYTES) throw new EnvelopeError('BAD_PAYLOAD', 'jti 必须是 ' + JTI_BYTES + ' 字节')
 
-  let flags = 1
-  if (account.length) flags |= 2
-  if (newCode.length) flags |= 4
+  // flags 只留一位「带不带账号」，用来做一致性校验（真正判定一律以长度为准）。
+  const flags = 2
 
   const w = new Writer()
   w.raw(utf8.encode(BODY_MAGIC))
@@ -196,16 +183,14 @@ export function encodeBody (input = {}) {
   w.u16(ttlMin)
   w.u8(region)
   w.raw(jti)
-  w.lp8(code)
   w.lp16(account)
   w.lp16(password)
-  w.lp8(newCode)
   return w.done()
 }
 
 /**
  * 解析 body。只做结构解析，不做时间/重放判定（那是服务端策略，见 lib/envelope.mjs）。
- * @returns {{code:string,account:string,password:string,newCode:string,iat:number,exp:number,ttlMin:number,region:string,jti:string,flags:number}}
+ * @returns {{account:string,password:string,iat:number,exp:number,ttlMin:number,region:string,jti:string,flags:number}}
  */
 export function decodeBody (bytes) {
   const r = new Reader(bytes instanceof Uint8Array ? bytes : u8(bytes))
@@ -220,32 +205,24 @@ export function decodeBody (bytes) {
   const ttlMin = r.u16()
   const regionCode = r.u8()
   const jti = r.raw(JTI_BYTES)
-  const code = r.text(r.lp8('安全码'))
   const account = r.text(r.lp16('账号'))
   const password = r.text(r.lp16('密码'))
-  const newCode = r.text(r.lp8('新安全码'))
   if (r.left !== 0) throw new EnvelopeError('BAD_PAYLOAD', '信封尾部有多余内容')
 
   if (regionCode > 2) throw new EnvelopeError('BAD_PAYLOAD', '区域标记不正确')
-  const hasAccount = Boolean(account.length)
-  const hasPassword = Boolean(password.length)
-  const hasNew = Boolean(newCode.length)
-  // flags 只做一致性校验：真正判定一律以长度为准，免得网页写错一个 bit 就锁死用户。
-  if (hasAccount !== Boolean(flags & 2)) throw new EnvelopeError('BAD_PAYLOAD', '信封标记和内容不一致')
-  if (hasNew !== Boolean(flags & 4)) throw new EnvelopeError('BAD_PAYLOAD', '信封标记和内容不一致')
-  if (hasAccount !== hasPassword) throw new EnvelopeError('BAD_PAYLOAD', '账号和密码必须同时有或同时没有')
-  // 同 encodeBody：安全码不再必填
-  if (hasAccount && hasNew) throw new EnvelopeError('BAD_PAYLOAD', '登录和改安全码不能装在同一个信封里')
+  if (!account) throw new EnvelopeError('BAD_PAYLOAD', '信封里没有 Bambu 账号')
+  if (!password) throw new EnvelopeError('BAD_PAYLOAD', '信封里没有 Bambu 密码')
+  if (!(flags & 2)) throw new EnvelopeError('BAD_PAYLOAD', '信封标记和内容不一致')
   if (!(exp > iat)) throw new EnvelopeError('BAD_PAYLOAD', '信封的时间范围不正确')
   if (!(ttlMin >= 1 && ttlMin <= MAX_TTL_MIN)) throw new EnvelopeError('BAD_PAYLOAD', '生存时间超出范围')
-  if (String(account).length > MAX_ACCOUNT || String(password).length > MAX_PASSWORD) {
+  const accountBytes = utf8.encode(account).length
+  const passwordBytes = utf8.encode(password).length
+  if (accountBytes > MAX_ACCOUNT || passwordBytes > MAX_PASSWORD) {
     throw new EnvelopeError('BAD_PAYLOAD', '信封字段过长')
   }
   return {
-    code,
     account,
     password,
-    newCode,
     iat,
     exp,
     ttlMin,

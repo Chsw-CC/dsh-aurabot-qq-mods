@@ -2,14 +2,14 @@
 //
 // 四件事：
 //   1. 把「谁是谁」弄清楚：私聊 / 群聊 / 白名单，默认拒绝；
-//   2. 把每个用户的秘密锁在自己的保险箱里：安全码 → scrypt → AES-256-GCM，连主人也拿不到；
+//   2. 把每个用户的秘密锁在自己的保险箱里：每人一把随机 DEK（AES-256-GCM），主密钥在本机；
 //   3. 把 Bambu 局域网 / 云端协议接起来：状态、暂停继续、停止、灯光、速度、温度、拍照（含云端 TUTK）；
 //   4. 群聊默认脱敏：只说进度、已打印 / 剩余时间，不透露文件名和项目名。
 //
 // 设计约定：
 // - 私聊里给「自己的」打印机；想用别人的打印机，必须由对方在私聊里主动授权（限时、可选范围、
 //   只覆盖对方选中的绑定）。**授权的本质就是把绑定者自己的 Bambu 凭据限时共享给受权人**，
-//   对方立即就能查看/管理这些打印机；但凭据只解密在进程内存里，对方拿不到绑定者的安全码，
+//   对方立即就能查看/管理这些打印机；但凭据只解密在进程内存里，对方拿不到绑定者的任何凭据，
 //   也解不开其它绑定，且主人随时能撤销、到期自动失效。
 // - 一个凭据（token / 局域网访问码）可以对应多台打印机：解析到多台时不猜，列编号让用户选。
 // - 所有明文秘密只在本文件的局部变量里出现，绝不写日志、绝不拼进返回给聊天/面板的字符串。
@@ -115,15 +115,13 @@ const HELP_PAGES = [
   },
   {
     key: 'security',
-    title: '⑥ 安全码（已取消）',
+    title: '⑥ 凭据怎么保管',
     lines: [
-      '安全码已经取消：不用设、不用记、不用解锁。',
-      '你的凭据由这台机器的本机主密钥保管，仍然加密落盘（每人一把独立密钥）。',
+      '没有安全码：不用设、不用记、不用解锁。',
+      '你的凭据仍然加密落盘（每人一把独立密钥），主密钥在这台机器上。',
       '代价：能读这台机器数据目录的人可以解开这些凭据——机器本身要可信。',
       '/打印机 锁定',
       '  清掉内存里缓存的密钥；下次用会自动恢复。',
-      '/打印机 改安全码 <旧安全码>',
-      '  只用于「旧的安全码格式」记录做一次性迁移，迁移完就再也不需要。',
       '这些只能在私聊里用。',
     ],
   },
@@ -223,7 +221,7 @@ const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/
 export default {
   id: 'bambu-print',
   name: '拓竹',
-  version: '1.2.0',
+  version: '1.1.0',
   api: 1,
   description: '看拓竹 3D 打印机状态、暂停继续、停止、灯光、温度和拍照；每个用户一条独立加密凭据，默认谁也看不到别人的 token，只有本人主动授权才限时共享。',
   panel: 'panel.js',
@@ -356,7 +354,7 @@ export default {
         defaultInterface: n.defaultInterface,
         ownerInterface: n.ownerInterface,
         ownerLocalAllowed: n.ownerLocalAllowed,
-        // 主人免安全码：默认开。关掉后主人也得自己设安全码（原有行为）。
+        // 主人账号：和其它用户一样，由本机主密钥保管，不需要任何码。
         ownerNoCode: n.ownerNoCode,
         tutkBridgePath: n.tutkBridgePath,
         tutkLibPath: n.tutkLibPath,
@@ -395,20 +393,17 @@ export default {
       maxBindings: settings().maxBindings,
     })
     /**
-     * 没有安全码之后，「能不能用」只是「有没有记录 + 记录是否还需要迁移」。
+     * 能不能用只看「有没有这条记录」。
      * 会话（DEK 在不在内存）变成纯缓存：锁过、过期都会自动续上，用户不该撞到 LOCKED。
      */
     const ownerQQOf = () => String((api.config() && api.config().ownerQQ) || '')
-    const needsMigrationNow = (qq) => {
-      try { return vault.needsMigration(String(qq || '')) } catch { return false }
-    }
+
     const ensureSession = async (qq) => {
       const id = String(qq || '')
       if (!id) return false
       try {
         await ready()
         if (!vault.hasUser(id)) return false
-        if (vault.needsMigration(id)) return false
         if (!vault.isUnlocked(id)) await vault.unlock(id)
         return vault.isUnlocked(id)
       } catch (error) {
@@ -563,7 +558,7 @@ export default {
       const hasLan = !!(String(printer.ip || '').trim() && String(printer.accessCode || '').trim())
       const hasCloud = printer.mode === 'cloud' && !!printer.accessToken && !!printer.uid
       // 授权来的打印机：凭据是绑定者主动共享的，按「和绑定者同等」选接口（否则主人绑的
-      // 局域网打印机被授权出去就完全用不了）。安全码仍然不共享。
+      // 局域网打印机被授权出去就完全用不了）。凭据始终不共享，只共享使用权。
       const isOwner = !!(who && who.isOwner) || printer.granted === true
       // 局域网接口只提供给主人（以及拿到授权的人）：其他用户一律云端。
       if (!isOwner) {
@@ -802,7 +797,7 @@ export default {
     }
 
     function lockedHint() {
-      return '保险箱还锁着：先私聊我「/打印机 解锁 <安全码>」。安全码是唯一钥匙，我、主人也都看不到。'
+      return '这个账号还没有绑定打印机：先私聊我「/打印机 登录」，在网页里填 Bambu 账号密码。'
     }
 
     function explain(error) {
@@ -810,10 +805,8 @@ export default {
       const table = {
         NO_USER: '这个 QQ 还没有绑定。',
         EXISTS: '已经绑定过了，用「/打印机 解锁」。',
-        BAD_CODE: '安全码不对。',
         LOCKED_OUT: '错太多次了，先等一会儿再试。',
         LOCKED: '保险箱锁着，先解锁。',
-        WEAK_CODE: '安全码太弱：至少 8 位，纯数字至少 10 位，别用连续数字。',
         NOT_FOUND: '找不到这条记录。',
         BAD_INPUT: '参数不对。',
         EXPIRED: '已经过期了。',
@@ -1020,7 +1013,7 @@ export default {
           const secret = vault.secretOf(secretOwner, printer.bindingId)
           if (secret && secret.mode === 'cloud') { accessToken = secret.accessToken; tokenRegion = secret.region || tokenRegion }
         } catch (error) {
-          return { ok: false, code: 'LOCKED', message: '云端画面需要这台打印机的 token：请让绑定者私聊「/打印机 解锁 <安全码>」后再试。' }
+          return { ok: false, code: 'LOCKED', message: '云端画面需要这台打印机的 token：请让绑定者私聊「/打印机 登录」重新登录一次，再试。' }
         }
       }
       if (!accessToken) {
@@ -1126,9 +1119,6 @@ export default {
           await vault.register(who.userId)
           await audit(who.userId, 'register', true, 'envelope')
         }
-        if (vault.needsMigration(who.userId)) {
-          return '你这条记录还是旧的安全码格式：先发 /打印机 迁移，在网页里填一次旧安全码，之后就不用再输了。'
-        }
         const region = Object.hasOwn(REGIONS, opened.region) ? opened.region : 'us'
         const session = (testHooks.createCloudLogin || createCloudLogin)({
           account: opened.account,
@@ -1181,7 +1171,6 @@ export default {
         EXPIRED: '信封过期了（生存时间从生成那一刻开始算），重新生成一段。',
         NOT_YET: '这台机器的时钟比签发时间还早，检查系统时间或重新生成。',
         REPLAYED: '这段信封已经用过了。信封是一次性的，重新生成一段。',
-        NO_CODE: '信封里没有安全码，重新在网页上填一次。',
         NOT_READY: '登录密钥还没就绪，让主人在面板「登录信封」里看一下。',
         NO_CRYPTO: '当前环境不支持 WebCrypto。',
         BAD_KEY: '登录密钥损坏了，需要主人在面板里重置一次（旧链接会失效）。',
@@ -1190,7 +1179,7 @@ export default {
     }
 
     function kindLabel (kind) {
-      return kind === 'login' ? '登录' : kind === 'unlock' ? '解锁' : kind === 'changecode' ? '改安全码' : String(kind)
+      return kind === 'login' ? '登录' : String(kind)
     }
 
     // ---------- 命令分发 ----------
@@ -1199,7 +1188,7 @@ export default {
       const text = String(arg || '').trim()
       const s = settings()
       const who = senderOf(msg)
-      // 免安全码的主人：任何命令进来先无感开一次会话（设了安全码的账号这里什么都不做）
+      // 每次命令进来确保会话可用（正常情况下就是空操作）
       if (who.isOwner) await ensureOwnerSession()
       // 多用户模式关掉 = 只服务主人一个人：别人连帮助都不给，静默不理
       if (s.multiUser === false && !who.isOwner) return null
@@ -1222,7 +1211,7 @@ export default {
 
       // 敏感操作只认私聊：先于任何绑定/白名单判断，免得群里给出「你还没绑定」这种误导。
       if (msg.kind !== 'private' && /^(设置安全码|设安全码|register|改安全码|改码|changecode|解锁|unlock|登录|登陆|login|验证码|code|两步验证|2fa|tfa|绑定|添加|bind|解绑|取消绑定|unbind|同步|刷新|sync|授权|grant|撤销|revoke|群权限|群设置|groupperm|接口|interface|通道|证书|cert|锁定|lock)$/.test(head)) {
-        return '这个操作只能在私聊里做：群里发安全码、访问码会被所有人看到。'
+        return '这个操作只能在私聊里做：群里发访问码会被所有人看到。'
       }
 
       const g = gate(msg)
@@ -1234,54 +1223,22 @@ export default {
         return '你的打印机：\n' + formatChoiceList(list) + '\n\n用「/打印机 状态 1」这样带编号或名字。'
       }
 
-      if (/^(解锁|unlock)$/.test(head)) {
-        // 安全码已经取消：不再需要解锁。保留这条命令只为给还记着旧用法的人一句明确答复。
+      if (/^(解锁|unlock|设置安全码|设安全码|register|改安全码|改码|changecode)$/.test(head)) {
+        // 安全码整体取消了。这几条老命令保留识别，但从聊天里收不到任何东西，
+        // 只回一句「该怎么做」——否则照着旧帮助发一句明文又会以为能跑通。
         if (msg.kind !== 'private') return '这个操作只能在私聊里做。'
-        if (!vault.hasUser(who.userId)) {
-          return '你还没有绑定打印机。第一次用请发 /打印机 登录，在网页里填 Bambu 账号 + 密码。'
-        }
-        if (vault.needsMigration(who.userId)) {
-          return '你这条记录还是旧的安全码格式：发 /打印机 改安全码，在网页里填一次旧安全码即可，之后不用再输。'
-        }
-        return '不用解锁了：安全码已经取消，你的凭据由这台机器的本机主密钥保管，直接就能用。'
+        return [
+          '安全码已经取消了：不用设置、不用解锁、也不用改。',
+          '· 凭据由这台机器保管，直接就能用',
+          '· 第一次用或换了账号：/打印机 登录（在网页里填账号密码，不经过聊天）',
+          '· 想清掉内存里缓存的密钥：/打印机 锁定',
+        ].join('\n')
       }
 
       if (/^(锁定|lock)$/.test(head)) {
         vault.lock(who.userId)
         await audit(who.userId, 'lock', true)
         return '已清掉内存里的缓存密钥。下次用会自动恢复（本机主密钥还在）。'
-      }
-
-      if (/^(设置安全码|设安全码|register)$/.test(head)) {
-        // 安全码取消后这条命令没有意义了；明确引导到唯一正确的入口。
-        return [
-          '安全码已经取消，不用再设置：',
-          '· 第一次用：直接 /打印机 登录，在网页里填 Bambu 账号 + 密码（网页在本地加密，不进聊天）',
-          '· 你的凭据由这台机器的本机主密钥保管，不需要你记任何码',
-        ].join('\n')
-      }
-
-      if (/^(改安全码|改码|changecode)$/.test(head)) {
-        // 现在只剩一个用途：把「旧的安全码格式」记录迁移过来。
-        if (msg.kind !== 'private') return '只能在私聊里做。'
-        if (!vault.hasUser(who.userId)) return '你还没有绑定打印机：先 /打印机 登录。'
-        if (!vault.needsMigration(who.userId)) {
-          return '安全码已经取消了，不需要改码；直接 /打印机 登录 就行。'
-        }
-        const oldCode = rest.trim()
-        if (!oldCode) {
-          return '这条记录是旧的安全码格式，迁移需要原来的安全码：/打印机 改安全码 <旧安全码>'
-        }
-        try {
-          const r = await vault.migrateFromCode(who.userId, oldCode)
-          await audit(who.userId, 'migrate', true, r.migrated ? 'migrated' : 'noop')
-          return r.migrated
-            ? '已迁移到本机主密钥：以后不需要任何安全码了。'
-            : '这条记录本来就不需要迁移。'
-        } catch (error) {
-          await audit(who.userId, 'migrate', false, error.code || 'BAD_CODE')
-          return '迁移失败：' + explain(error)
-        }
       }
 
       if (/^(登录|登陆|login)$/.test(head)) {
@@ -1562,7 +1519,7 @@ export default {
             '  · 涉及 ' + (list.length || 1) + ' 台：' + (list.map((p) => p.name || p.serial).slice(0, 5).join('、') || '你当前绑定的打印机'),
             '  · 有效期：到 ' + until + ' 自动失效；随时可以「/打印机 撤销 ' + r.grantId + '」',
             '',
-            '对方能看到状态里的文件信息，也能像你一样操作这些打印机；但**拿不到你的安全码**，也碰不到你没授权的绑定。',
+            '对方能看到状态里的文件信息，也能像你一样操作这些打印机；但**拿不到你的凭据**，也碰不到你没授权的绑定。',
             '注意：共享期间你要保持解锁（凭据只从你的保险箱里现解，不另存副本）。',
           ].join('\n')
         } catch (error) {
@@ -1750,7 +1707,7 @@ export default {
       await ready()
       const who = senderOf(msg)
 
-      // 明确命令先处理：新用户还没绑定，也要能用「设置安全码 / 绑定」
+      // 明确命令先处理：新用户还没绑定，也要能用「登录 / 绑定」
       const cmd = text.match(/^[/／]\s*打印机\s*([\s\S]*)$/)
       if (cmd) {
         await replyWith(msg, await handleCommand(cmd[1], msg))
@@ -1844,7 +1801,7 @@ export default {
             if (acc.mode === 'off') return { ok: false, message: '这台打印机的主人在群里关掉了打印机功能。' }
             if (action !== 'status' && acc.mode !== 'control') return { ok: false, message: '这台打印机的主人在群里只允许查看状态。' }
           }
-          if (!picked.printer.granted && !vault.isUnlocked(userId)) return { ok: false, message: '用户的保险箱锁着：请他在私聊里发「/打印机 解锁 <安全码>」再来。' }
+          if (!picked.printer.granted && !vault.isUnlocked(userId)) return { ok: false, message: '请用户在私聊里发「/打印机 登录」重新登录一次，再来。' }
           const scope = action === 'status' ? 'status' : 'control'
           if (!canUseScope(picked.printer, scope)) return { ok: false, message: '这个授权没有这个范围。' }
           if (action === 'status') {
@@ -1892,20 +1849,20 @@ export default {
         rules: describeRules(),
         // 主人状态：面板顶部和「局域网绑定」页都要它，不再逼面板先调 /lan/status 才知道解锁没。
         // qq 是完整号：面板跑在本机主人自己的浏览器里，要认出「这条凭据是谁的」得看全号；
-        // 秘密（token / 访问码 / 安全码）仍然一条都不给。qqMasked 留着给外部调用方 / 日志用。
+        // 秘密（token / 访问码）仍然一条都不给。qqMasked 留着给外部调用方 / 日志用。
         owner: {
           qq: String((api.config() && api.config().ownerQQ) || ''),
           qqMasked: maskQQ(String((api.config() && api.config().ownerQQ) || '')),
           online: vault.isUnlocked(String((api.config() && api.config().ownerQQ) || '')),
           lanAllowed: s.ownerLocalAllowed,
           unlockDays: unlockDaysOf(api.settings()),
-          // 免安全码：开关 + 这个账号实际是不是免码建的 + 有没有建过账号
+          // 账号状态（兼容字段：codeless 恒为 true）
           noCode: s.ownerNoCode !== false,
           // 所有人都没有安全码了；保留字段只为兼容老面板
           codeless: true,
           hasAccount: (() => { try { return !!ownerQQOf() && vault.hasUser(ownerQQOf()) } catch { return false } })(),
         },
-        risk: '访问码 / token 等同于打印机控制权；安全码是唯一解密钥匙（忘了只能清空重绑）。默认谁也看不到别人的 token；本人主动授权 = 限时共享自己的凭据，对方能查看/管理这些打印机，但拿不到安全码，也随时可被撤销。任何人都不应把安全码、访问码发到群里。',
+        risk: '访问码 / token 等同于打印机控制权。默认谁也看不到别人的凭据；本人主动授权 = 限时共享使用权，对方能查看/管理这些打印机，但拿不到凭据，也随时可被撤销。不要把密码、访问码发到群里。',
         users: vault.listUsers().map((u) => {
           const p = vault.publicPrefs(u.qq)
           // 未解锁时 listBindings 只能给元数据（没有秘密），正好够列表展示
@@ -1926,7 +1883,7 @@ export default {
         }),
         grants: vault.listGrants().map((g) => ({ id: g.id, ownerMasked: maskQQ(g.ownerQQ), granteeMasked: maskQQ(g.granteeQQ), scopes: g.scopes, expiresAt: g.expiresAt, revoked: g.revoked })),
         // 审计的操作者给完整 QQ：面板在本机主人自己的浏览器里跑，要能认出「这是谁做的」，
-        // 打码反而让这条记录失去意义。秘密（token / 访问码 / 安全码）仍然一条都不给。
+        // 打码反而让这条记录失去意义。秘密（token / 访问码）仍然一条都不给。
         audit: vault.auditList(50).map((a) => ({ at: a.at, actor: String(a.actor || ''), actorMasked: maskQQ(a.actor), action: a.action, ok: a.ok, note: a.note || '' })),
         counts: vault.summary(),
       }
@@ -2007,7 +1964,6 @@ export default {
       const qq = String(q.qq || '')
       if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个 QQ 还没绑定' }
       if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
-      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       return { ok: true, bindings: vault.listBindings(qq).map((b) => ({ id: b.id, label: b.label, mode: b.mode, tokenMask: b.tokenMask, printers: b.printers.map((p) => ({ serialMasked: maskSerial(p.serial), name: p.name || '', model: p.model || '' })) })) }
     })
 
@@ -2016,7 +1972,6 @@ export default {
       const b = await body(req)
       const qq = String(b.qq || '')
       if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
-      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       const mode = b.mode === 'cloud' ? 'cloud' : 'lan'
       if (mode === 'lan' && String(qq) !== String(api.config().ownerQQ)) {
         return { ok: false, code: 'OWNER_ONLY', message: '局域网绑定只提供给主人；其他用户请用「云端登录」（Bambu 账号）。' }
@@ -2053,7 +2008,6 @@ export default {
       const b = await body(req)
       const qq = String(b.qq || '')
       if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
-      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       try {
         await vault.removeBinding(qq, String(b.bindingId || ''))
         await audit(qq, 'unbind', true, '', String(b.bindingId || ''))
@@ -2068,7 +2022,6 @@ export default {
       const b = await body(req)
       const qq = String(b.qq || '')
       if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
-      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       const list = vault.printers(qq)
       const picked = pickPrinter(list, String(b.selector || ''))
       if (!picked.ok) {
@@ -2088,7 +2041,6 @@ export default {
       const b = await body(req)
       const qq = String(b.qq || '')
       if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
-      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       const action = String(b.action || '')
       if (!['pause', 'resume', 'stop', 'light', 'speed', 'temperature', 'home'].includes(action)) return { ok: false, code: 'BAD_INPUT', message: '不认识的动作' }
       if (action === 'stop' && b.confirm !== true) return { ok: false, code: 'NEED_CONFIRM', message: '停止打印需要确认：再点一次「确认停止」' }
@@ -2115,7 +2067,6 @@ export default {
       const b = await body(req)
       const qq = String(b.qq || '')
       if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
-      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       const list = vault.printers(qq)
       const picked = pickPrinter(list, String(b.selector || ''))
       if (!picked.ok) return picked.code === 'NEED_CHOICE' ? { ok: true, needChoice: true, choices: list.map((p) => ({ index: p.index, label: p.bindingLabel || p.label || '', name: p.name || '', model: p.model || '', serialMasked: maskSerial(p.serial) })) } : { ok: false, code: picked.code, message: picked.message }
@@ -2130,7 +2081,6 @@ export default {
       const b = await body(req)
       const qq = String(b.qq || '')
       if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
-      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       const grantee = String(b.grantee || '')
       if (!/^\d{4,15}$/.test(grantee)) return { ok: false, code: 'BAD_INPUT', message: '对方 QQ 不对' }
       if (grantee === qq) return { ok: false, code: 'BAD_INPUT', message: '不用授权给自己' }
@@ -2156,7 +2106,6 @@ export default {
       const qq = String(b.qq || '')
       if (!qq) return { ok: false, code: 'BAD_INPUT', message: '撤销授权必须由授权人本人解锁后操作' }
       if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
-      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       try {
         await vault.revokeGrant({ byQQ: qq, grantId })
         await audit(qq, 'revoke', true, '', grantId)
@@ -2172,7 +2121,6 @@ export default {
       const b = await body(req)
       const qq = String(b.qq || '')
       if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
-      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       const cloudBindings = vault.listBindings(qq).filter((x) => x.mode === 'cloud')
       if (!cloudBindings.length) return { ok: false, code: 'NO_CLOUD', message: '这个用户没有云端绑定' }
       if (b.confirm !== true) return { ok: false, code: 'NEED_CONFIRM', message: '退出会删掉云端 token，需要确认：再带 confirm=true 提交' }
@@ -2432,8 +2380,8 @@ export default {
     // 注意：/lan/bind 要用到后面才定义的 bindLan，所以这三条路由的注册放在 bindLan 之后。
 
     /**
-     * 主人免安全码：建一个 mode:'host' 的账号（DEK 由本机主密钥包着），并立即开一个会话。
-     * 只对主人开放；别的用户仍然必须自己设安全码。
+     * 主人建号：DEK 由本机主密钥包着，建完立即开一个会话。
+     * 只对主人开放；别的用户通过「/打印机 登录」建号。
      */
     api.route('/owner/nocode', async (req) => {
       await ready()
@@ -2445,9 +2393,6 @@ export default {
         if (!vault.hasUser(ownerQQ)) {
           await vault.register(ownerQQ)
           await audit(ownerQQ, 'register', true, '面板', ownerQQ)
-        }
-        if (vault.needsMigration(ownerQQ)) {
-          return { ok: false, code: 'NEED_MIGRATE', message: '这个主人的记录还是旧的安全码格式：先用它原来的安全码迁移一次。' }
         }
         applyLockMinutes()
         const session = await vault.unlock(ownerQQ)
@@ -2505,9 +2450,6 @@ export default {
         void b
         const minutes = applyLockMinutes()
         if (!vault.hasUser(ownerQQ)) return { ok: false, code: 'NO_USER', message: '还没有账号：先在上面点一下建立账号。' }
-        if (vault.needsMigration(ownerQQ)) {
-          return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式：先用它原来的安全码迁移一次。' }
-        }
         const r = await vault.unlock(ownerQQ)
         await audit(ownerQQ, 'unlock', true, 'panel', ownerQQ)
         return { ok: true, until: r.until, unlockDays: Math.max(1, Math.round(minutes / 1440)) }
@@ -2589,7 +2531,7 @@ export default {
       const owner = String(api.config().ownerQQ || '')
       if (!qq || qq !== owner) return { ok: false, code: 'OWNER_ONLY', message: '局域网绑定只提供给主人。' }
       if (!vault.isUnlocked(qq)) {
-        return { ok: false, code: 'LOCKED', message: '先解锁主人（/打印机 解锁 <安全码>），再绑定局域网打印机。' }
+        return { ok: false, code: 'LOCKED', message: '主人还没有账号：先在面板里点一下建立账号，或私聊发 /打印机 登录 完成一次登录，再绑定局域网打印机。' }
       }
       const cleaned = (Array.isArray(printers) ? printers : [])
         .map((p) => ({ serial: String(p && p.serial || '').trim(), ip: String(p && p.ip || '').trim(), name: String(p && p.name || '').trim() }))
@@ -2663,7 +2605,7 @@ export default {
       run: (arg, msg) => handleCommand(arg, msg),
       summary: () => vault.summary(),
       // 只读数据出口（dashboard()/bindLan() 保留给外部调用方与测试）：
-      // 都只给打码值，绝不含 token / 访问码 / 安全码。
+      // 都只给打码值，绝不含 token / 访问码。
       dashboard: () => {
         const s = settings()
         return {

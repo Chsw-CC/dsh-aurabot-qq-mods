@@ -246,7 +246,7 @@ test('真浏览器：在页面里生成信封，本进程能解开（浏览器 �
 
       const opened = await service.open(text)
       assert.equal(opened.kind, 'login')
-      assert.equal(opened.code, '', '信封里不再带安全码')
+      assert.equal(Object.hasOwn(opened, 'code'), false, '信封里不再有安全码这个字段')
       assert.equal(opened.account, 'me@example.com')
       assert.equal(opened.password, 'pw-e2e-123')
       assert.equal(opened.region, 'cn', '网页默认区域应当是中国大陆')

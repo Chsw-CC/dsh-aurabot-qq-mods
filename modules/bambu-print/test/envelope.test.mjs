@@ -17,10 +17,10 @@ import {
 import { createEnvelopeService, DEFAULT_ENROLL_BASE, maskAccount } from '../lib/envelope.mjs'
 import { validateInputs, buildPayload, classify } from '../assets/enroll/enroll-form.js'
 
-const CODE = 'kR7#mQp2Lz'
+const ACCOUNT_EMAIL = 'me@example.com'
 const ACCOUNT = 'me@example.com'
 const PASSWORD = 'pw-DO-NOT-LEAK-123'
-const NEW_CODE = 'Zx9$Vt4Rn8'
+
 
 const nowSec = () => Math.floor(Date.now() / 1000)
 
@@ -41,13 +41,7 @@ const kit = async (service) => {
   return {
     pub,
     login: (extra = {}) => sealEnvelope(pub, {
-      code: CODE, account: ACCOUNT, password: PASSWORD, ttlMin: 10, iat: now, exp: now + 600, region: 'cn', ...extra,
-    }),
-    unlock: (extra = {}) => sealEnvelope(pub, {
-      code: CODE, ttlMin: 10, iat: now, exp: now + 600, region: 'cn', ...extra,
-    }),
-    change: (extra = {}) => sealEnvelope(pub, {
-      code: CODE, newCode: NEW_CODE, ttlMin: 10, iat: now, exp: now + 600, region: 'cn', ...extra,
+      account: ACCOUNT, password: PASSWORD, ttlMin: 10, iat: now, exp: now + 600, region: 'cn', ...extra,
     }),
   }
 }
@@ -63,45 +57,33 @@ test('bbx：base64url 往返，且不含 + / =', () => {
   }
 })
 
-test('bbx：body 编码/解析往返，三种用途的 kind 由字段决定', () => {
+test('bbx：body 编码/解析往返，只有账号和密码', () => {
   const base = { ttlMin: 30, iat: 1000, exp: 2800, region: 'cn' }
-  const login = decodeBody(encodeBody({ ...base, code: CODE, account: ACCOUNT, password: PASSWORD }))
-  assert.equal(login.code, CODE)
-  assert.equal(login.account, ACCOUNT)
-  assert.equal(login.password, PASSWORD)
-  assert.equal(login.newCode, '')
-  // flags：bit0 = 有安全码，bit1 = 有账号
-  assert.equal(login.flags & 2, 2)
-
-  const unlock = decodeBody(encodeBody({ ...base, code: CODE }))
-  assert.equal(unlock.account, '')
-  assert.equal(unlock.flags & 2, 0)
-
-  const change = decodeBody(encodeBody({ ...base, code: CODE, newCode: NEW_CODE }))
-  assert.equal(change.newCode, NEW_CODE)
-  assert.equal(change.flags & 4, 4)
+  const body = decodeBody(encodeBody({ ...base, account: ACCOUNT, password: PASSWORD }))
+  assert.equal(body.account, ACCOUNT)
+  assert.equal(body.password, PASSWORD)
+  assert.equal(body.ttlMin, 30)
+  assert.equal(body.region, 'cn')
+  assert.equal(body.flags & 2, 2, 'bit1 = 带账号')
 })
 
-test('bbx：非法组合在编码阶段就被拒（不是等到解密后才发现）', () => {
+test('bbx：非法输入在编码阶段就被拒（不是等到解密后才发现）', () => {
   const base = { ttlMin: 10, iat: 1000, exp: 1600, region: 'us' }
-  // 安全码取消后不再是必填项：空安全码也能编码（只建号/只解锁）
-  assert.doesNotThrow(() => encodeBody({ ...base }), '不带安全码是合法的')
-  assert.throws(() => encodeBody({ ...base, code: CODE, account: ACCOUNT }), /同时/, '有账号没密码')
-  assert.throws(() => encodeBody({ ...base, code: CODE, account: ACCOUNT, password: PASSWORD, newCode: NEW_CODE }), /不能装在同一个/, '登录+改码')
-  assert.throws(() => encodeBody({ ...base, code: CODE, ttlMin: 0 }), /生存时间/, 'ttl 0')
-  assert.throws(() => encodeBody({ ...base, code: CODE, ttlMin: 1441 }), /生存时间/, 'ttl 超上限')
+  assert.throws(() => encodeBody({ ...base, password: PASSWORD }), /账号/, '缺账号')
+  assert.throws(() => encodeBody({ ...base, account: ACCOUNT }), /密码/, '缺密码')
+  assert.throws(() => encodeBody({ ...base, account: ACCOUNT, password: PASSWORD, ttlMin: 0 }), /生存时间/, 'ttl 0')
+  assert.throws(() => encodeBody({ ...base, account: ACCOUNT, password: PASSWORD, ttlMin: 1441 }), /生存时间/, 'ttl 超上限')
 })
 
 test('bbx：加密→解密 往返（账号密码带空格和中文也原样回来）', async () => {
   const kp = await generateKeyPair()
   const pub = publicKeyToText(kp.publicRaw)
   const now = nowSec()
-  const tricky = { code: '  kR7#mQp2Lz  ', account: '用户@example.com', password: ' p@ss word ', ttlMin: 5, iat: now, exp: now + 300, region: 'eu' }
+  const tricky = { account: '用户@example.com', password: ' p@ss word ', ttlMin: 5, iat: now, exp: now + 300, region: 'eu' }
   const text = await sealEnvelope(pub, tricky)
   assert.match(text, /^BBX1\./)
   const out = await openEnvelope(kp.privateKey, text)
-  // 安全码只 trim（大小写敏感）；密码一个字符都不能动
-  assert.equal(out.code, 'kR7#mQp2Lz')
+  // 账号只 trim；密码一个字符都不能动
   assert.equal(out.account, '用户@example.com')
   assert.equal(out.password, ' p@ss word ')
   assert.equal(out.region, 'eu')
@@ -111,14 +93,14 @@ test('bbx：换一把密钥就解不开（这是「不是给这台机器的」�
   const a = await generateKeyPair()
   const b = await generateKeyPair()
   const now = nowSec()
-  const text = await sealEnvelope(publicKeyToText(a.publicRaw), { code: CODE, ttlMin: 5, iat: now, exp: now + 300, region: 'us' })
+  const text = await sealEnvelope(publicKeyToText(a.publicRaw), { account: ACCOUNT, password: PASSWORD, ttlMin: 5, iat: now, exp: now + 300, region: 'us' })
   await assert.rejects(() => openEnvelope(b.privateKey, text), (e) => e.code === 'BAD_TAG')
 })
 
 test('bbx：头部任意一位被改都解不开（AAD 覆盖 magic/ver/suite/eph/salt/iv）', async () => {
   const kp = await generateKeyPair()
   const now = nowSec()
-  const text = await sealEnvelope(publicKeyToText(kp.publicRaw), { code: CODE, ttlMin: 5, iat: now, exp: now + 300, region: 'us' })
+  const text = await sealEnvelope(publicKeyToText(kp.publicRaw), { account: ACCOUNT, password: PASSWORD, ttlMin: 5, iat: now, exp: now + 300, region: 'us' })
   const bytes = fromBase64Url(text.slice('BBX1.'.length))
   // 挑几个关键位置各改一位：ver(4) / suite(5) / 临时公钥首字节(6) / salt(71) / iv(87)
   for (const at of [4, 5, 6, 71, 87]) {
@@ -135,7 +117,7 @@ test('bbx：头部任意一位被改都解不开（AAD 覆盖 magic/ver/suite/ep
 test('bbx：尾巴被截断 / 前面不是 BBX1. 都给明确错误，不崩', async () => {
   const kp = await generateKeyPair()
   const now = nowSec()
-  const text = await sealEnvelope(publicKeyToText(kp.publicRaw), { code: CODE, ttlMin: 5, iat: now, exp: now + 300, region: 'us' })
+  const text = await sealEnvelope(publicKeyToText(kp.publicRaw), { account: ACCOUNT, password: PASSWORD, ttlMin: 5, iat: now, exp: now + 300, region: 'us' })
   // 截掉尾巴之后长度还在下限以上，所以是「解不开」而不是「格式不对」——两种都 fail-closed。
   await assert.rejects(() => openEnvelope(kp.privateKey, text.slice(0, text.length - 20)), (e) => e.code === 'BAD_TAG')
   // 截到比头部还短就是格式错误
@@ -171,7 +153,7 @@ test('服务：首次 ensure 生成密钥，公钥 87 字符，指纹 = SHA-256(
     // 落盘的文件里只有私钥的 JWK，没有任何明文秘密
     const raw = await readFile(path.join(dir, 'bbx-key.json'), 'utf8')
     assert.match(raw, /privateJwk/)
-    assert.equal(raw.includes(CODE), false)
+    assert.equal(raw.includes(PASSWORD), false)
     assert.equal(raw.includes(PASSWORD), false)
     // 重启复用同一把
     const again = await svc(dir)
@@ -187,18 +169,16 @@ test('服务：登录信封解出全部字段，kind 判定正确', async () => 
 
     const login = await service.open(await k.login())
     assert.equal(login.kind, 'login')
-    assert.equal(login.code, CODE)
+    assert.equal(login.account, ACCOUNT)
+    assert.equal(login.password, PASSWORD)
     assert.equal(login.account, ACCOUNT)
     assert.equal(login.password, PASSWORD)
     assert.equal(login.region, 'cn')
     assert.ok(login.exp > login.iat)
 
-    const unlock = await service.open(await k.unlock())
-    assert.equal(unlock.kind, 'unlock')
-
-    const change = await service.open(await k.change())
-    assert.equal(change.kind, 'changecode')
-    assert.equal(change.newCode, NEW_CODE)
+    // 第二个信封同样只能是登录
+    const again = await service.open(await k.login())
+    assert.equal(again.kind, 'login')
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
@@ -207,11 +187,11 @@ test('服务：同一个信封只能用一次（REPLAYED）', async () => {
   try {
     const service = await svc(dir)
     const k = await kit(service)
-    const text = await k.unlock()
+    const text = await k.login()
     await service.open(text)
     await assert.rejects(() => service.open(text), (e) => e.code === 'REPLAYED')
     // 换一段新的照常能用
-    await service.open(await k.unlock())
+    await service.open(await k.login())
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
@@ -220,7 +200,7 @@ test('服务：jti 落盘，进程重启后旧信封仍然拒收（不只是内�
   try {
     const first = await svc(dir)
     const k = await kit(first)
-    const text = await k.unlock()
+    const text = await k.login()
     await first.open(text)
     const used = JSON.parse(await readFile(path.join(dir, 'bbx-used.json'), 'utf8'))
     assert.equal(used.v, 1)
@@ -238,7 +218,7 @@ test('服务：失败（篡改 / 解不开）也要作废，不能拿同一段�
   try {
     const service = await svc(dir)
     const k = await kit(service)
-    const good = await k.unlock()
+    const good = await k.login()
     const broken = good.slice(0, -6) + 'AAAAAA'
     await assert.rejects(() => service.open(broken), (e) => e.code === 'BAD_TAG')
     assert.equal(service.stats().used, 0, '解不开的密文没有可信 jti，不该记进已用表')
@@ -255,13 +235,13 @@ test('服务：过期信封拒收；120 秒时钟容差内仍然接受', async (
     const k = await kit(service)
     const nowS = Math.floor(fixed / 1000)
 
-    const fresh = await sealEnvelope(k.pub, { code: CODE, ttlMin: 10, iat: nowS - 400, exp: nowS - 100, region: 'us' })
+    const fresh = await sealEnvelope(k.pub, { account: ACCOUNT, password: PASSWORD, ttlMin: 10, iat: nowS - 400, exp: nowS - 100, region: 'us' })
     await service.open(fresh) // 过期 100 秒 < 120 秒容差 → 收
 
-    const stale = await sealEnvelope(k.pub, { code: CODE, ttlMin: 10, iat: nowS - 900, exp: nowS - 130, region: 'us' })
+    const stale = await sealEnvelope(k.pub, { account: ACCOUNT, password: PASSWORD, ttlMin: 10, iat: nowS - 900, exp: nowS - 130, region: 'us' })
     await assert.rejects(() => service.open(stale), (e) => e.code === 'EXPIRED', '过期 130 秒应当拒')
 
-    const future = await sealEnvelope(k.pub, { code: CODE, ttlMin: 10, iat: nowS + 300, exp: nowS + 600, region: 'us' })
+    const future = await sealEnvelope(k.pub, { account: ACCOUNT, password: PASSWORD, ttlMin: 10, iat: nowS + 300, exp: nowS + 600, region: 'us' })
     await assert.rejects(() => service.open(future), (e) => e.code === 'NOT_YET')
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
@@ -271,7 +251,7 @@ test('服务：生存时间超过本机上限直接拒，改设置后立即生�
   try {
     const service = await svc(dir, { maxTtlMinutes: 10 })
     const k = await kit(service)
-    const long = await sealEnvelope(k.pub, { code: CODE, ttlMin: 60, iat: nowSec(), exp: nowSec() + 3600, region: 'us' })
+    const long = await sealEnvelope(k.pub, { account: ACCOUNT, password: PASSWORD, ttlMin: 60, iat: nowSec(), exp: nowSec() + 3600, region: 'us' })
     await assert.rejects(() => service.open(long), (e) => {
       assert.equal(e.code, 'BAD_PAYLOAD')
       assert.match(e.message, /60/, '要说出具体是多少分钟')
@@ -296,13 +276,13 @@ test('服务：inspect 只给摘要，不含秘密，且不消费信封', async 
     assert.equal(info.hasPassword, true)
     assert.equal(info.region, 'cn')
     const dumped = JSON.stringify(info)
-    assert.equal(dumped.includes(CODE), false, 'inspect 不能回显安全码')
+    assert.equal(dumped.includes(PASSWORD), false, 'inspect 不能回显安全码')
     assert.equal(dumped.includes(PASSWORD), false, 'inspect 不能回显密码')
     assert.equal(dumped.includes(ACCOUNT), false, '账号必须是掩码，不能出现明文')
     // 关键：inspect 不消费
     assert.equal(service.stats().used, 0)
     const opened = await service.open(text)
-    assert.equal(opened.code, CODE)
+    assert.equal(opened.account, ACCOUNT)
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
@@ -311,7 +291,7 @@ test('服务：rotate 换钥后，旧公钥加密的信封全部解不开，已�
   try {
     const service = await svc(dir)
     const oldPub = service.publicKey()
-    const oldText = await sealEnvelope(oldPub, { code: CODE, ttlMin: 10, iat: nowSec(), exp: nowSec() + 600, region: 'us' })
+    const oldText = await sealEnvelope(oldPub, { account: ACCOUNT, password: PASSWORD, ttlMin: 10, iat: nowSec(), exp: nowSec() + 600, region: 'us' })
     await service.open(oldText)
     assert.equal(service.stats().used, 1)
 
@@ -320,10 +300,10 @@ test('服务：rotate 换钥后，旧公钥加密的信封全部解不开，已�
     assert.equal(service.stats().used, 0, '换了钥之后旧 jti 表就该清掉')
 
     // 旧公钥生成的（没消费过的）信封也解不开了
-    const stale = await sealEnvelope(oldPub, { code: CODE, ttlMin: 10, iat: nowSec(), exp: nowSec() + 600, region: 'us' })
+    const stale = await sealEnvelope(oldPub, { account: ACCOUNT, password: PASSWORD, ttlMin: 10, iat: nowSec(), exp: nowSec() + 600, region: 'us' })
     await assert.rejects(() => service.open(stale), (e) => e.code === 'BAD_TAG')
     // 新公钥的照常
-    const fresh = await sealEnvelope(rotated.publicKey, { code: CODE, ttlMin: 10, iat: nowSec(), exp: nowSec() + 600, region: 'us' })
+    const fresh = await sealEnvelope(rotated.publicKey, { account: ACCOUNT, password: PASSWORD, ttlMin: 10, iat: nowSec(), exp: nowSec() + 600, region: 'us' })
     await service.open(fresh)
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
@@ -359,10 +339,10 @@ test('仅内存模式：磁盘上没有任何私钥文件，但加解密照常�
 
     // 功能不变：能加密、能解开
     const now = nowSec()
-    const text = await sealEnvelope(pub, { code: CODE, account: ACCOUNT, password: PASSWORD, ttlMin: 10, iat: now, exp: now + 600, region: 'cn' })
+    const text = await sealEnvelope(pub, { account: ACCOUNT, password: PASSWORD, ttlMin: 10, iat: now, exp: now + 600, region: 'cn' })
     const opened = await service.open(text)
     assert.equal(opened.kind, 'login')
-    assert.equal(opened.code, CODE)
+    assert.equal(opened.account, ACCOUNT)
 
     // 重启（新实例）就是新密钥：旧链接和旧信封一起失效，这是模式的代价，要如实发生
     const again = createEnvelopeService({ dir, keyMode: 'ephemeral', log: { info () {}, warn () {}, error () {}, debug () {} } })
@@ -393,7 +373,7 @@ test('仅内存模式：会删掉上一任落盘的旧私钥（否则「磁盘�
     assert.equal(existsSync(path.join(dir, 'bbx-key.json')), false, '旧私钥必须被删掉，不能只是「不用」')
 
     // 而旧公钥生成的密文，用新私钥解不开（这才是要保证的事）
-    const stale = await sealEnvelope(oldPub, { code: CODE, ttlMin: 10, iat: nowSec(), exp: nowSec() + 600, region: 'us' })
+    const stale = await sealEnvelope(oldPub, { account: ACCOUNT, password: PASSWORD, ttlMin: 10, iat: nowSec(), exp: nowSec() + 600, region: 'us' })
     await assert.rejects(() => eph.open(stale), (e) => e.code === 'BAD_TAG')
 
     // rotate 在仅内存模式下也不写盘
@@ -444,9 +424,9 @@ test('私钥放别处：keyPath 指到数据目录之外，数据目录里不生
 
     // 功能正常
     const now = nowSec()
-    const text = await sealEnvelope(service.publicKey(), { code: CODE, ttlMin: 10, iat: now, exp: now + 600, region: 'cn' })
+    const text = await sealEnvelope(service.publicKey(), { account: ACCOUNT, password: PASSWORD, ttlMin: 10, iat: now, exp: now + 600, region: 'cn' })
     const opened = await service.open(text)
-    assert.equal(opened.code, CODE)
+    assert.equal(opened.account, ACCOUNT)
 
     // 重启复用同一个 keyPath
     const again = createEnvelopeService({ dir: dataDir, keyPath, log: { info () {}, warn () {}, error () {}, debug () {} } })
@@ -507,7 +487,7 @@ test('服务：已用记录文件坏了只告警、不阻断（重放保护降�
     await writeFile(path.join(dir, 'bbx-used.json'), 'garbage', 'utf8')
     const service = await svc(dir)
     const k = await kit(service)
-    await service.open(await k.unlock())
+    await service.open(await k.login())
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
@@ -516,7 +496,7 @@ test('服务：并发 open 同一个信封，恰好成功一次', async () => {
   try {
     const service = await svc(dir)
     const k = await kit(service)
-    const text = await k.unlock()
+    const text = await k.login()
     const results = await Promise.allSettled(Array.from({ length: 8 }, () => service.open(text)))
     const ok = results.filter((r) => r.status === 'fulfilled')
     const rejected = results.filter((r) => r.status === 'rejected')
@@ -537,7 +517,7 @@ test('服务：错误话术里不出现任何明文秘密', async () => {
     try { await service.open(text) } catch (e) { messages.push(e.message, e.code) }
     try { await service.open(text.slice(0, -8) + 'ZZZZZZZZ') } catch (e) { messages.push(e.message, e.code) }
     const dumped = messages.join('\n')
-    assert.equal(dumped.includes(CODE), false)
+    assert.equal(dumped.includes(PASSWORD), false)
     assert.equal(dumped.includes(PASSWORD), false)
     assert.equal(dumped.includes(ACCOUNT), false)
   } finally { await rm(dir, { recursive: true, force: true }) }
@@ -554,7 +534,7 @@ test('表单：现在只有「登录」一种用途，账号密码必填', () =>
 })
 
 test('表单：校验通过时 buildPayload 和 bbx.encodeBody 能直接对接', async () => {
-  const input = { code: CODE, account: ACCOUNT, password: PASSWORD, newCode: '', ttlMin: 30, region: 'cn' }
+  const input = { account: ACCOUNT, password: PASSWORD, ttlMin: 30, region: 'cn' }
   const verdict = validateInputs(input)
   assert.equal(verdict.ok, true, '不该有错：' + verdict.errors.join('；'))
   assert.equal(verdict.kind, 'login')
@@ -567,7 +547,7 @@ test('表单：校验通过时 buildPayload 和 bbx.encodeBody 能直接对接',
 })
 
 test('表单：默认区域是中国大陆（大多数用户是国服账号）', () => {
-  const payload = buildPayload({ code: CODE, ttlMin: 10 })
+  const payload = buildPayload({ account: ACCOUNT, password: PASSWORD })
   assert.equal(payload.region, 'cn')
 })
 
@@ -577,7 +557,6 @@ test('表单：该拒的都要拒，且错误里不带密码原文', () => {
     [{ account: ACCOUNT, ttlMin: 10 }, /请填写 Bambu 密码/],
     [{ password: PASSWORD, ttlMin: 10 }, /请填写 Bambu 账号/],
     [{ account: 'not-an-account', password: PASSWORD, ttlMin: 10 }, /邮箱/],
-    [{ account: ACCOUNT, password: PASSWORD, newCode: NEW_CODE, ttlMin: 10 }, /不要填 Bambu 账号或密码/],
     [{ account: ACCOUNT, password: PASSWORD, ttlMin: 0 }, /1~1440/],
     [{ account: ACCOUNT, password: PASSWORD, ttlMin: 1441 }, /1~1440/],
     [{ account: ACCOUNT, password: PASSWORD, ttlMin: 'abc' }, /整数/],

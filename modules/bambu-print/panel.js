@@ -7,7 +7,7 @@
 // 按钮 —— 落盘由页面底部宿主那个「保存设置」统一负责，界面和真实设置永远一致。
 // 总开关读写 active（标签页上那个小圆点读的就是草稿里的 ext.bambu-print.active），
 // 「模块是否在跑」全部从 cfg.active 派生，不再有第二个开关。
-// 秘密（访问码 / 主人安全码）只用 password 输入，提交成功立刻清空、不回显、不进渲染树。
+// 秘密（访问码）只用 password 输入，提交成功立刻清空、不回显、不进渲染树。
 //
 // 路由：GET /overview、/lan/status、/audit、/tutk/status；POST /owner/unlock、/owner/lock、
 // /lan/bind、/tutk/download。兼容期 /overview 没有 owner / rules 时退回 settings 同名字段；
@@ -68,7 +68,6 @@ const FALLBACK_RULES = {
   defaultInterface: { kind: 'enum', def: 'cloud', values: ['cloud', 'lan'], label: '默认接口', hint: '默认云端；非主人用户默认且只能是云端。' },
   ownerInterface: { kind: 'enumAllowEmpty', def: '', values: ['', 'cloud', 'lan'], label: '主人的接口覆盖', hint: '只影响主人自己。' },
   ownerLocalAllowed: { kind: 'bool', def: true, label: '允许主人使用本地接口', hint: '关掉后连主人也一律走云端（本地接口要求打印机和这台电脑在同一网段）。' },
-  ownerNoCode: { kind: 'bool', def: true, label: '主人不用安全码', hint: '开着：主人不用解锁。代价是主人的绑定由本机主密钥保管——能读到数据目录的人可以解开主人的那份。' },
   multiUser: { kind: 'bool', def: true, label: '多用户模式', hint: '开着：每个 QQ 各绑各的、互相看不到，别人可以用授权共享。关掉：只服务主人一个人，其他人的命令和工具一律不响应。' },
   unlockDays: { kind: 'int', def: 7, min: 1, max: 30, step: 1, label: '解锁有效期（天）', hint: '到期后内存里的密钥自动清零（1~30 天，默认 7 天）。' },
   maxBindings: { kind: 'int', def: 5, min: 1, max: 20, step: 1, label: '每人最多凭据数', hint: '一个人最多能绑几条凭据（一个云端账号算一条，可含多台）。' },
@@ -83,9 +82,9 @@ const EMPTY_RISK = [
   '私聊发送同样有风险：私聊记录会以明文留存，撤回并不能可靠消除风险。请优先使用官方授权方式或临时凭据；如确需提供，请先评估风险，事后立即修改密码并检查账号授权与设备绑定情况。',
   '谨慎使用插件：请在你熟悉的「鱼」管理者下使用。',
   '局域网访问码（LAN Access Code）等同于打印机控制权：谁拿到它，谁就能暂停、停止、改温度、发 G-code。',
-  '安全码是每个用户自己那份秘密的唯一钥匙：忘了只能清空重绑，找不回来。主人可以免安全码，代价是那把钥匙由这台机器保管（设置里能关掉）。',
-  '没有「管理员」这一级：别人看不到你的 token，除非你主动授权。授权就是把自己的 Bambu 凭据限时共享给对方，到期自动失效、随时能撤销；对方始终拿不到你的安全码。',
-  '不要在任何群里发安全码、访问码。群里本模块也不接受绑定、解锁、授权等敏感操作。',
+  '每个用户的凭据仍然加密落盘（每人一把独立密钥），主密钥在这台机器上——能读数据目录的人可以解开，所以这台机器本身要可信。',
+  '没有「管理员」这一级：别人看不到你的凭据，除非你主动授权。授权就是限时共享使用权，到期自动失效、随时能撤销；对方始终拿不到你的凭据。',
+  '不要在任何群里发密码、访问码。群里本模块也不接受绑定、授权等敏感操作。',
 ]
 
 const TAIL_ACTIONS = {
@@ -310,7 +309,7 @@ return function Panel (props) {
   const unlockOwner = async function () {
     setUnlockError('')
     const code = String(unlockCode || '').trim()
-    if (!code) { setUnlockError('先填主人自己设的安全码。'); return }
+    if (!code) { setUnlockError('这里已经不需要密码了，直接点下面的按钮即可。'); return }
     setBusy('unlock')
     try {
       const r = await request('/owner/unlock', { code: code })
@@ -330,7 +329,7 @@ return function Panel (props) {
     }
   }
 
-  /** 免安全码：建（或复用）主人的免码账号并立即开一个会话。 */
+  /** 主人建号（幂等）：建好或复用已有账号，并立即开一个会话。 */
   const enableNoCode = async function () {
     setUnlockError('')
     setBusy('nocode')
@@ -340,7 +339,7 @@ return function Panel (props) {
         setUnlockError((r && r.message) || '开启失败。')
         return
       }
-      notify('已开启，不用安全码也能用了')
+      notify('已开启，可以直接用了')
       await load()
       await loadLan()
     } catch (err) {
@@ -352,7 +351,7 @@ return function Panel (props) {
 
   const lockOwner = async function () {
     const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
-      ? window.confirm('锁定后要重新输安全码才能再用局域网，确定锁定吗？')
+      ? window.confirm('锁定后会清掉内存里缓存的密钥（下次用会自动恢复），确定吗？')
       : true
     if (!ok) return
     setBusy('lock')
@@ -590,7 +589,7 @@ return function Panel (props) {
 
   // 顶部那行现状：用「就绪 / 没解锁」比「已解锁」好懂，也更贴合免码时的实际情况
   const summary = countsUsers + ' 个用户 · ' + countsPrinters + ' 台打印机 · ' +
-    (ownerOnline ? (owner.codeless === true ? '主人免安全码' : '主人已解锁') : '主人还没解锁') +
+    (ownerOnline ? '主人已就绪' : '主人还没就绪') +
     (cfg.active === true ? '' : ' · 模块关着')
 
   const isWin = typeof navigator !== 'undefined' && /windows/i.test(String(navigator.userAgent || ''))
@@ -762,7 +761,7 @@ return function Panel (props) {
 
   const overviewPage = h(ui.Card, {
     title: '用户与打印机',
-    desc: '每行一个用户：谁是、绑了几条凭据、几台打印机、现在解没解锁。点开才看得到他那几条凭据和打印机。序列号打码，token、访问码、安全码一律不出现，这里也不会改任何东西。',
+    desc: '每行一个用户：谁是、绑了几条凭据、几台打印机、账号是否就绪。点开才看得到他那几条凭据和打印机。序列号打码，token、访问码一律不出现，这里也不会改任何东西。',
   },
   h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 16 } },
     stat('已绑定用户', countsBound),
@@ -811,28 +810,27 @@ return function Panel (props) {
         : '先解锁，才能把访问码加密保存。'),
     ownerOnline ? btn(busy === 'lock' ? '锁定中…' : '立即锁定', lockOwner, { disabled: busy === 'lock' }) : null)
 
-  // 免安全码时：不需要输任何东西，点一下就建好账号并解锁
+  // 建号：不需要输任何东西，点一下就建好并可用
   const noCodeAllowed = owner.noCode !== false || owner.codeless === true
   const noCodeBlock = !ownerOnline && noCodeAllowed
     ? h('div', { style: { marginTop: 10 } },
       h('div', { className: 'ab-flex', style: { gap: 8, flexWrap: 'wrap', alignItems: 'center' } },
-        btn(busy === 'nocode' ? '正在开启…' : '不用安全码，直接开启', enableNoCode, { kind: 'primary', disabled: busy === 'nocode' })),
+        btn(busy === 'nocode' ? '正在开启…' : '建立账号，直接开始', enableNoCode, { kind: 'primary', disabled: busy === 'nocode' })),
       h('div', { className: 'ab-small ab-muted', style: { marginTop: 4, lineHeight: 1.7 } },
-        '主人默认不用安全码：点一下就能用，绑定由这台机器保管。' +
-        '代价是：能读到本模块数据目录的人，可以解开主人的绑定；其它用户仍然各用各的安全码，互相看不到。' +
-        '想更严一点，可以关掉设置里的「主人不用安全码」，再用下面的安全码方式。'))
+        '点一下就能用：账号的密钥由这台机器保管。' +
+        '代价是：能读到本模块数据目录的人，可以解开这里的凭据。'))
     : null
 
   const unlockForm = !ownerOnline
     ? h('div', { style: { marginTop: 10 } },
       noCodeBlock,
       h('div', { className: 'ab-label', style: { marginTop: noCodeAllowed ? 12 : 0, marginBottom: 4 } },
-        noCodeAllowed ? '或者用安全码（如果你设过的话）' : '主人安全码'),
+        '刷新会话'),
       h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' } },
-        secretInput(unlockRef, setUnlockCode, { name: 'owner-code', placeholder: '主人自己设的安全码' }),
+        secretInput(unlockRef, setUnlockCode, { name: 'owner-code', placeholder: '这里不需要填任何东西' }),
         btn(busy === 'unlock' ? '解锁中…' : '解锁', unlockOwner, { kind: noCodeAllowed ? 'outline' : 'primary', disabled: busy === 'unlock' })),
       h('div', { className: 'ab-small ab-muted', style: { marginTop: 4, lineHeight: 1.6 } },
-        '安全码只用于这一次提交，成功后立刻清空。'),
+        '没有安全码了：这里只是重新开一次内存会话。'),
       note(unlockError, 'err'))
     : null
 
@@ -1083,8 +1081,8 @@ return function Panel (props) {
   groupTitle('本地安全策略', '秘密怎么存、谁能解开、哪里会拒绝连接。'),
 
   h('div', { className: 'ab-small', style: { lineHeight: 1.85 } },
-    h('div', null, '· ', h('b', null, '每个用户一把独立密钥。'), '绑定数据用随机密钥加密（AES-256-GCM），密钥由该用户自己的安全码经 scrypt 派生。没有「主人后门」，谁也解不开别人的。'),
-    h('div', null, '· ', h('b', null, '主人可以免安全码。'), '这时那把密钥由本机的 host-key.bin（32 字节随机、0600）保管。代价是：能读到本模块数据目录的人可以解开主人的绑定。设置里可以关掉这个便利。'),
+    h('div', null, '· ', h('b', null, '每个用户一把独立密钥。'), '绑定数据用随机密钥加密（AES-256-GCM）；解它的主密钥在这台机器上（host-key.bin）。'),
+    h('div', null, '· ', h('b', null, '没有安全码。'), '谁都不要再记任何码；代价是能读到本模块数据目录的人可以解开这些凭据——机器本身要可信。'),
     h('div', null, '· ', h('b', null, '控制面与摄像头要求先固定证书。'), '局域网 MQTT(8883) 与 MJPEG(6000) 第一次连接只握手读证书、不发访问码；之后每次都用它当锚点严格校验。没固定过证书就拒绝发访问码，不会「先连上试试」。'),
     h('div', null, '· ', h('b', null, '画面端口(322)单独核对。'), 'X1/H2/P2S/X2D 的画面走 ffmpeg，它没法做证书 pin；所以模块在启动 ffmpeg 之前先握手取证书、和固定过的指纹比对，对不上就不启动，访问码连 stdin 都不进。'),
     h('div', null, '· ', h('b', null, '云端用系统 CA。'), '云端 MQTT 用系统根证书 + 主机名校验，不会因为配置里有自签锚点就降级成不校验。'),
@@ -1102,7 +1100,7 @@ return function Panel (props) {
   h('div', { className: 'ab-small ab-muted', style: { lineHeight: 1.8 } },
     h('div', null, '/打印机 状态 · 暂停 · 继续 · 停止 · 灯 开/关 · 速度 1-4 · 温度 喷嘴=220 热床=60 · 拍照'),
     h('div', null, '/打印机 列表 · 授权 <对方QQ> [分钟] · 撤销 <授权编号> · 审计 · 群权限'),
-    h('div', null, '/打印机 解锁 · 锁定 · 设置安全码 · 改安全码（只走私聊）'),
+    h('div', null, '/打印机 登录 · 锁定（只走私聊）'),
     h('div', null, '主人额外：/打印机 绑定 本地 … · 解绑 <编号> · 接口 云端|本地|自动 · 证书 [序号]'),
     h('div', { style: { marginTop: 4 } }, '聊天里「/打印机 帮助」第 1 页是风险、第 2 页是数据存储策略、之后是命令；「帮助 2」直接翻页。')))
 
@@ -1128,11 +1126,11 @@ return function Panel (props) {
   })
 
   // ======== ② 登录信封 ========
-  // 账号密码和安全码不再经过聊天，用户必须先去网页生成一段密文；
+  // 账号密码不经过聊天，用户必须先去网页生成一段密文；
   // 这一页负责把链接给他、核对指纹、以及贴一段进来先看看对不对（不消费、不执行）。
   const enrollLinkText = enroll && enroll.link ? String(enroll.link) : ''
   const enrollFingerprint = enroll && enroll.fingerprint ? String(enroll.fingerprint) : ''
-  const enrollKindLabel = { login: '登录', unlock: '只解锁', changecode: '改安全码' }
+  const enrollKindLabel = { login: '登录' }
   const trial = enrollTrialResult
   const trialLines = trial
     ? [
@@ -1140,7 +1138,6 @@ return function Panel (props) {
       '生存时间：' + String(trial.ttlMin || '?') + ' 分钟（' + fmtTime(trial.expiresAt) + ' 前有效）',
       '区域：' + String(trial.region || ''),
       trial.hasAccount ? '账号：' + String(trial.accountMasked || '') + (trial.hasPassword ? ' + 密码' : '') : '不带账号密码',
-      trial.hasNewCode ? '带新安全码（改码）' : '',
     ].filter(Boolean).join('\n')
     : ''
   const copyToClipboard = function (text, label) {
@@ -1199,7 +1196,7 @@ return function Panel (props) {
 
   groupTitle('为什么这样更安全', ''),
   h('div', { className: 'ab-small ab-muted', style: { marginTop: 4, lineHeight: 1.9 } },
-    '旧流程里账号密码和安全码都得打进聊天，聊天记录是明文留存的，撤回也不可靠。现在：',
+    '旧流程里账号密码得直接打进聊天，聊天记录是明文留存的，撤回也不可靠。现在：',
     h('br'), '· 网页在用户自己的浏览器里加密，只拿到公钥；',
     h('br'), '· 私钥只在这台机器上，机器人解完就把明文用完丢掉，不落盘、不进日志；',
     h('br'), '· 每段信封只能用一次，且过期作废（重放会被拒）；',

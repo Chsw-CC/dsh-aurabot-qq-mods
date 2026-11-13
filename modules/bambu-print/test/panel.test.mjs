@@ -553,8 +553,8 @@ test('局域网页：免安全码入口 + 搜索局域网（发现不返回访�
   const all = text(lan)
 
   // 免码入口：主人不用输密码就能开
-  const noCode = button(lan, '不用安全码，直接开启')
-  assert.ok(noCode, '未解锁时应当有「不用安全码，直接开启」')
+  const noCode = button(lan, '建立账号，直接开始')
+  assert.ok(noCode, '未解锁时应当有「建立账号，直接开始」')
   await noCode.props.onClick()
   await h1.settle()
   const hit = h1.calls.find((c) => c.path === '/owner/nocode')
@@ -679,7 +679,7 @@ test('风险提示收成一条横幅：点「我知道」后收起，且重挂�
   // 首屏只有一条提示横幅（不再把四条正文铺在页首）
   assert.match(topText, /高权限设备控制/)
   assert.match(topText, /访问码等于打印机控制权/)
-  assert.equal(topText.indexOf('安全码是每个用户自己那份秘密的唯一钥匙'), -1, '正文不该再铺在页首')
+  assert.equal(topText.indexOf('每个用户的凭据仍然加密落盘'), -1, '正文不该再铺在页首')
   // 切页后横幅仍在（没点「我知道」之前它一直提示）
   seg(tree).props.onChange('settings')
   await h1.settle()
@@ -712,13 +712,13 @@ test('帮助页：完整风险告知 + 本地安全策略，正文不再占首�
   const all = text(help)
   assert.ok(cardTitled(help, '帮助'), '应当有「帮助」卡片')
   // 四条风险告知全在
-  assert.match(all, /安全码是每个用户自己那份秘密的唯一钥匙/)
+  assert.match(all, /每个用户的凭据仍然加密落盘/)
   assert.match(all, /没有「管理员」这一级/)
-  assert.match(all, /别人看不到你的 token/)
-  assert.match(all, /不要在任何群里发安全码/)
+  assert.match(all, /别人看不到你的凭据/)
+  assert.match(all, /不要在任何群里发密码/)
   assert.match(all, /模块自述：访问码 \/ token 等同于打印机控制权/)
   // 本地安全策略要点
-  for (const label of ['本地安全策略', '每个用户一把独立密钥', '主人可以免安全码', '控制面与摄像头要求先固定证书', '画面端口(322)单独核对', '云端用系统 CA', '会话到期自动清']) {
+  for (const label of ['本地安全策略', '每个用户一把独立密钥', '没有安全码', '控制面与摄像头要求先固定证书', '画面端口(322)单独核对', '云端用系统 CA', '会话到期自动清']) {
     assert.match(all, new RegExp(label.replace(/[()]/g, '\\$&')), '帮助页缺少：' + label)
   }
   // 命令速查也在，方便不记得命令的人
