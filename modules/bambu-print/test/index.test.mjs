@@ -584,21 +584,21 @@ test('帮助用合并转发：默认一条塞进全部页，含风险与存储�
     assert.match(all, /风险/)
     assert.match(all, /私聊记录会以明文留存/)
     assert.match(all, /撤回并不能可靠消除风险/)
-    assert.match(all, /事后立即修改密码/)
+    assert.match(all, /账号密码现在不经过聊天/)
     assert.match(all, /访问码 = 打印机控制权/)
     // 第 2 页：本地存储策略
     assert.match(all, /② 数据存在哪/)
     assert.match(all, /modules-data/)
     assert.match(all, /host-key/)
     // 第 6 页：安全码与解锁
-    assert.match(all, /⑥ 安全码与解锁/)
+    assert.match(all, /⑥ 安全码（已取消）/)
     assert.match(all, /暂停 · 继续 · 停止/)
     assert.match(all, /0 表示关加热/)
     assert.match(all, /群里只能暂停\/继续，停止必须私聊/)
     assert.match(all, /OAuth/)
     assert.match(all, /默认 30 分钟、只给看状态/)
     assert.match(all, /默认 10 条/)
-    assert.match(all, /至少 8 位/)
+    assert.match(all, /安全码已经取消/)
 
     // 每页都不长（一页一条折叠卡片，太长照样没人看）
     for (const node of fwd.nodes) assert.ok(String(node).split('\n').length <= 16, '单页太长：' + String(node).slice(0, 40))
