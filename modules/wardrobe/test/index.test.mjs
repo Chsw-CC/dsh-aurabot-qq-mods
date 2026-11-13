@@ -9,7 +9,7 @@ import { makeApi, PNG_1PX } from './helpers.mjs'
 
 test('元信息：id / 版本 / 面板 / 设置项很少', () => {
   assert.equal(plugin.id, 'wardrobe')
-  assert.equal(plugin.version, '1.0.0')
+  assert.equal(plugin.version, '1.0.1')
   assert.equal(plugin.api, 1)
   assert.equal(plugin.panel, 'panel.js')
   const keys = plugin.settings.map((s) => s.key)

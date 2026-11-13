@@ -46,7 +46,7 @@ const extOf = (mime) => (mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ?
 export default {
   id: 'wardrobe',
   name: '衣柜',
-  version: '1.0.0',
+  version: '1.0.1',
   api: 1,
   description: '她的衣服：参考图 + 文字描述；手动挑今天穿什么，按姿势生成预览图',
   panel: 'panel.js',
