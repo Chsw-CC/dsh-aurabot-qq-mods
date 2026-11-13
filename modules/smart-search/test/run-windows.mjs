@@ -5,3 +5,4 @@ await import('./providers.test.mjs');
 await import('./public-web.test.mjs');
 await import('./search.test.mjs');
 await import('./timeouts.test.mjs');
+await import('./errors.test.mjs');

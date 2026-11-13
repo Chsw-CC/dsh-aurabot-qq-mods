@@ -21,10 +21,18 @@ const messages = {
   local: '请从本机打开联网搜索面板。', request: '请求格式不正确，请刷新面板后重试。',
 };
 export class SearchError extends Error {
-  constructor(code) { super(messages[code] || messages.network); this.code = code; }
+  constructor(code) {
+    const safe = typeof code === 'string' && Object.hasOwn(messages, code) ? code : 'network';
+    super(messages[safe]); this.code = safe;
+  }
 }
 export function failure(error) {
-  if (error instanceof SearchError) return { ok: false, code: error.code, message: error.message };
+  // Rebuild even our own errors from the allowlist. An exception's mutable
+  // message/code must never become a route for diagnostics into tool history.
+  if (error instanceof SearchError) {
+    const safe = new SearchError(error.code);
+    return { ok: false, code: safe.code, message: safe.message };
+  }
   if (error?.name === 'TimeoutError' || error?.code === 'WEB_FETCH_TIMEOUT') return failure(new SearchError('timeout'));
   if (error?.name === 'AbortError' || error?.code === 'WEB_ABORTED') return failure(new SearchError('aborted'));
   if (/^WEB_PROVIDER_(?:UNAVAILABLE|CONFIGURED|AMBIGUOUS)/.test(error?.code || '')) return failure(new SearchError('dsh'));

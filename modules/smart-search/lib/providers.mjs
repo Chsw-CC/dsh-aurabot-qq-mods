@@ -24,7 +24,7 @@ export function searxngEndpoint(input) {
 export async function providerStatus(api, settings) {
   let dsh = false;
   const web = getWeb(api);
-  if (typeof web?.search === 'function') {
+  if (settings.sources.includes('dsh') && typeof web?.search === 'function') {
     try {
       // searchReady alone returns true on selection failure in current DSH.
       web.selectSearchProvider?.();
