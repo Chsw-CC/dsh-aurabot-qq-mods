@@ -18,7 +18,11 @@ import { regionOf } from './cloud.mjs'
 const PATHS = {
   login: '/v1/user-service/user/login',
   emailCode: '/v1/user-service/user/sendemail/code',
-  smsCode: '/v1/user-service/user/sendsmscode',
+  // 短信验证码只在**中国站**提供，而且路径多一层 /api：
+  //   https://api.bambulab.cn/api/v1/user-service/user/sendsmscode
+  // 走国际站（api.bambulab.com，且不带 /api）会直接 400 —— 这是之前「发送短信验证码失败（HTTP 400）」的原因。
+  // 邮箱验证码两个站都有，仍按账号所在 region 走。
+  smsCode: '/api/v1/user-service/user/sendsmscode',
   preference: '/v1/design-user-service/my/preference',
   bind: '/v1/iot-service/api/user/bind',
   csrf: '/api/csrf',
@@ -106,7 +110,11 @@ function httpError (res, action) {
 export function createCloudLogin (opts = {}) {
   const account = str(opts.account, 200)
   const password = typeof opts.password === 'string' ? opts.password : ''
-  const region = regionOf(opts.region)
+  // 手机号账号属于中国站：它的发码接口只在 api.bambulab.cn 存在，
+  // 换 token / 后续 iot 接口也必须同站，否则会 400 或拿不到设备。
+  // 所以这里按账号形态把 region 钉正，而不是只改发码那一步。
+  const looksLikePhone = !account.includes('@') && /^\+?[\d\s-]{6,20}$/.test(account)
+  const region = looksLikePhone ? regionOf('cn') : regionOf(opts.region)
   const fetchImpl = typeof opts.fetchImpl === 'function' ? opts.fetchImpl : globalThis.fetch
   const timeoutMs = Math.min(30000, Math.max(3000, Number(opts.timeoutMs) || 15000))
   let tfaKey = ''
@@ -166,9 +174,19 @@ export function createCloudLogin (opts = {}) {
     return { ok: true, accessToken: token, uid, region: region.key }
   }
 
-  /** 让云端发验证码（邮箱或短信，按账号里有没有 @ 判断）。 */
+  /**
+   * 让云端发验证码（邮箱或短信，按账号里有没有 @ 判断）。
+   *
+   * 域名不是随便挑的：
+   *   · 邮箱验证码：api.bambulab.com / api.bambulab.cn 都认，按账号所在 region 走；
+   *   · 短信验证码：**只有 api.bambulab.cn 提供**（手机号本身就是中国站账号），
+   *     而且路径要带 /api。以前拿 region.api + /v1/...sendsmscode 去请求，
+   *     国际站没这个接口，于是稳定 400。
+   * ha-bambulab 的 BAMBU_URL 里也是这么分的，这里对齐。
+   */
   async function requestCode () {
     const isEmail = account.includes('@')
+    // 手机号账号的 region 已经在建会话时钉成 cn，所以这里直接用 region.api 即可。
     const url = region.api + (isEmail ? PATHS.emailCode : PATHS.smsCode)
     const payload = isEmail ? { email: account, type: 'codeLogin' } : { phone: account, type: 'codeLogin' }
     const res = await call('POST', url, { json: payload })
