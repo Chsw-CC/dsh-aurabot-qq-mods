@@ -124,6 +124,28 @@ export const SETTING_RULES = {
     label: '抓帧超时（毫秒）',
     hint: '云端抓一帧最长等多久（3000~60000）。',
   },
+  enrollBaseUrl: {
+    kind: 'text',
+    def: '',
+    label: '登录网页地址（留空 = 用内置的 GitHub Pages）',
+    hint: '用户发「/打印机 登录」时收到的链接前缀，机器人只往后拼 #k=<公钥>。建议填你自己 fork 部署的那份，别人就改不了你要点开的页面。',
+  },
+  enrollTtlMinutes: {
+    kind: 'int',
+    def: 60,
+    min: 1,
+    max: 1440,
+    label: '信封建议生存时间（分钟）',
+    hint: '网页上默认填这个值（1~1440 分钟，默认 60）。',
+  },
+  enrollMaxTtlMinutes: {
+    kind: 'int',
+    def: 1440,
+    min: 1,
+    max: 1440,
+    label: '信封最大生存时间（分钟）',
+    hint: '服务端只接受不超过这个值的信封（1~1440 分钟）。会自动不低于上面那项。',
+  },
 }
 
 const RULE_KEYS = Object.keys(SETTING_RULES)
@@ -172,6 +194,11 @@ export function normalizeSettings (raw) {
   const source = raw && typeof raw === 'object' ? raw : {}
   const out = {}
   for (const key of RULE_KEYS) out[key] = normalizeValue(SETTING_RULES[key], source[key])
+  // 交叉约束：最大生存时间不能小于建议生存时间，否则按网页默认值生成的信封
+  // 会被服务端自己拒掉（BAD_PAYLOAD），而界面上两处都写着合法范围。
+  const ttl = Number(out.enrollTtlMinutes)
+  const max = Number(out.enrollMaxTtlMinutes)
+  if (Number.isFinite(ttl) && Number.isFinite(max) && max < ttl) out.enrollMaxTtlMinutes = ttl
   return out
 }
 

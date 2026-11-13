@@ -1397,16 +1397,15 @@ test('私聊控制权限：自己绑定的白名单用户在私聊 pause / 拍�
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
-test('免安全码主人：面板开启后不用解锁就能绑局域网、查状态；别的用户仍要安全码', async () => {
+test('没有安全码：主人建号后直接能绑局域网、查状态', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
   try {
     const api = await boot(dir, { users: USER })
-    // 主人直接开启免码
+    // 没有安全码了，「开个账号」就是这个动作；保留 /owner/nocode 作为兼容入口
     const opened = await route(api, '/owner/nocode', {})
     assert.equal(opened.ok, true, JSON.stringify(opened))
-    assert.equal(opened.mode, 'host')
-    assert.equal(api.__vault.isUnlocked(OWNER), true, '开启后会话应当直接开着')
-    assert.equal(api.__vault.isCodeless(OWNER), true)
+    assert.equal(api.__vault.isUnlocked(OWNER), true, '建号后会话应当直接开着')
+    assert.equal(api.__vault.needsMigration(OWNER), false)
 
     // 不用输任何安全码就能绑局域网
     const bound = await bindOwnerLan(api)
@@ -1431,22 +1430,22 @@ test('免安全码主人：面板开启后不用解锁就能绑局域网、查�
     await say(api, '/打印机 状态', { userId: OWNER, chatId: 'private:' + OWNER })
     assert.equal(api.__vault.isUnlocked(OWNER), true, '免码主人下次命令应当自动开会话')
 
-    // 别的用户没设安全码：绝不会被免码路径打开
-    assert.equal(api.__vault.isCodeless(USER), false)
+    // 别的用户还没建号：查状态应当被拒绝（不是「被免码路径打开」的问题，而是根本没账号）
+    assert.equal(api.__vault.hasUser(USER), false)
     await say(api, '/打印机 状态', { userId: USER, chatId: 'private:' + USER })
-    assert.doesNotMatch(lastText(api), /42%/, '未设安全码的用户不该能查状态')
+    assert.doesNotMatch(lastText(api), /42%/, '没建号的用户不该能查状态')
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
-test('免安全码：已经设过安全码的主人不会被悄悄改成免码（防绕过）', async () => {
+test('/owner/nocode 是幂等的：已经有账号也不会重置数据', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
   try {
     const api = await boot(dir, { users: USER })
-    await setupUser(api, OWNER)   // 主人自己设了安全码
+    await setupUser(api, OWNER)
+    const before = api.__vault.listBindings(OWNER).length
     const r = await route(api, '/owner/nocode', {})
-    assert.equal(r.ok, false)
-    assert.equal(r.code, 'NEED_CODE')
-    assert.equal(api.__vault.isCodeless(OWNER), false)
+    assert.equal(r.ok, true)
+    assert.equal(api.__vault.listBindings(OWNER).length, before, '重复开启不能动已有数据')
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
@@ -1527,20 +1526,22 @@ test('审计接口：操作者给完整 QQ（不打码），且仍然不含任�
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
-test('/owner/unlock：错码给 BAD_CODE，对的码返回 until + unlockDays', async () => {
+test('/owner/unlock：没有安全码了，只要账号在就直接给 until + unlockDays', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-int-'))
   try {
     const api = await boot(dir, { unlockDays: 3 })
     await setupUser(api, OWNER)
     await route(api, '/owner/lock', {})
-    const bad = await route(api, '/owner/unlock', { code: 'wrong-code' })
-    assert.equal(bad.ok, false)
-    assert.equal(bad.code, 'BAD_CODE')
-    assert.match(bad.message, /安全码不对/)
-    const good = await route(api, '/owner/unlock', { code: SECRET })
+    // 锁过之后不再需要任何安全码：直接恢复正常会话
+    const good = await route(api, '/owner/unlock', {})
     assert.equal(good.ok, true, JSON.stringify(good))
     assert.equal(good.unlockDays, 3, '按设置里的天数返回')
     assert.ok(good.until > Date.now())
     assert.equal(JSON.stringify(good).includes(SECRET), false, '返回里不能回显安全码')
+    // 没有账号时给 NO_USER 而不是假装成功
+    const empty = await boot(await mkdtemp(path.join(os.tmpdir(), 'bambu-int-')), {})
+    const none = await route(empty, '/owner/unlock', {})
+    assert.equal(none.ok, false)
+    assert.equal(none.code, 'NO_USER')
   } finally { await rm(dir, { recursive: true, force: true }) }
 })

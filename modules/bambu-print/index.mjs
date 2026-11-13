@@ -16,6 +16,7 @@
 
 import path from 'node:path'
 import { createVault } from './lib/vault.mjs'
+import { createEnvelopeService, DEFAULT_ENROLL_BASE } from './lib/envelope.mjs'
 import { createPrinterManager } from './lib/printer.mjs'
 import { captureFrame, learnCameraCert } from './lib/camera.mjs'
 import { discoverPrinters, DISCOVERY_PORT } from './lib/discover.mjs'
@@ -252,6 +253,9 @@ export default {
     tutkBridgePath: '',
     tutkLibPath: '',
     tutkTimeoutMs: 20000,
+    enrollBaseUrl: '',
+    enrollTtlMinutes: 60,
+    enrollMaxTtlMinutes: 1440,
   },
   // 面板自己画设置表单（panel.js）。这里声明空数组，避免宿主再渲染一份重复的设置栏。
   settings: [],
@@ -355,10 +359,32 @@ export default {
         tutkBridgePath: n.tutkBridgePath,
         tutkLibPath: n.tutkLibPath,
         tutkTimeoutMs: n.tutkTimeoutMs,
+        enrollBaseUrl: n.enrollBaseUrl,
+        enrollTtlMinutes: n.enrollTtlMinutes,
+        enrollMaxTtlMinutes: n.enrollMaxTtlMinutes,
       }
     }
 
     // ---------- 保险箱 ----------
+    /**
+     * 离线信封服务：公钥/私钥、一次性、有效期（见 docs/ENROLL.md）。
+     * 私钥只在数据目录里，永不返回给任何调用方；这里只往外给 link / fingerprint。
+     */
+    const enrollService = (testHooks.createEnvelopeService || createEnvelopeService)({
+      dir: api.dataDir(),
+      log,
+      maxTtlMinutes: (api.settings() && api.settings().enrollMaxTtlMinutes) || 1440,
+    })
+    const enrollReady = async () => {
+      try {
+        await enrollService.ensure()
+        return true
+      } catch (error) {
+        log.warn('登录信封密钥不可用：' + ((error && error.code) || (error && error.message) || error))
+        return false
+      }
+    }
+
     const vault = (testHooks.createVault || createVault)({
       dir: api.dataDir(),
       log,
@@ -367,45 +393,29 @@ export default {
       maxBindings: settings().maxBindings,
     })
     /**
-     * 免安全码账号的自动解锁。
-     *
-     * 主人可以完全不设安全码（设置里 `ownerNoCode`）。这种账号的 DEK 由本机主密钥包着，
-     * 所以在面板/命令里任何「需要已解锁」的地方，都先尝试自动开一次会话，用户完全无感。
-     * 设了安全码的账号 `isCodeless()` 为 false，这里什么都不做 —— 绝不会绕过安全码。
+     * 没有安全码之后，「能不能用」只是「有没有记录 + 记录是否还需要迁移」。
+     * 会话（DEK 在不在内存）变成纯缓存：锁过、过期都会自动续上，用户不该撞到 LOCKED。
      */
     const ownerQQOf = () => String((api.config() && api.config().ownerQQ) || '')
-    /** 免码只在「设置里允许」且「这个账号确实是免码建的」时成立。 */
-    const isCodelessOwner = () => {
-      try {
-        if (settings().ownerNoCode === false) return false
-        return !!vault.isCodeless && vault.isCodeless(ownerQQOf())
-      } catch { return false }
+    const needsMigrationNow = (qq) => {
+      try { return vault.needsMigration(String(qq || '')) } catch { return false }
     }
-    /** 免码账号 → 自动解锁并返回 true；其它情况原样返回当前是否已解锁。 */
-    const ensureOwnerSession = async () => {
-      const qq = ownerQQOf()
-      if (!qq) return false
-      try {
-        await ready()
-        if (vault.isUnlocked(qq)) return true
-        if (!isCodelessOwner()) return false
-        await vault.unlockWithoutCode(qq)
-        return vault.isUnlocked(qq)
-      } catch (error) {
-        log.warn('免安全码账号自动解锁失败：' + ((error && error.message) || error))
-        return false
-      }
-    }
-    /** 统一的「这个用户现在能不能用」判断：免码主人会自动开，其它人照旧要解锁。 */
-    const isUsableNow = async (qq) => {
+    const ensureSession = async (qq) => {
       const id = String(qq || '')
       if (!id) return false
       try {
-        if (vault.isUnlocked(id)) return true
-      } catch { /* 未加载 */ }
-      if (id === ownerQQOf() && isCodelessOwner()) return ensureOwnerSession()
-      return false
+        await ready()
+        if (!vault.hasUser(id)) return false
+        if (vault.needsMigration(id)) return false
+        if (!vault.isUnlocked(id)) await vault.unlock(id)
+        return vault.isUnlocked(id)
+      } catch (error) {
+        log.warn('恢复会话失败：' + ((error && error.code) || (error && error.message) || error))
+        return false
+      }
     }
+    const ensureOwnerSession = async () => ensureSession(ownerQQOf())
+    const isUsableNow = async (qq) => ensureSession(qq)
 
     let loadPromise = null
     /** 把设置里的「解锁有效期（天）」同步到保险箱；每次解锁前都同步一次，改设置立即生效。 */
@@ -415,8 +425,9 @@ export default {
     }
     const ready = () => {
       if (!loadPromise) {
-        loadPromise = vault.load().then(() => {
+        loadPromise = vault.load().then(async () => {
           applyLockMinutes()
+          await enrollReady()
           return true
         }).catch((error) => { loadPromise = null; throw error })
       }
@@ -1062,6 +1073,122 @@ export default {
       return { id: r.id, count, names }
     }
 
+    // ---------- 离线信封（登录 / 迁移共用） ----------
+
+    /** 登录网页链接；私钥还没就绪时返回一句提示而不是半个链接。 */
+    function enrollLinkOrHint () {
+      try {
+        return enrollService.link(settings().enrollBaseUrl)
+      } catch (error) {
+        log.warn('登录信封链接不可用：' + ((error && error.code) || (error && error.message) || error))
+        return '（登录链接还没就绪，稍后再试；一直这样就去看面板「登录信封」）'
+      }
+    }
+
+    /** 这段文本看起来是不是一段信封（只做形状判断，真正校验在 open 里）。 */
+    function isEnvelope (text) {
+      return /^BBX1\.[A-Za-z0-9_-]{40,}$/.test(String(text || '').trim())
+    }
+
+    /**
+     * 揭开一个信封并把账号密码用来登录云端。
+     *
+     * 安全约束：
+     *   · 一次性由 envelopeService 在**返回明文之前**就记账，所以这里无论成功失败
+     *     都不会留下「同一段还能重放」的窗口；
+     *   · 明文只活在这个函数的局部变量里，finally 里置空；不进日志/审计 note/任何返回值；
+     *   · 信封用途（kind）必须和调用方期望的一致，防止「拿登录信封当解锁用」这类误用。
+     *
+     * @returns {Promise<string|null>} 要回给用户的话；null 表示调用方自行处理
+     */
+    async function applyEnvelope (who, raw, want) {
+      let opened = null
+      try {
+        opened = await enrollService.open(raw)
+      } catch (error) {
+        const code = (error && error.code) || 'BAD_FORMAT'
+        await audit(who.userId, 'envelope', false, code)
+        return envelopeErrorText(code)
+      }
+      try {
+        if (opened.kind !== want) {
+          await audit(who.userId, 'envelope', false, 'kind-mismatch')
+          return '这段信封是用来「' + kindLabel(opened.kind) + '」的，不是「' + kindLabel(want) + '」。'
+        }
+        if (want !== 'login') return null
+
+        // 登录：建号（幂等）+ 迁移检查 + 云端登录
+        if (!vault.hasUser(who.userId)) {
+          await vault.register(who.userId)
+          await audit(who.userId, 'register', true, 'envelope')
+        }
+        if (vault.needsMigration(who.userId)) {
+          return '你这条记录还是旧的安全码格式：先发 /打印机 迁移，在网页里填一次旧安全码，之后就不用再输了。'
+        }
+        const region = Object.hasOwn(REGIONS, opened.region) ? opened.region : 'us'
+        const session = (testHooks.createCloudLogin || createCloudLogin)({
+          account: opened.account,
+          password: opened.password,
+          region,
+        })
+        const r = await session.login()
+        if (r.ok) {
+          pendingLogins.delete(who.userId)
+          const saved = await saveCloudLogin(who.userId, r, opened.account)
+          await audit(who.userId, 'login', true, 'envelope')
+          return '登录成功（账号密码没有进聊天记录），云端 token 已加密保存' +
+            (saved.count ? '，发现 ' + saved.count + ' 台打印机：' + saved.names.join('、') : '；账号下暂时没发现打印机，可稍后 /打印机 同步') + '。'
+        }
+        if (r.need === 'code') {
+          pendingLogins.set(who.userId, { session, account: opened.account, region, until: now() + LOGIN_TTL_MS, need: '验证码' })
+          await audit(who.userId, 'login', false, 'need-code')
+          return '云端要求验证码。发「/打印机 验证码」让我请求验证码，然后「/打印机 验证码 <6位>」提交（5 分钟内有效）。'
+        }
+        if (r.need === 'tfa') {
+          pendingLogins.set(who.userId, { session, account: opened.account, region, until: now() + LOGIN_TTL_MS, need: '两步验证' })
+          await audit(who.userId, 'login', false, 'need-tfa')
+          return '云端要求两步验证。请在验证器里看 6 位码，发「/打印机 两步验证 <6位>」（5 分钟内有效）。'
+        }
+        return '登录没完成：云端返回了不认识的响应。'
+      } catch (error) {
+        const code = (error && error.code) || 'AUTH_FAILED'
+        await audit(who.userId, want, false, code)
+        return (want === 'login' ? '登录失败：' : '处理失败：') + explain(error)
+      } finally {
+        if (opened) {
+          opened.account = ''
+          opened.password = ''
+          opened.code = ''
+          opened.newCode = ''
+          opened = null
+        }
+      }
+    }
+
+    /** 信封错误码 → 中文人话。绝不回显任何明文。 */
+    function envelopeErrorText (code) {
+      const table = {
+        BAD_FORMAT: '这段不像是本模块生成的信封（应该以 BBX1. 开头，整段复制，别只复制一半）。',
+        BAD_VERSION: '信封版本不支持，刷新一下登录网页再生成。',
+        BAD_SUITE: '信封的加密套件这台机器不支持。',
+        TOO_LARGE: '这段太长了，不像是信封。',
+        BAD_TAG: '这段信封解不开：可能是给别的机器生成的，或者复制时被改动了。',
+        BAD_PAYLOAD: '信封内容不完整或字段不合法，重新生成一次。',
+        EXPIRED: '信封过期了（生存时间从生成那一刻开始算），重新生成一段。',
+        NOT_YET: '这台机器的时钟比签发时间还早，检查系统时间或重新生成。',
+        REPLAYED: '这段信封已经用过了。信封是一次性的，重新生成一段。',
+        NO_CODE: '信封里没有安全码，重新在网页上填一次。',
+        NOT_READY: '登录密钥还没就绪，让主人在面板「登录信封」里看一下。',
+        NO_CRYPTO: '当前环境不支持 WebCrypto。',
+        BAD_KEY: '登录密钥损坏了，需要主人在面板里重置一次（旧链接会失效）。',
+      }
+      return (table[code] || '信封处理失败。')
+    }
+
+    function kindLabel (kind) {
+      return kind === 'login' ? '登录' : kind === 'unlock' ? '解锁' : kind === 'changecode' ? '改安全码' : String(kind)
+    }
+
     // ---------- 命令分发 ----------
     async function handleCommand(arg, msg) {
       await ready()
@@ -1158,48 +1285,27 @@ export default {
 
       if (/^(登录|登陆|login)$/.test(head)) {
         if (msg.kind !== 'private') return '登录只能在私聊里做：账号密码不能发到群里。'
-        const parts2 = rest.split(/\s+/)
-        const account = parts2[0] || ''
-        const password = parts2.slice(1).join(' ')
-        if (!account) {
+        // 不带参数 = 给链接；带参数 = 必须是一段信封。
+        // 旧写法「/打印机 登录 <账号> <密码>」到这里会被当成「不是信封的文本」拒掉 ——
+        // 账号密码绝不能因为「他照着旧帮助发了」就又被收进聊天记录。
+        if (!rest) {
           const pending = pendingLogins.get(who.userId)
           return [
-            '用 Bambu 账号登录（和 ha-bambulab 的流程一致）：',
-            '1) /打印机 登录 <账号> <密码> —— 账号是邮箱或手机号',
-            '2) 如果云端要求验证码：/打印机 验证码 —— 先让云端发码，再 /打印机 验证码 <6位>',
-            '3) 如果要求两步验证：/打印机 两步验证 <码>',
+            '用 Bambu 账号登录（账号和密码都不经过聊天）：',
+            '1) 打开这个页面：' + (enrollLinkOrHint()),
+            '2) 填 Bambu 账号 + 密码（网页在浏览器里本地加密），点「生成」',
+            '3) 把生成的 BBX1.… 整段贴回来：/打印机 登录 <那段>',
+            '',
+            '如果云端还要验证码：/打印机 验证码 → 等码到邮箱/手机 → /打印机 验证码 <6位>（5 分钟内有效）',
+            '如果要求两步验证：/打印机 两步验证 <6位>',
             '',
             '注意：用 OAuth（Google/Apple 等）注册的账号，需要先在 Bambu 手机 App 里设置密码（Account Security → Change Password），之后才能用账号+密码登录。',
             pending ? '（你有一个登录会话在等：' + pending.need + '，5 分钟内有效）' : '',
           ].filter(Boolean).join('\n')
         }
-        const region = Object.hasOwn(REGIONS, String(parts2[parts2.length - 1])) ? String(parts2.pop()) : 'us'
-        // region 可能在末尾，重新算密码
-        const pass = parts2.slice(1).join(' ')
-        try {
-          const session = (testHooks.createCloudLogin || createCloudLogin)({ account, password: pass || password, region: region })
-          const r = await session.login()
-          if (r.ok) {
-            pendingLogins.delete(who.userId)
-            const saved = await saveCloudLogin(who.userId, r, account)
-            await audit(who.userId, 'login', true, 'cloud')
-            return '登录成功，云端 token 已加密保存' + (saved.count ? '，发现 ' + saved.count + ' 台打印机：' + saved.names.join('、') : '；账号下暂时没发现打印机，可稍后 /打印机 同步') + '。'
-          }
-          if (r.need === 'code') {
-            pendingLogins.set(who.userId, { session, account, region, until: now() + LOGIN_TTL_MS, need: '验证码' })
-            await audit(who.userId, 'login', false, 'need-code')
-            return '云端要求验证码。发「/打印机 验证码」让我请求验证码，然后「/打印机 验证码 <6位>」提交（5 分钟内有效）。'
-          }
-          if (r.need === 'tfa') {
-            pendingLogins.set(who.userId, { session, account, region, until: now() + LOGIN_TTL_MS, need: '两步验证' })
-            await audit(who.userId, 'login', false, 'need-tfa')
-            return '云端要求两步验证。请在验证器里看 6 位码，发「/打印机 两步验证 <6位>」（5 分钟内有效）。'
-          }
-          return '登录没完成：云端返回了不认识的响应。'
-        } catch (error) {
-          await audit(who.userId, 'login', false, error.code || 'AUTH_FAILED')
-          return '登录失败：' + explain(error)
-        }
+        const opened = await applyEnvelope(who, rest, 'login')
+        if (opened) return opened
+        return '登录没完成。'
       }
 
       if (/^(验证码|code)$/.test(head)) {
@@ -1794,7 +1900,8 @@ export default {
           unlockDays: unlockDaysOf(api.settings()),
           // 免安全码：开关 + 这个账号实际是不是免码建的 + 有没有建过账号
           noCode: s.ownerNoCode !== false,
-          codeless: (() => { try { return !!vault.isCodeless && vault.isCodeless(ownerQQOf()) } catch { return false } })(),
+          // 所有人都没有安全码了；保留字段只为兼容老面板
+          codeless: true,
           hasAccount: (() => { try { return !!ownerQQOf() && vault.hasUser(ownerQQOf()) } catch { return false } })(),
         },
         risk: '访问码 / token 等同于打印机控制权；安全码是唯一解密钥匙（忘了只能清空重绑）。默认谁也看不到别人的 token；本人主动授权 = 限时共享自己的凭据，对方能查看/管理这些打印机，但拿不到安全码，也随时可被撤销。任何人都不应把安全码、访问码发到群里。',
@@ -1856,7 +1963,7 @@ export default {
       const b = await body(req)
       const qq = String(b.qq || '')
       if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个 QQ 还没绑定' }
-      if (!(await isUsableNow(qq))) return { ok: false, code: 'LOCKED', message: '先解锁这个用户再改接口（偏好本身不含秘密，但改它需要本人）' }
+      if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个 QQ 还没绑定。' }
       const value = b.value == null ? '' : String(b.value).trim().toLowerCase()
       if (!['', 'cloud', 'lan', 'auto'].includes(value)) return { ok: false, code: 'BAD_INPUT', message: '接口只能是 cloud / lan / auto / 跟随全局' }
       try {
@@ -1874,7 +1981,7 @@ export default {
       const b = await body(req)
       const qq = String(b.qq || '')
       if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个 QQ 还没绑定' }
-      if (!(await isUsableNow(qq))) return { ok: false, code: 'LOCKED', message: '先解锁这个用户再改群权限' }
+      if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个 QQ 还没绑定。' }
       const patch = {}
       if (b.groupMode !== undefined) {
         const mode = String(b.groupMode || '').toLowerCase()
@@ -1898,7 +2005,8 @@ export default {
       const q = query(req)
       const qq = String(q.qq || '')
       if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个 QQ 还没绑定' }
-      if (!(await isUsableNow(qq))) return { ok: false, code: 'LOCKED', message: '这个用户还没解锁：先让他用安全码解锁再操作。' }
+      if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
+      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       return { ok: true, bindings: vault.listBindings(qq).map((b) => ({ id: b.id, label: b.label, mode: b.mode, tokenMask: b.tokenMask, printers: b.printers.map((p) => ({ serialMasked: maskSerial(p.serial), name: p.name || '', model: p.model || '' })) })) }
     })
 
@@ -1906,7 +2014,8 @@ export default {
       await ready()
       const b = await body(req)
       const qq = String(b.qq || '')
-      if (!(await isUsableNow(qq))) return { ok: false, code: 'LOCKED', message: '这个用户还没解锁：先让他用安全码解锁再操作。' }
+      if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
+      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       const mode = b.mode === 'cloud' ? 'cloud' : 'lan'
       if (mode === 'lan' && String(qq) !== String(api.config().ownerQQ)) {
         return { ok: false, code: 'OWNER_ONLY', message: '局域网绑定只提供给主人；其他用户请用「云端登录」（Bambu 账号）。' }
@@ -1942,7 +2051,8 @@ export default {
       await ready()
       const b = await body(req)
       const qq = String(b.qq || '')
-      if (!(await isUsableNow(qq))) return { ok: false, code: 'LOCKED', message: '这个用户还没解锁：先让他用安全码解锁再操作。' }
+      if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
+      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       try {
         await vault.removeBinding(qq, String(b.bindingId || ''))
         await audit(qq, 'unbind', true, '', String(b.bindingId || ''))
@@ -1956,7 +2066,8 @@ export default {
       await ready()
       const b = await body(req)
       const qq = String(b.qq || '')
-      if (!(await isUsableNow(qq))) return { ok: false, code: 'LOCKED', message: '这个用户还没解锁：先让他用安全码解锁再操作。' }
+      if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
+      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       const list = vault.printers(qq)
       const picked = pickPrinter(list, String(b.selector || ''))
       if (!picked.ok) {
@@ -1975,7 +2086,8 @@ export default {
       await ready()
       const b = await body(req)
       const qq = String(b.qq || '')
-      if (!(await isUsableNow(qq))) return { ok: false, code: 'LOCKED', message: '这个用户还没解锁：先让他用安全码解锁再操作。' }
+      if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
+      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       const action = String(b.action || '')
       if (!['pause', 'resume', 'stop', 'light', 'speed', 'temperature', 'home'].includes(action)) return { ok: false, code: 'BAD_INPUT', message: '不认识的动作' }
       if (action === 'stop' && b.confirm !== true) return { ok: false, code: 'NEED_CONFIRM', message: '停止打印需要确认：再点一次「确认停止」' }
@@ -2001,7 +2113,8 @@ export default {
       await ready()
       const b = await body(req)
       const qq = String(b.qq || '')
-      if (!(await isUsableNow(qq))) return { ok: false, code: 'LOCKED', message: '这个用户还没解锁：先让他用安全码解锁再操作。' }
+      if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
+      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       const list = vault.printers(qq)
       const picked = pickPrinter(list, String(b.selector || ''))
       if (!picked.ok) return picked.code === 'NEED_CHOICE' ? { ok: true, needChoice: true, choices: list.map((p) => ({ index: p.index, label: p.bindingLabel || p.label || '', name: p.name || '', model: p.model || '', serialMasked: maskSerial(p.serial) })) } : { ok: false, code: picked.code, message: picked.message }
@@ -2015,7 +2128,8 @@ export default {
       await ready()
       const b = await body(req)
       const qq = String(b.qq || '')
-      if (!(await isUsableNow(qq))) return { ok: false, code: 'LOCKED', message: '这个用户还没解锁：先让他用安全码解锁再操作。' }
+      if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
+      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       const grantee = String(b.grantee || '')
       if (!/^\d{4,15}$/.test(grantee)) return { ok: false, code: 'BAD_INPUT', message: '对方 QQ 不对' }
       if (grantee === qq) return { ok: false, code: 'BAD_INPUT', message: '不用授权给自己' }
@@ -2040,7 +2154,8 @@ export default {
       const grantId = String(b.grantId || '')
       const qq = String(b.qq || '')
       if (!qq) return { ok: false, code: 'BAD_INPUT', message: '撤销授权必须由授权人本人解锁后操作' }
-      if (!(await isUsableNow(qq))) return { ok: false, code: 'LOCKED', message: '这个用户还没解锁：先让他用安全码解锁再操作。' }
+      if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
+      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       try {
         await vault.revokeGrant({ byQQ: qq, grantId })
         await audit(qq, 'revoke', true, '', grantId)
@@ -2055,7 +2170,8 @@ export default {
       await ready()
       const b = await body(req)
       const qq = String(b.qq || '')
-      if (!(await isUsableNow(qq))) return { ok: false, code: 'LOCKED', message: '这个用户还没解锁：先让他用安全码解锁再操作。' }
+      if (!vault.hasUser(qq)) return { ok: false, code: 'NO_USER', message: '这个用户还没有绑定打印机。' }
+      if (vault.needsMigration(qq)) return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式，需要先迁移。' }
       const cloudBindings = vault.listBindings(qq).filter((x) => x.mode === 'cloud')
       if (!cloudBindings.length) return { ok: false, code: 'NO_CLOUD', message: '这个用户没有云端绑定' }
       if (b.confirm !== true) return { ok: false, code: 'NEED_CONFIRM', message: '退出会删掉云端 token，需要确认：再带 confirm=true 提交' }
@@ -2286,18 +2402,18 @@ export default {
       await ready()
       const b = await body(req)
       const ownerQQ = ownerQQOf()
-      if (!ownerQQ) return { ok: false, code: 'NO_OWNER', message: '没读到主人 QQ，无法建免码账号。' }
+      if (!ownerQQ) return { ok: false, code: 'NO_OWNER', message: '没读到主人 QQ，无法建账号。' }
       try {
+        // 没有安全码了：建号是幂等的，重复点也不会动已有数据
         if (!vault.hasUser(ownerQQ)) {
-          await vault.registerWithoutCode(ownerQQ)
-          await audit(ownerQQ, 'register', true, '免安全码（面板）', ownerQQ)
-        } else if (!isCodelessOwner()) {
-          // 已经设过安全码：不悄悄改掉，告诉他这是个有意的决定
-          return { ok: false, code: 'NEED_CODE', message: '这个主人账号已经设过安全码，不能直接改成免码（那样会绕过已有安全码）。要换方式请先清空数据重来。' }
+          await vault.register(ownerQQ)
+          await audit(ownerQQ, 'register', true, '面板', ownerQQ)
         }
-        // 免码时 applyLockMinutes 会按设置里的天数开一个长会话
+        if (vault.needsMigration(ownerQQ)) {
+          return { ok: false, code: 'NEED_MIGRATE', message: '这个主人的记录还是旧的安全码格式：先用它原来的安全码迁移一次。' }
+        }
         applyLockMinutes()
-        const session = await vault.unlockWithoutCode(ownerQQ)
+        const session = await vault.unlock(ownerQQ)
         return { ok: true, mode: 'host', until: session.until }
       } catch (error) {
         return { ok: false, code: (error && error.code) || 'FAILED', message: explain(error) }
@@ -2348,14 +2464,19 @@ export default {
       const ownerQQ = String((api.config() && api.config().ownerQQ) || '')
       if (!ownerQQ) return { ok: false, code: 'NO_OWNER', message: '没读到主人 QQ，无法定位要解锁的保险箱。' }
       try {
-        // 改设置后立即按新的「天」生效，不用重载模块
+        // 没有安全码了：这个路由不再需要 body，作用只是「确保会话在」
+        void b
         const minutes = applyLockMinutes()
-        const r = await vault.unlock(ownerQQ, String(b.code || ''))
+        if (!vault.hasUser(ownerQQ)) return { ok: false, code: 'NO_USER', message: '还没有账号：先在上面点一下建立账号。' }
+        if (vault.needsMigration(ownerQQ)) {
+          return { ok: false, code: 'NEED_MIGRATE', message: '这条记录还是旧的安全码格式：先用它原来的安全码迁移一次。' }
+        }
+        const r = await vault.unlock(ownerQQ)
         await audit(ownerQQ, 'unlock', true, 'panel', ownerQQ)
         return { ok: true, until: r.until, unlockDays: Math.max(1, Math.round(minutes / 1440)) }
       } catch (error) {
-        await audit(ownerQQ, 'unlock', false, error.code || 'BAD_CODE', ownerQQ)
-        return { ok: false, code: error.code || 'BAD_CODE', message: explain(error) }
+        await audit(ownerQQ, 'unlock', false, error.code || 'FAILED', ownerQQ)
+        return { ok: false, code: error.code || 'FAILED', message: explain(error) }
       }
     })
 
