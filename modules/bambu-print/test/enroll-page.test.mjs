@@ -117,6 +117,41 @@ test('页面：bbx.js 是唯一加解密实现，不重复实现一套', async (
   assert.match(bbx, /bambu-print\/envelope\/v1/)
 })
 
+test('页面：只有「登录」一种用途，账号密码必填，没有安全码字段', async () => {
+  const form = await import('../assets/enroll/enroll-form.js')
+  const html = await readIndex()
+
+  // 页面上不该再有安全码 / 新安全码输入框
+  assert.doesNotMatch(html, /id="code"/, '不该再有安全码输入框')
+  assert.doesNotMatch(html, /id="newcode"/, '不该再有新安全码输入框')
+  assert.doesNotMatch(html, /安全码/, '页面正文不该再提安全码')
+
+  // 账号密码必填
+  const empty = form.validateInputs({ ttlMin: 10 })
+  assert.equal(empty.ok, false, '什么都不填不该能生成')
+  assert.match(empty.errors.join('；'), /账号和密码/)
+  const login = form.validateInputs({ account: 'a@b.com', password: 'pw', ttlMin: 10 })
+  assert.equal(login.ok, true, '登录表单应当合法：' + login.errors.join('；'))
+  assert.equal(login.kind, 'login')
+})
+
+test('页面：生存时间固定 10 分钟，不再有设置窗口；区域可选且默认中国', async () => {
+  const html = await readIndex()
+  // 生存时间不再给用户填
+  assert.doesNotMatch(html, /id="ttl"/, '不该再有生存时间输入框')
+  assert.match(html, /FIXED_TTL_MIN = 10/, '生存时间要固定成 10 分钟')
+  // 区域保留选择
+  assert.match(html, /id="region"/, '区域要能选')
+  const form = await import('../assets/enroll/enroll-form.js')
+  assert.equal(form.DEFAULT_REGION, 'cn', '默认中国大陆')
+  assert.ok(form.REGION_OPTIONS.length >= 2, '至少给出国服以外的选项')
+
+  // 真跑一次：不传 ttl 也要落成 10 分钟
+  const payload = form.buildPayload({ account: 'a@b.com', password: 'pw' })
+  assert.equal(payload.ttlMin, 10)
+  assert.equal(payload.exp - payload.iat, 600, '10 分钟 = 600 秒')
+})
+
 // ------------------------------------------------------------------ 真浏览器端到端（可选）
 
 function findBrowser () {
@@ -211,10 +246,11 @@ test('真浏览器：在页面里生成信封，本进程能解开（浏览器 �
 
       const opened = await service.open(text)
       assert.equal(opened.kind, 'login')
-      assert.equal(opened.code, 'kR7#mQp2Lz')
+      assert.equal(opened.code, '', '信封里不再带安全码')
       assert.equal(opened.account, 'me@example.com')
       assert.equal(opened.password, 'pw-e2e-123')
       assert.equal(opened.region, 'cn', '网页默认区域应当是中国大陆')
+      assert.equal(opened.ttlMin, 10, '网页固定 10 分钟生存时间')
     } finally {
       await web2.close()
     }
@@ -256,10 +292,8 @@ function e2eWrapper (pub) {
     '      el.value = v;' +
     '      el.dispatchEvent(new w.Event("input", { bubbles: true }));' +
     '    };' +
-    '    set("code", "kR7#mQp2Lz");' +
     '    set("account", "me@example.com");' +
     '    set("password", "pw-e2e-123");' +
-    '    set("ttl", "30");' +
     '    d.getElementById("form").dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true }));' +
     '    const wait = function () {' +
     '      const res = d.getElementById("result");' +

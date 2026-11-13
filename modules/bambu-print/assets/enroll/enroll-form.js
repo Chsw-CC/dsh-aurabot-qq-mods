@@ -4,9 +4,8 @@
 // 这样它能同时在浏览器（index.html）和 Node 单测里直接 import 使用。
 //
 // 判定口径与 docs/ENVELOPE.md 一致：
-//   填账号+密码            -> 'login'      （安全码就是这个新账号的安全码）
-//   只填安全码            -> 'unlock'
-//   旧安全码 + 新安全码    -> 'changecode'
+// 现在只有一件事：填 Bambu 账号 + 密码，生成一段登录信封。
+// （安全码已取消；「只建号」「改安全码」这些用法也一并去掉，账号密码是必填。）
 // 安全码强度只做前端提示（errors 只放结构性错误，warnings 放「太弱」这类建议），
 // 最终以服务端 checkCodeStrength / vault 的判定为准。
 
@@ -28,7 +27,7 @@ export const REGION_OPTIONS = [
 // 注意：这不是 lib/cloud.mjs 的 DEFAULT_REGION（那一个故意保持 us，见那边的注释）；
 // 这里只是这份网页表单的默认值，用户能在页面上改。
 export const DEFAULT_REGION = 'cn'
-export const DEFAULT_TTL_MIN = 60
+export const DEFAULT_TTL_MIN = 10
 
 /** 三种信封用途的短标签（界面直接用，避免各处再写一遍）。 */
 export const KIND_LABELS = {
@@ -39,9 +38,7 @@ export const KIND_LABELS = {
 
 /** 每种用途的一句话说明（界面提示用）。 */
 export const KIND_HINTS = {
-  login: '会用这个安全码建号（如果还没有），然后登录 Bambu 云端。',
-  unlock: '只解锁，不改任何东西。',
-  changecode: '旧安全码换成新安全码，账号和密码要留空。',
+  login: '登录 Bambu 云端，自动同步账号下的打印机。',
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
@@ -85,8 +82,7 @@ export function classify (input = {}) {
   const password = text(input.password)
   const newCode = trimmed(input.newCode)
   if (newCode) return 'changecode'
-  if (account || password) return 'login'
-  return 'unlock'
+  return 'login'
 }
 
 /** 安全码结构问题（与服务端 checkCodeStrength 的「硬规则」部分一致，只做提示）。返回问题条数。 */
@@ -139,13 +135,13 @@ export function validateInputs (input = {}) {
   const hasPassword = password.length > 0
   const hasNewCode = newCode.length > 0
 
-  // ---- 安全码（旧码 / 解锁用码）
-  const codeProblems = pushCodeShapeErrors(code, '安全码', errors)
+  // ---- 账号和密码都是必填（页面只做登录这件事）
+  if (!hasAccount && !hasPassword) errors.push('请填写 Bambu 账号和密码')
+  if (!hasAccount && hasPassword) errors.push('请填写 Bambu 账号')
+  if (hasAccount && !hasPassword) errors.push('请填写 Bambu 密码')
+  const codeProblems = 0
 
   // ---- 账号与密码必须成对
-  if (hasAccount !== hasPassword) {
-    errors.push('Bambu 账号和密码要一起填或一起留空（只填安全码 = 解锁；账户密码留空 + 新安全码 = 改安全码）')
-  }
   if (hasAccount && hasPassword) {
     if (!EMAIL_RE.test(account) && !PHONE_RE.test(account)) {
       errors.push('Bambu 账号要填邮箱（如 name@example.com）或 5~15 位数字的手机号')
@@ -180,12 +176,6 @@ export function validateInputs (input = {}) {
   }
 
   // ---- 强度提示（不拦截：最终以服务端为准；结构本身就不对时不再叠一条弱码提示）
-  const weak = codeProblems ? '' : weaknessOf(code)
-  if (weak && code.length >= CODE_MIN) {
-    if (kind === 'login') warnings.push('这个安全码偏弱（' + weak + '）：如果是新建账号，服务端会直接拒绝。')
-    else if (kind === 'unlock') warnings.push('这个安全码偏弱（' + weak + '），能解锁就说明之前已经建过号了。')
-    else if (kind === 'changecode') warnings.push('旧安全码偏弱（' + weak + '），不影响这次改码。')
-  }
 
   return { ok: errors.length === 0, errors, kind, warnings }
 }
@@ -199,7 +189,9 @@ export function validateInputs (input = {}) {
  * @returns {{code:string, account:string, password:string, newCode:string, ttlMin:number, region:string, iat:number, exp:number}}
  */
 export function buildPayload (input = {}) {
-  const ttlMin = Math.round(Number(input.ttlMin))
+  const ttlRaw = Math.round(Number(input.ttlMin))
+  // 没传就用默认 10 分钟（页面现在固定这个值，但直接调这个函数时也要有合理默认）
+  const ttlMin = Number.isFinite(ttlRaw) && ttlRaw >= TTL_MIN && ttlRaw <= TTL_MAX ? ttlRaw : DEFAULT_TTL_MIN
   const nowRaw = Number(input.now)
   const iat = Number.isFinite(nowRaw) && nowRaw > 0 ? Math.floor(nowRaw) : Math.floor(Date.now() / 1000)
   const region = REGIONS.includes(trimmed(input.region).toLowerCase())

@@ -545,12 +545,12 @@ test('服务：错误话术里不出现任何明文秘密', async () => {
 
 // ------------------------------------------------------------------ 表单逻辑（网页端）
 
-test('表单：三种用途的判定只看字段，不看任何开关', () => {
-  assert.equal(classify({ code: CODE }), 'unlock')
-  assert.equal(classify({ code: CODE, account: ACCOUNT, password: PASSWORD }), 'login')
-  assert.equal(classify({ code: CODE, newCode: NEW_CODE }), 'changecode')
-  // 只填了账号（没密码）也归到 login，让 validateInputs 报「要一起填」
-  assert.equal(classify({ code: CODE, account: ACCOUNT }), 'login')
+test('表单：现在只有「登录」一种用途，账号密码必填', () => {
+  assert.equal(classify({ account: ACCOUNT, password: PASSWORD }), 'login')
+  // 只填了账号（没密码）也归到 login，让 validateInputs 报缺密码
+  assert.equal(classify({ account: ACCOUNT }), 'login')
+  // 什么都不填也是 login，但校验会报错
+  assert.equal(classify({}), 'login')
 })
 
 test('表单：校验通过时 buildPayload 和 bbx.encodeBody 能直接对接', async () => {
@@ -573,16 +573,15 @@ test('表单：默认区域是中国大陆（大多数用户是国服账号）',
 
 test('表单：该拒的都要拒，且错误里不带密码原文', () => {
   const cases = [
-    [{ code: '', ttlMin: 10 }, /安全码不能为空/],
-    [{ code: 'short', ttlMin: 10 }, /至少/],
-    [{ code: '123456789', ttlMin: 10 }, /纯数字/],
-    [{ code: CODE, account: ACCOUNT, ttlMin: 10 }, /一起填或一起留空/],
-    [{ code: CODE, account: 'not-an-account', password: PASSWORD, ttlMin: 10 }, /邮箱/],
-    [{ code: CODE, account: ACCOUNT, password: PASSWORD, newCode: NEW_CODE, ttlMin: 10 }, /不要填 Bambu 账号或密码/],
-    [{ code: CODE, ttlMin: 0 }, /1~1440/],
-    [{ code: CODE, ttlMin: 1441 }, /1~1440/],
-    [{ code: CODE, ttlMin: 'abc' }, /整数/],
-    [{ code: CODE, ttlMin: 1.5 }, /整数/],
+    [{ ttlMin: 10 }, /请填写 Bambu 账号和密码/],
+    [{ account: ACCOUNT, ttlMin: 10 }, /请填写 Bambu 密码/],
+    [{ password: PASSWORD, ttlMin: 10 }, /请填写 Bambu 账号/],
+    [{ account: 'not-an-account', password: PASSWORD, ttlMin: 10 }, /邮箱/],
+    [{ account: ACCOUNT, password: PASSWORD, newCode: NEW_CODE, ttlMin: 10 }, /不要填 Bambu 账号或密码/],
+    [{ account: ACCOUNT, password: PASSWORD, ttlMin: 0 }, /1~1440/],
+    [{ account: ACCOUNT, password: PASSWORD, ttlMin: 1441 }, /1~1440/],
+    [{ account: ACCOUNT, password: PASSWORD, ttlMin: 'abc' }, /整数/],
+    [{ account: ACCOUNT, password: PASSWORD, ttlMin: 1.5 }, /整数/],
   ]
   for (const [input, pattern] of cases) {
     const v = validateInputs(input)
@@ -592,10 +591,10 @@ test('表单：该拒的都要拒，且错误里不带密码原文', () => {
   }
 })
 
-test('表单：弱码只提示不拦截（最终以服务端为准）', () => {
-  const weak = validateInputs({ code: 'password123', ttlMin: 10 })
-  assert.equal(weak.ok, true, '弱码在前端不拦，交给 vault 判')
-  assert.match(weak.warnings.join('；'), /偏弱/)
+test('表单：不再有任何「安全码强度」提示（安全码已取消）', () => {
+  const v = validateInputs({ account: ACCOUNT, password: PASSWORD, ttlMin: 10 })
+  assert.equal(v.ok, true)
+  assert.equal(v.warnings.join(''), '', '不该再出现弱码提示')
 })
 
 test('表单：账号掩码', () => {

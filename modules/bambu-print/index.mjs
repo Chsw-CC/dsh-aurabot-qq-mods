@@ -1113,24 +1113,12 @@ export default {
         return envelopeErrorText(code)
       }
       try {
-        // 用途要和内容一致：带账号的信封是登录，不带账号的是「只建号/只解锁」。
-        // 以前还有「改安全码」和「解锁」两种用途，安全码取消后只剩迁移用的旧格式，
-        // 不再接受从命令入口投递，所以这里只区分「要不要登录云端」。
         void want
-        // 不带账号的信封 = 只建号 / 只解锁，不碰云端。
-        // 这是有用的：只想绑局域网打印机（主人）或只想先把账号建好的人，
-        // 不需要为此登录 Bambu 云端。
+        // 信封现在只有「登录」一种用途：账号密码必填。
+        // 不带账号的旧信封（以前用来「只建号」）一律拒掉并说清楚该怎么做。
         if (opened.kind !== 'login') {
-          if (!vault.hasUser(who.userId)) {
-            await vault.register(who.userId)
-            await audit(who.userId, 'register', true, 'envelope')
-            return '账号已建好，可以开始用了（比如绑定局域网打印机）。'
-          }
-          if (vault.needsMigration(who.userId)) {
-            return '你这条记录还是旧的安全码格式：发 /打印机 改安全码，在网页里填一次旧安全码即可。'
-          }
-          await ensureSession(who.userId)
-          return '这条记录不需要迁移，直接就能用。'
+          await audit(who.userId, 'envelope', false, 'missing-credentials')
+          return '这段信封里没有 Bambu 账号和密码。请重新打开登录页面，把账号和密码都填上再生成。'
         }
 
         // 登录：建号（幂等）+ 迁移检查 + 云端登录

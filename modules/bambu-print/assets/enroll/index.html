@@ -40,27 +40,16 @@
     </div>
   </section>
 
-  <!-- 三种用法 -->
+  <!-- 用途 -->
   <section class="card" id="uses-card">
-    <h2>三种用法（按你填了什么自动判断）</h2>
+    <h2>这段是用来做什么的</h2>
     <ul class="uses">
       <li data-kind="login">
-        <span class="uses-name">登录</span>
-        <span class="uses-fields">安全码 + Bambu 账号 + 密码</span>
-        <span class="uses-text">第一次用会自动用这个安全码建号，然后登录云端。</span>
-      </li>
-      <li data-kind="unlock">
-        <span class="uses-name">只解锁</span>
-        <span class="uses-fields">只填安全码</span>
-        <span class="uses-text">不改任何东西，只是让机器人解锁一段时间。</span>
-      </li>
-      <li data-kind="changecode">
-        <span class="uses-name">改安全码</span>
-        <span class="uses-fields">旧安全码 + 新安全码（账号密码留空）</span>
-        <span class="uses-text">换成新的安全码，旧会话会立刻失效。</span>
+        <span class="uses-name">登录 Bambu 账号</span>
+        <span class="uses-fields">Bambu 账号 + 密码</span>
+        <span class="uses-text">机器人用这段密文登录云端，自动同步账号下的打印机。</span>
       </li>
     </ul>
-    <p class="kind-line" id="kind-line">当前判定：—</p>
   </section>
 
   <!-- 表单 -->
@@ -68,48 +57,22 @@
     <h2>填写</h2>
 
     <div class="field">
-      <label for="code">安全码 <span class="tag req">必填</span></label>
-      <div class="inline">
-        <input id="code" name="code" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" maxlength="128" placeholder="8 位以上；纯数字至少 10 位">
-        <button type="button" class="ghost small reveal" data-reveal="code" aria-pressed="false">显示</button>
-      </div>
-      <p class="hint">区分大小写，不能有空格。这是机器人用来解锁的安全码，不是 Bambu 密码。</p>
-    </div>
-
-    <div class="field">
-      <label for="account">Bambu 账号 <span class="tag opt">选填</span></label>
+      <label for="account">Bambu 账号 <span class="tag req">必填</span></label>
       <input id="account" name="account" type="text" inputmode="text" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" maxlength="200" placeholder="邮箱，或 5~15 位数字手机号">
-      <p class="hint">只有「登录」才填。只解锁 / 改安全码就留空。</p>
     </div>
 
     <div class="field">
-      <label for="password">Bambu 密码 <span class="tag opt">选填</span></label>
+      <label for="password">Bambu 密码 <span class="tag req">必填</span></label>
       <div class="inline">
-        <input id="password" name="password" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" maxlength="256" placeholder="和账号一起填，或一起留空">
+        <input id="password" name="password" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" maxlength="256" placeholder="Bambu 账号的密码">
         <button type="button" class="ghost small reveal" data-reveal="password" aria-pressed="false">显示</button>
       </div>
     </div>
 
     <div class="field">
-      <label for="newcode">新安全码 <span class="tag opt">选填</span></label>
-      <div class="inline">
-        <input id="newcode" name="newcode" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" maxlength="128" placeholder="只在「改安全码」时填">
-        <button type="button" class="ghost small reveal" data-reveal="newcode" aria-pressed="false">显示</button>
-      </div>
-      <p class="hint">填了它就会生成「改安全码」信封，这时账号和密码必须留空。</p>
-    </div>
-
-    <div class="two">
-      <div class="field">
-        <label for="ttl">生存时间（分钟）</label>
-        <input id="ttl" name="ttl" type="number" min="1" max="1440" step="1" inputmode="numeric" value="60">
-        <p class="hint">1~1440。过期就作废，默认 60。</p>
-      </div>
-      <div class="field">
-        <label for="region">账号区域</label>
-        <select id="region" name="region"></select>
-        <p class="hint">默认中国大陆。用国际站注册的账号（邮箱后缀常见 gmail / outlook）才需要改成「国际」。</p>
-      </div>
+      <label for="region">账号区域</label>
+      <select id="region" name="region"></select>
+      <p class="hint">默认中国大陆。用国际站注册的账号（邮箱后缀常见 gmail / outlook）才需要改成「国际」。</p>
     </div>
 
     <ul class="issues" id="issues"></ul>
@@ -118,7 +81,7 @@
       <button type="submit" class="primary" id="generate">生成加密文本</button>
       <button type="button" class="ghost" id="clear">清空</button>
     </div>
-    <p class="hint">安全码会留在输入框里方便你核对；用完记得点「清空」。</p>
+    <p class="hint">生成后账号和密码会被清空；用完记得点「清空」。</p>
   </form>
 
   <!-- 结果 -->
@@ -136,7 +99,7 @@
   </section>
 
   <footer class="page-foot">
-    <p>页面没有构建、没有依赖，只有同目录的 <code>style.css</code> / <code>bbx.js</code> / <code>enroll-form.js</code>，不连接任何外部域名。安全码强度最终以机器人服务端的判定为准。</p>
+    <p>页面没有构建、没有依赖，只有同目录的 <code>style.css</code> / <code>bbx.js</code> / <code>enroll-form.js</code>，不连接任何外部域名。</p>
   </footer>
 
   <noscript><p class="fatal">这个页面需要 JavaScript 才能在本地加密，请换一个正常的浏览器打开。</p></noscript>
@@ -210,13 +173,9 @@ async function boot (bbx, formLib) {
     fingerprint: $('key-fingerprint'),
     changeKey: $('change-key'),
     form: $('form'),
-    code: $('code'),
     account: $('account'),
     password: $('password'),
-    newcode: $('newcode'),
-    ttl: $('ttl'),
     region: $('region'),
-    kindLine: $('kind-line'),
     issues: $('issues'),
     generate: $('generate'),
     clear: $('clear'),
@@ -228,10 +187,13 @@ async function boot (bbx, formLib) {
     resultMeta: $('result-meta'),
   }
 
-  const KIND_LABEL = { login: '登录', unlock: '只解锁', changecode: '改安全码' }
+  const KIND_LABEL = { login: '登录' }
 
-  // 区域下拉框按 enroll-form.js 的 REGION_OPTIONS 生成，默认值跟 DEFAULT_REGION 走，
-  // 免得 markup 和模块各写一份、哪天改一处忘另一处。
+  // 生存时间固定 10 分钟（不再给用户选）：信封是一次性的，越短越安全，10 分钟足够走完
+  // 「生成 → 复制 → 粘贴到私聊」这条路。
+  const FIXED_TTL_MIN = 10
+
+  // 区域要能选：国服账号和国际站账号不互通，猜错了会登录失败。
   for (const option of formLib.REGION_OPTIONS) {
     const node = document.createElement('option')
     node.value = option.value
@@ -242,11 +204,9 @@ async function boot (bbx, formLib) {
 
   function readForm () {
     return {
-      code: el.code.value,
       account: el.account.value,
       password: el.password.value,
-      newCode: el.newcode.value,
-      ttlMin: el.ttl.value,
+      ttlMin: FIXED_TTL_MIN,
       region: el.region.value,
     }
   }
@@ -300,23 +260,13 @@ async function boot (bbx, formLib) {
     }
   }
 
-  // 生成成功后账号密码被清空，表单会「看起来」变回解锁；这一刻把判定钉在真正生成的那种上，
-  // 等用户再动一下输入框才恢复实时判定。
-  function renderKind (kind) {
-    const label = KIND_LABEL[kind] || kind
-    el.kindLine.textContent = (state.frozen ? '已生成：' : '当前判定：') + label + ' — ' + (formLib.KIND_HINTS[kind] || '')
-    el.kindLine.dataset.kind = kind
-    for (const li of document.querySelectorAll('.uses li')) {
-      li.classList.toggle('active', li.dataset.kind === kind)
-    }
-  }
+  // 现在只有「登录」一种用途，页面不再需要展示判定结果。
 
   function renderValidation (frozenKind = null) {
     const input = readForm()
     const verdict = formLib.validateInputs(input)
     state.kind = frozenKind || verdict.kind
     state.frozen = Boolean(frozenKind)
-    renderKind(state.kind)
 
     const items = []
     for (const message of verdict.errors) {
@@ -347,26 +297,21 @@ async function boot (bbx, formLib) {
   }
 
   function clearAll () {
-    el.code.value = ''
     el.account.value = ''
     el.password.value = ''
-    el.newcode.value = ''
-    el.ttl.value = '60'
     el.region.value = formLib.DEFAULT_REGION
     resetReveals()
     hideResult()
     renderValidation()
-    el.code.focus()
+    el.account.focus()
   }
 
   function clearSecrets () {
     el.account.value = ''
     el.password.value = ''
-    el.newcode.value = ''
     el.password.type = 'password'
-    el.newcode.type = 'password'
     for (const button of document.querySelectorAll('.reveal')) {
-      if (button.dataset.reveal === 'password' || button.dataset.reveal === 'newcode') {
+      if (button.dataset.reveal === 'password') {
         button.textContent = '显示'
         button.setAttribute('aria-pressed', 'false')
       }
@@ -422,7 +367,7 @@ async function boot (bbx, formLib) {
       el.copyStatus.textContent = ''
       el.resultMeta.textContent =
         '这是一段' + (KIND_LABEL[verdict.kind] || verdict.kind) + '信封，' +
-        formatExpiry(payload.exp) + ' 前有效，且只能用一次。已清空账号和密码输入框；安全码留在上面，用完点「清空」。'
+        formatExpiry(payload.exp) + ' 前有效，且只能用一次。已清空账号和密码输入框。'
       clearSecrets()
       renderValidation(verdict.kind)
       el.result.scrollIntoView({ block: 'center' })
@@ -431,7 +376,7 @@ async function boot (bbx, formLib) {
       const reason = {
         NO_CRYPTO: '这个浏览器不支持 WebCrypto，请换浏览器或改用 https。',
         BAD_PAYLOAD: '内容不符合信封格式：' + ((err && err.message) || ''),
-        NO_CODE: '安全码是空的。',
+        NO_CODE: '缺少必要口令。',
         BAD_KEY: '公钥不对，请重新从 QQ 里的链接打开本页。',
       }[code] || (err && err.message) || '加密失败。'
       el.copyStatus.textContent = ''
@@ -470,7 +415,7 @@ async function boot (bbx, formLib) {
     const ok = await setKey(el.manualKey.value)
     if (ok) {
       el.manualKey.value = ''
-      el.code.focus()
+      el.account.focus()
     }
   })
   el.manualKey.addEventListener('keydown', (event) => {
@@ -520,7 +465,7 @@ async function boot (bbx, formLib) {
   if (initial) {
     const ok = await setKey(initial, { quiet: true })
     if (ok) {
-      el.code.focus()
+      el.account.focus()
     } else {
       el.keyError.hidden = false
     }
