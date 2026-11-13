@@ -770,7 +770,10 @@ test('面板 /tutk/download：注入下载成功 → 返回路径/版本/是否�
     const exeName = process.platform === 'win32' ? 'bambu-tutk-bridge.exe' : 'bambu-tutk-bridge-linux-x64'
     const libName = process.platform === 'win32' ? 'BambuSource.dll' : 'libBambuSource.so'
     const fsp = await import('node:fs/promises')
+    // 假桥必须可执行：checkBridgeBinary 在非 Windows 上会 access(X_OK)，
+    // 而 writeFile 建出来是 0644（CI 的 Linux runner 会因此判 MISSING）。
     await fsp.writeFile(path.join(bridgeDir, exeName), Buffer.alloc(2048, 1))
+    if (process.platform !== 'win32') await fsp.chmod(path.join(bridgeDir, exeName), 0o755)
     await fsp.writeFile(path.join(bridgeDir, libName), Buffer.alloc(128 * 1024, 2))
 
     const api = await boot(dir)

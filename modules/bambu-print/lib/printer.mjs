@@ -423,8 +423,9 @@ export function createPrinterManager({
           if (err) reject(err)
           else resolve(value)
         }
+        // 不 unref（同 lib/mqtt.mjs 的 connect 超时）：事件循环空闲时 Node 会提前退出，
+        // Promise 永远不 settle。finish() 里 clearTimeout，不会拖住进程。
         const timer = setTimeout(() => finish(Object.assign(new Error('学习证书超时'), { code: 'TIMEOUT' })), 10000)
-        if (typeof timer.unref === 'function') timer.unref()
         client.on('peer-cert', (info2) => finish(null, info2))
         client.connect().catch((err) => finish(err))
       })
@@ -606,11 +607,12 @@ export function createPrinterManager({
         conn.waiters.delete(waiter)
         if (waiter.timer) clearTimeout(waiter.timer)
       }
+      // 不 unref：等打印机回 report 时若没有别的句柄，Node 会在超时前退出，promise 不 settle。
+      // cleanup() 会 clearTimeout。
       waiter.timer = setTimeout(() => {
         cleanup()
         resolve()
       }, Math.max(500, Number(timeoutMs) || 6000))
-      if (typeof waiter.timer.unref === 'function') waiter.timer.unref()
       conn.waiters.add(waiter)
     })
 
@@ -711,11 +713,11 @@ export function createPrinterManager({
           conn.waiters.delete(waiter)
           if (waiter.timer) clearTimeout(waiter.timer)
         }
+        // 不 unref（同上）：等回执超时也必须真的等到，否则 promise 不 settle。
         waiter.timer = setTimeout(() => {
           cleanup()
           resolve(false)
         }, RECEIPT_TIMEOUT_MS)
-        if (typeof waiter.timer.unref === 'function') waiter.timer.unref()
         conn.waiters.add(waiter)
       })
 

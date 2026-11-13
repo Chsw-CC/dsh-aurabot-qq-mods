@@ -561,11 +561,13 @@ export function createMqttClient(opts = {}) {
     return new Promise((resolve, reject) => {
       let done = false
       let socket
+      // 不 unref：建连时若没有别的句柄撑着事件循环（注入的假 socket、或对端完全没响应），
+      // Node 会在超时到点前直接退出，这个 Promise 永远不 settle（CI 上是 cancelledByParent）。
+      // finish() 里会 clearTimeout，不会拖住进程。
       const timer = setTimeout(() => {
         if (done) return
         finish(Object.assign(new Error('MQTT 连接超时（' + connectTimeoutMs + 'ms）'), { code: 'TIMEOUT' }))
       }, connectTimeoutMs)
-      if (typeof timer.unref === 'function') timer.unref()
 
       function finish(err) {
         if (done) return

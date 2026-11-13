@@ -153,8 +153,9 @@ function run (cmd, args, { timeoutMs, spawnImpl = nodeSpawn, secrets = [], stdin
     let stdout = Buffer.alloc(0)
     let stdoutOverflow = false
     let settled = false
+    // 不 unref：注入的假子进程不会真的挂住事件循环，unref 掉定时器时 Node 会提前退出，
+    // 这个 promise 永远不 settle。finish() 里 clearTimeout，不会拖住进程。
     const timer = timeoutMs > 0 ? setTimeout(() => finish({ ok: false, code: 'TIMEOUT', error: 'TUTK 桥超时（' + timeoutMs + 'ms）' }), timeoutMs) : null
-    if (timer && typeof timer.unref === 'function') timer.unref()
     function finish (result) {
       if (settled) return
       settled = true
