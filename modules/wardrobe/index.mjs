@@ -19,10 +19,25 @@ const POSES = {
   chin: { name: '托腮', text: '坐在桌前单手托腮，看着镜头' },
   peace: { name: '比耶', text: '举一只手比耶，歪着头笑' },
   mirror: { name: '对镜自拍', text: '举着手机对镜自拍，手机挡住半张脸' },
+  street: { name: '街拍·摇滚', text: '夜晚街头，老旧居民楼前，墙上挂着空调外机，一楼卷帘门店铺已经关门，二楼铁栏杆阳台，街灯亮着，背景轻微虚化；侧身回头看向镜头，头发被夜风吹起几缕，右手抬到胸前比出摇滚手势（拇指、食指、小指伸出），表情有点拽，嘴角微挑；手机闪光灯直拍，轻微过曝，冷色调，胶片颗粒，浅景深' },
+  lean: { name: '街拍·靠杆', text: '夜晚街头，白色路灯杆旁，背景是老旧居民楼和卷帘门店铺，轻微虚化；背靠在白色路灯杆上，双手插在裤兜里，身体微微后仰，侧头看向镜头，头发被夜风吹起几缕，表情慵懒有点酷；手机闪光灯直拍，冷色调，轻微过曝，胶片颗粒，浅景深' },
 }
 
-const DEFAULT_BASE = '蓝发少女，蓝色长卷发，发尾渐变成浅海蓝，头顶一撮翘起来的呆毛，一对深蓝色的鲸鱼耳朵，身后拖着一条鲸鱼尾巴，大眼睛，笑起来脸会红，皮肤白皙'
+const DEFAULT_BASE = '蓝发少女，蓝色长卷发，发尾渐变成浅海蓝，头顶一撮翘起来的呆毛，一对深蓝色的鲸鱼耳朵，身后拖着一条鲸鱼尾巴，脸偏圆有点婴儿肥，眼睛大而圆是深蓝色，笑起来眼睛会弯、脸颊会红，气质偏软偏可爱，皮肤白皙'
 const DEFAULT_OUTFIT = '蓝白配色女仆装，白色荷叶边头饰，围裙上绣着一只小鲸鱼'
+const MAKEUP_PRESETS = [
+  { id: 'm_bare', name: '素颜', desc: '素颜，皮肤干净，没有明显妆感，唇色淡粉' },
+  { id: 'm_daily', name: '日常淡妆', desc: '淡妆，薄底妆，淡腮红，眉毛自然，唇色自然偏粉' },
+  { id: 'm_night', name: '夜街妆', desc: '妆容偏浓，眼线清晰，腮红明显，唇色偏红有光泽' },
+]
+const HAIR_PRESETS = [
+  { id: 'h_long', name: '长直发', desc: '蓝黑色长发到腰，发尾褪成浅海蓝，头顶一撮呆毛，轻薄的碎刘海，两侧留碎发，发量多' },
+  { id: 'h_bun', name: '低丸子头', desc: '蓝黑色长发在脑后挽成低丸子头，碎发垂在脸侧，轻薄的碎刘海，发尾浅海蓝' },
+  { id: 'h_half', name: '半扎发', desc: '蓝黑色长发上半部分扎起，其余披散到腰，发尾褪成浅海蓝，碎刘海，两侧留发丝' },
+  { id: 'h_pony', name: '高马尾', desc: '蓝黑色长发扎成高马尾，发尾褪成浅海蓝，碎刘海，脸侧留几缕碎发' },
+  { id: 'h_twin', name: '双马尾', desc: '蓝黑色长发扎成两个低马尾，发尾褪成浅海蓝，碎刘海，发量多' },
+  { id: 'h_short', name: '齐肩短发', desc: '齐肩长度的蓝黑色短发，发尾褪成浅海蓝，碎刘海，稍微内扣' },
+]
 const DEFAULT_STYLE = '二次元插画风格，干净线条，柔和上色，白色背景'
 
 const mimeOf = (b64) => (b64.startsWith('/9j/') ? 'image/jpeg' : b64.startsWith('iVBOR') ? 'image/png' : b64.startsWith('UklGR') ? 'image/webp' : 'image/png')
@@ -55,8 +70,8 @@ export default {
           today.set = today.top || today.bottom || today.outer || today.shoes || today.accessory
           delete today.top; delete today.bottom; delete today.outer; delete today.shoes; delete today.accessory
         }
-        return { items: Array.isArray(s.items) ? s.items : [], today, history: Array.isArray(s.history) ? s.history : [], base: String(s.base || ''), style: String(s.style || '') }
-      } catch (error) { return { items: [], today: {}, history: [], base: '', style: '' } }
+        return { items: Array.isArray(s.items) ? s.items : [], today, history: Array.isArray(s.history) ? s.history : [], base: String(s.base || ''), style: String(s.style || ''), makeups: Array.isArray(s.makeups) && s.makeups.length ? s.makeups : MAKEUP_PRESETS.map((m) => ({ ...m })), makeupId: String(s.makeupId || 'm_bare'), hairdos: Array.isArray(s.hairdos) && s.hairdos.length ? s.hairdos : HAIR_PRESETS.map((h) => ({ ...h })), hairdoId: String(s.hairdoId || 'h_long') }
+      } catch (error) { return { items: [], today: {}, history: [], base: '', style: '', makeups: MAKEUP_PRESETS.map((m) => ({ ...m })), makeupId: 'm_bare', hairdos: HAIR_PRESETS.map((h) => ({ ...h })), hairdoId: 'h_long' } }
     }
     const save = (s) => { mkdirSync(dir(), { recursive: true }); writeFileSync(file(), JSON.stringify(s, null, 2)) }
 
@@ -74,6 +89,17 @@ export default {
     }
     function itemOf(id, s = load()) { return (s.items || []).find((x) => x.id === id) || null }
 
+    // 描述里可能带列表符号/换行（从人格整段粘过来），拼 prompt 前先捋平
+    function cleanText(x) {
+      return String(x || '')
+        .replace(/^[\s\-•·*]+/gm, '')
+        .replace(/\s+[-•·*]\s+/g, '，')
+        .replace(/\s*\n+\s*/g, '，')
+        .replace(/，{2,}/g, '，')
+        .replace(/([。！？])，/g, '$1')
+        .replace(/^，|，$/g, '')
+        .trim()
+    }
     function outfitText(s = load()) {
       const whole = itemOf(s.today.set, s)
       if (whole) return whole.desc || whole.name
@@ -84,12 +110,51 @@ export default {
       return parts.join('，')
     }
 
+    function makeupOf(s = load()) {
+      const list = s.makeups && s.makeups.length ? s.makeups : MAKEUP_PRESETS
+      return list.find((m) => m.id === s.makeupId) || list[0] || null
+    }
+
+    function hairdoOf(s = load()) {
+      const list = s.hairdos && s.hairdos.length ? s.hairdos : HAIR_PRESETS
+      return list.find((h) => h.id === s.hairdoId) || list[0] || null
+    }
+
+    // 挂进人格的那段「当前装扮」：发型 + 妆容 + 穿着，合成一段
+    function lookBlock(s = load()) {
+      const look = []
+      const hair = hairdoOf(s)
+      if (hair && hair.desc) look.push('发型：' + cleanText(hair.desc))
+      const makeup = makeupOf(s)
+      if (makeup && makeup.id !== 'm_bare' && makeup.desc) look.push('妆容：' + cleanText(makeup.desc))
+      const outfit = outfitText(s)
+      if (outfit) look.push('穿着：' + outfit)
+      if (!look.length) return ''
+      return '【当前的装扮】\n' + look.join('\n').replace(/。。/g, '。') + '\n画自己的时候，这段原样写进画面描述，别改写、别漏配饰。'
+    }
+    // 基础描述里如果还写着头发，会和发型维度打架：这里把它摘掉，头发交给发型管
+    function baseOf(s = load()) {
+      const raw = cleanText(s.base) || DEFAULT_BASE
+      return raw
+        .replace(/(^|[。，])头发：[^。]*。?/g, '$1')
+        .replace(/(^|[。，])蓝黑色?长发到腰[^。]*。?/g, '$1')
+        .replace(/，{2,}/g, '，')
+        .replace(/^，|，$/g, '')
+        .trim()
+    }
+
     function buildPrompt(poseKey, s = load()) {
-      const base = String(s.base || '').trim() || DEFAULT_BASE
-      const style = String(s.style || '').trim() || DEFAULT_STYLE
+      const base = baseOf(s)
+      const style = cleanText(s.style) || DEFAULT_STYLE
       const outfit = outfitText(s) || DEFAULT_OUTFIT
+      const makeup = makeupOf(s)
+      const hair = hairdoOf(s)
+      const makeLine = makeup ? '妆容：' + cleanText(makeup.desc) : ''
+      const hairLine = hair ? '发型：' + cleanText(hair.desc) : ''
       const pose = (POSES[poseKey] || POSES.stand).text
-      return [base, outfit ? '今天穿：' + outfit : '', pose, style].filter(Boolean).join('，')
+      return [base, hairLine, makeLine, outfit ? '今天穿：' + outfit : '', pose, style]
+        .filter(Boolean).join('，')
+        .replace(/。，/g, '。').replace(/。。/g, '。')
     }
 
     /** 看图写描述：优先用设置里的模型，失败就换一个能看图的。 */
@@ -134,7 +199,7 @@ export default {
         id,
         name: String(name || '').trim() || (KIND_NAME[kind] || '整套'),
         kind: 'set',
-        desc: text.slice(0, 200),
+        desc: text.slice(0, 500),
         image: fname,
         mediaType,
         createdAt: Date.now(),
@@ -165,7 +230,7 @@ export default {
       const it = itemOf(String(id || ''), s)
       if (!it) return { ok: false, message: '没这件' }
       if (typeof name === 'string' && name.trim()) it.name = name.trim().slice(0, 20)
-      if (typeof desc === 'string') it.desc = desc.trim().slice(0, 200)
+      if (typeof desc === 'string') it.desc = desc.trim().slice(0, 500)
       save(s)
       return { ok: true, item: it, outfit: outfitText(s) }
     }
@@ -242,10 +307,9 @@ export default {
     // 这样她是“知道自己今天穿什么”，而不是收到一条要执行的指令。
     api.on('persona', (text) => {
       if (!cfg().enabled) return text
-      const s = load()
-      const outfit = outfitText(s)
-      if (!outfit) return text
-      return String(text || '') + '\n\n【当前的穿着】\n' + outfit + '。\n画自己的时候，这段穿着原样写进画面描述，别改写、别漏配饰。'
+      const block = lookBlock(load())
+      if (!block) return text
+      return String(text || '') + '\n\n' + block
     })
     const sendImage = (res, buf, type) => {
       res.statusCode = 200
@@ -255,6 +319,10 @@ export default {
     }
     seedOnce()
 
+    api.route('/look/apply', async () => {
+      const s = load()
+      return { ok: true, block: lookBlock(s), outfit: outfitText(s), hairdoId: s.hairdoId || 'h_long', makeupId: s.makeupId || 'm_bare' }
+    })
     api.route('/list', async () => {
       const s = load()
       return {
@@ -262,8 +330,12 @@ export default {
         items: s.items,
         today: s.today,
         outfit: outfitText(s),
-        base: String(s.base || '') || DEFAULT_BASE,
-        style: String(s.style || '') || DEFAULT_STYLE,
+        base: baseOf(s),
+        style: cleanText(s.style) || DEFAULT_STYLE,
+        makeups: (s.makeups || MAKEUP_PRESETS).map((m) => ({ id: m.id, name: m.name, desc: cleanText(m.desc) })),
+        makeupId: s.makeupId || 'm_bare',
+        hairdos: (s.hairdos || HAIR_PRESETS).map((h) => ({ id: h.id, name: h.name, desc: cleanText(h.desc) })),
+        hairdoId: s.hairdoId || 'h_long',
         poses: Object.entries(POSES).map(([k, v]) => ({ key: k, name: v.name })),
       }
     })
@@ -274,6 +346,102 @@ export default {
       if (typeof b.style === 'string') s.style = b.style.trim().slice(0, 160)
       save(s)
       return { ok: true, base: s.base, style: s.style }
+    })
+    api.route('/hair/set', async (req) => {
+      const b = await api.core.http.body(req)
+      const s = load()
+      const id = String(b.id || '')
+      const list = s.hairdos || HAIR_PRESETS
+      if (!list.some((h) => h.id === id)) return { ok: false, message: '没这个发型' }
+      s.hairdoId = id
+      save(s)
+      return { ok: true, hairdoId: id }
+    })
+    api.route('/hair/save', async (req) => {
+      const b = await api.core.http.body(req)
+      const s = load()
+      const list = s.hairdos && s.hairdos.length ? s.hairdos : HAIR_PRESETS.map((h) => ({ ...h }))
+      const it = list.find((h) => h.id === String(b.id || s.hairdoId || ''))
+      if (!it) return { ok: false, message: '没这个发型' }
+      if (typeof b.desc === 'string') it.desc = b.desc.trim().slice(0, 200)
+      s.hairdos = list
+      save(s)
+      return { ok: true, hairdos: list }
+    })
+    api.route('/hair/add', async (req) => {
+      const b = await api.core.http.body(req)
+      const name = String(b.name || '').trim().slice(0, 12)
+      const desc = String(b.desc || '').trim().slice(0, 200)
+      if (!name || !desc) return { ok: false, message: '名字和描述都要写' }
+      const s = load()
+      const list = s.hairdos && s.hairdos.length ? s.hairdos : HAIR_PRESETS.map((h) => ({ ...h }))
+      const id = 'h_' + Math.random().toString(36).slice(2, 8)
+      list.push({ id, name, desc })
+      s.hairdos = list
+      s.hairdoId = id
+      save(s)
+      return { ok: true, id, hairdos: list }
+    })
+    api.route('/hair/del', async (req) => {
+      const b = await api.core.http.body(req)
+      const s = load()
+      const list = s.hairdos && s.hairdos.length ? s.hairdos : HAIR_PRESETS.map((h) => ({ ...h }))
+      const id = String(b.id || '')
+      if (list.length <= 1) return { ok: false, message: '至少留一个发型' }
+      const next = list.filter((h) => h.id !== id)
+      if (next.length === list.length) return { ok: false, message: '没这个发型' }
+      s.hairdos = next
+      if (s.hairdoId === id) s.hairdoId = next[0].id
+      save(s)
+      return { ok: true, hairdos: next, hairdoId: s.hairdoId }
+    })
+    api.route('/makeup/set', async (req) => {
+      const b = await api.core.http.body(req)
+      const s = load()
+      const id = String(b.id || '')
+      const list = s.makeups || MAKEUP_PRESETS
+      if (!list.some((m) => m.id === id)) return { ok: false, message: '没这个妆容' }
+      s.makeupId = id
+      save(s)
+      return { ok: true, makeupId: id }
+    })
+    api.route('/makeup/add', async (req) => {
+      const b = await api.core.http.body(req)
+      const name = String(b.name || '').trim().slice(0, 12)
+      const desc = String(b.desc || '').trim().slice(0, 160)
+      if (!name || !desc) return { ok: false, message: '名字和描述都要写' }
+      const s = load()
+      const list = s.makeups && s.makeups.length ? s.makeups : MAKEUP_PRESETS.map((m) => ({ ...m }))
+      const id = 'm_' + Math.random().toString(36).slice(2, 8)
+      list.push({ id, name, desc })
+      s.makeups = list
+      s.makeupId = id
+      save(s)
+      return { ok: true, id, makeups: list }
+    })
+    api.route('/makeup/del', async (req) => {
+      const b = await api.core.http.body(req)
+      const s = load()
+      const list = s.makeups && s.makeups.length ? s.makeups : MAKEUP_PRESETS.map((m) => ({ ...m }))
+      const id = String(b.id || '')
+      if (list.length <= 1) return { ok: false, message: '至少留一个妆容' }
+      const next = list.filter((m) => m.id !== id)
+      if (next.length === list.length) return { ok: false, message: '没这个妆容' }
+      s.makeups = next
+      if (s.makeupId === id) s.makeupId = next[0].id
+      save(s)
+      return { ok: true, makeups: next, makeupId: s.makeupId }
+    })
+    api.route('/makeup/save', async (req) => {
+      const b = await api.core.http.body(req)
+      const s = load()
+      const list = s.makeups || MAKEUP_PRESETS.map((m) => ({ ...m }))
+      const it = list.find((m) => m.id === String(b.id || s.makeupId || ''))
+      if (!it) return { ok: false, message: '没这个妆容' }
+      if (typeof b.desc === 'string') it.desc = b.desc.trim().slice(0, 160)
+      s.makeups = list
+      save(s)
+      return { ok: true, makeups: list }
     })
     api.route('/add', async (req) => {
       const b = await api.core.http.body(req)
@@ -295,6 +463,10 @@ export default {
     api.route('/today', async (req) => {
       const b = await api.core.http.body(req)
       return setToday(b || {})
+    })
+    api.route('/prompt', async (req) => {
+      const pose = String(api.core.http.query(req).pose || 'stand')
+      return { ok: true, prompt: buildPrompt(pose), makeup: makeupOf(load())?.desc || '', outfit: outfitText(load()) }
     })
     api.route('/preview', async (req) => {
       const b = await api.core.http.body(req)

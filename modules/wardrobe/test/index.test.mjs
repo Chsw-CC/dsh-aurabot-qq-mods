@@ -29,7 +29,7 @@ test('/add 纯文字：只写描述也能存一套，且成为可选穿搭', asy
   assert.equal(r.item.image, '')
   const list = await env.call('/list')
   assert.ok(list.items.some((x) => x.name === '白T牛仔'), '新加的那套要在列表里')
-  assert.equal(list.poses.length, 6, '六个固定姿势')
+  assert.ok(list.poses.length >= 6, '至少六个固定姿势')
 })
 
 test('/add 带图：图片落盘，描述由看图模型给出', async (t) => {
@@ -64,18 +64,27 @@ test('/today：选一套后 outfit 就是那句描述', async (t) => {
   assert.equal(r3.outfit, '')
 })
 
-test('persona 钩子：选了穿搭就带上「当前的穿着」，没选就不动', async (t) => {
+test('persona 钩子：发型和穿搭一起写进「当前的装扮」', async (t) => {
   const env = makeApi()
   t.after(env.cleanup)
-  const base = '【你的样子】蓝黑长发。'
-  await env.call('/today', { set: '' })
-  assert.equal(await env.runHook('persona', base), base, '没穿搭时原样返回')
+  const base = '【你的样子】无发色。'
+  const bare = await env.runHook('persona', base)
+  assert.ok(bare.includes('【当前的装扮】'), '发型属于穿搭，默认也要带')
+  assert.ok(bare.includes('发型：'), '要带默认发型')
   const a = await env.call('/add', { name: 'A', desc: '灰卫衣配牛仔裤' })
   await env.call('/today', { set: a.item.id })
   const out = await env.runHook('persona', base)
   assert.ok(out.startsWith(base), '人格原文要在前面')
-  assert.ok(out.includes('【当前的穿着】'), '要带穿着段落')
-  assert.ok(out.includes('灰卫衣配牛仔裤'))
+  assert.ok(out.includes('穿着：灰卫衣配牛仔裤'))
+  assert.ok(out.includes('发型：蓝黑色长发'))
+})
+
+test('persona 钩子：换发型后段落跟着变', async (t) => {
+  const env = makeApi()
+  t.after(env.cleanup)
+  await env.call('/hair/set', { id: 'h_bun' })
+  const out = await env.runHook('persona', '人格')
+  assert.ok(out.includes('低丸子头'), '要写到当前选的发型：' + out)
 })
 
 test('/preview：按穿搭 + 姿势拼 prompt，出图进历史', async (t) => {

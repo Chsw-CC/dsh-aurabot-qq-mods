@@ -13,8 +13,15 @@ return function WardrobePage({ toast }) {
   const [shot, setShot] = useState(null)
   const [thumbW, setThumbW] = useState(120)
   const [baseDraft, setBaseDraft] = useState('')
+  const [makeupDraft, setMakeupDraft] = useState('')
+  const [hairdoDraft, setHairdoDraft] = useState('')
+  const [newHairName, setNewHairName] = useState('')
+  const [newHairDesc, setNewHairDesc] = useState('')
+  const [newMakeupName, setNewMakeupName] = useState('')
+  const [newMakeupDesc, setNewMakeupDesc] = useState('')
   const [styleDraft, setStyleDraft] = useState('')
   const [draft, setDraft] = useState({})
+  const [lookPreview, setLookPreview] = useState('')
   const [replaceId, setReplaceId] = useState('')
   const replaceRef = useRef(null)
   const fileRef = useRef(null)
@@ -29,6 +36,10 @@ return function WardrobePage({ toast }) {
       setData(r)
       setBaseDraft(r.base || '')
       setStyleDraft(r.style || '')
+      const hd = (r.hairdos || []).find((h) => h.id === r.hairdoId)
+      setHairdoDraft(hd ? hd.desc : '')
+      const mk = (r.makeups || []).find((m) => m.id === r.makeupId)
+      setMakeupDraft(mk ? mk.desc : '')
       const hs = await fetch(api + '/history', { cache: 'no-store' }).then((x) => x.json())
       setHistory(hs.list || [])
     } catch (e) { setErr(String((e && e.message) || e)) }
@@ -77,7 +88,82 @@ return function WardrobePage({ toast }) {
     if (r.ok) setData({ ...data, today: r.today, outfit: r.outfit })
   }
 
+  const applyLook = async () => {
+    const r = await post('/look/apply', {})
+    if (r && r.ok === false) { toast && toast(r.message || '没保存上'); return }
+    setLookPreview(r.block || '')
+    toast && toast('已保存，下一轮生效')
+  }
+
+  const setHairdo = async (id) => {
+    const r = await post('/hair/set', { id })
+    if (r && r.ok === false) { toast && toast(r.message || '切不过去'); return }
+    await load()
+  }
+  const saveHairdo = async () => {
+    const cur = (data.hairdos || []).find((h) => h.id === data.hairdoId)
+    if (cur && hairdoDraft === cur.desc) return
+    const r = await post('/hair/save', { id: data.hairdoId, desc: hairdoDraft })
+    if (r && r.ok === false) { toast && toast(r.message || '没存上'); return }
+    await load()
+    toast && toast('发型已保存')
+  }
+  const addHairdo = async () => {
+    if (!newHairName.trim() || !newHairDesc.trim()) { toast && toast('名字和描述都要写'); return }
+    setBusy(true)
+    try {
+      const r = await post('/hair/add', { name: newHairName, desc: newHairDesc })
+      if (r && r.ok === false) { toast && toast(r.message || '没加上'); return }
+      setNewHairName(''); setNewHairDesc('')
+      await load()
+      toast && toast('发型已添加')
+    } finally { setBusy(false) }
+  }
+  const delHairdo = async () => {
+    if (!window.confirm('删掉当前这个发型？')) return
+    const r = await post('/hair/del', { id: data.hairdoId })
+    if (r && r.ok === false) { toast && toast(r.message || '删不了'); return }
+    await load()
+    toast && toast('已删除')
+  }
+
+  const setMakeup = async (id) => {
+    const r = await post('/makeup/set', { id })
+    if (r && r.ok === false) { toast && toast(r.message || '切不过去'); return }
+    await load()
+  }
+
+  const addMakeup = async () => {
+    if (!newMakeupName.trim() || !newMakeupDesc.trim()) { toast && toast('名字和描述都要写'); return }
+    setBusy(true)
+    try {
+      const r = await post('/makeup/add', { name: newMakeupName, desc: newMakeupDesc })
+      if (r && r.ok === false) { toast && toast(r.message || '没加上'); return }
+      setNewMakeupName(''); setNewMakeupDesc('')
+      await load()
+      toast && toast('妆容已添加')
+    } finally { setBusy(false) }
+  }
+
+  const delMakeup = async () => {
+    if (!window.confirm('删掉当前这个妆容？')) return
+    const r = await post('/makeup/del', { id: data.makeupId })
+    if (r && r.ok === false) { toast && toast(r.message || '删不了'); return }
+    await load()
+    toast && toast('已删除')
+  }
+
+  const saveMakeup = async () => {
+    const cur = (data.makeups || []).find((m) => m.id === data.makeupId)
+    if (cur && makeupDraft === cur.desc) return
+    const r = await post('/makeup/save', { id: data.makeupId, desc: makeupDraft })
+    if (r && r.ok === false) { toast && toast(r.message || '没存上'); return }
+    await load()
+    toast && toast('妆容已保存')
+  }
+
   const saveAppearance = async () => {
+    if (baseDraft === (data.base || '') && styleDraft === (data.style || '')) return
     const r = await post('/appearance/save', { base: baseDraft, style: styleDraft })
     if (r && r.ok === false) { toast && toast(r.message || '没存上'); return }
     toast && toast('外观已保存')
@@ -123,6 +209,15 @@ return function WardrobePage({ toast }) {
     toast && toast('衣柜已清空')
   }
 
+  const copyPrompt = async () => {
+    try {
+      const r = await fetch(api + '/prompt?pose=' + encodeURIComponent(pose)).then((x) => x.json())
+      if (!r || !r.prompt) { toast && toast('拿不到提示词'); return }
+      await navigator.clipboard.writeText(r.prompt)
+      toast && toast('提示词已复制')
+    } catch (e) { toast && toast('复制失败：' + ((e && e.message) || e)) }
+  }
+
   const gen = async () => {
     setBusy(true)
     try {
@@ -152,10 +247,15 @@ return function WardrobePage({ toast }) {
         onChange: (e) => setDraft({ ...draft, [it.id]: { ...d, name: e.target.value } }),
       }),
       h('textarea', {
-        className: 'ab-input', rows: 4, style: { width: '100%', boxSizing: 'border-box', fontSize: 12, resize: 'vertical', lineHeight: 1.6 },
+        className: 'ab-input', rows: 4, maxLength: 500,
+        style: { width: '100%', boxSizing: 'border-box', fontSize: 12, resize: 'vertical', lineHeight: 1.6 },
         value: d.desc,
         onChange: (e) => setDraft({ ...draft, [it.id]: { ...d, desc: e.target.value } }),
-      }))
+      }),
+      h('div', {
+        className: 'ab-muted',
+        style: { fontSize: 11, textAlign: 'right', color: String(d.desc || '').length >= 500 ? '#c0392b' : undefined },
+      }, String(d.desc || '').length + ' / 500'))
   }
 
   const viewerOf = (it) => h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 } },
@@ -241,17 +341,69 @@ return function WardrobePage({ toast }) {
       ? data.items.map(rowOf)
       : h('div', { className: 'ab-muted ab-small' }, '衣柜是空的，先上传一张参考图。')),
 
-    h(ui.Card, { title: '当前穿搭' },
+    h(ui.Card, { title: '当前装扮' },
       h('div', { style: { display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8 } },
         h('select', {
           className: 'ab-input', style: { width: 220 },
           value: (data.today && data.today.set) || '',
           onChange: (e) => change(e.target.value),
         },
-        h('option', { value: '' }, '— 不穿 —'),
-        data.items.map((x) => h('option', { key: x.id, value: x.id }, x.name)))),
-      h('div', { className: 'ab-muted', style: { fontSize: 12, lineHeight: 1.7 } }, data.outfit || '还没选')),
+          h('option', { value: '' }, '— 不穿 —'),
+          data.items.map((x) => h('option', { key: x.id, value: x.id }, x.name))),
+        h(ui.Btn, { small: true, onClick: applyLook }, '保存并更新上下文')),
+      h('div', { className: 'ab-muted', style: { fontSize: 12, lineHeight: 1.7 } }, data.outfit || '还没选'),
+      lookPreview
+        ? h('div', { style: { marginTop: 10, padding: 10, borderRadius: 8, background: '#f7f7f7', fontSize: 12, lineHeight: 1.7, whiteSpace: 'pre-wrap' } }, lookPreview)
+        : null),
 
+    h(ui.Card, { title: '发型', desc: '换发型可以换颜色，描述会进生图。' },
+      h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', paddingBottom: 10, borderBottom: '1px solid rgba(128,128,128,.14)' } },
+        h('input', {
+          className: 'ab-input', style: { width: 140 }, placeholder: '新发型名字',
+          value: newHairName, onChange: (e) => setNewHairName(e.target.value),
+        }),
+        h('input', {
+          className: 'ab-input', style: { flex: 1 }, placeholder: '描述：比如 蓝黑色长发到腰，发尾浅海蓝，碎刘海',
+          value: newHairDesc, onChange: (e) => setNewHairDesc(e.target.value),
+        }),
+        h(ui.Btn, { small: true, disabled: busy, onClick: addHairdo }, '添加')),
+      h('div', { style: { display: 'flex', gap: 10, alignItems: 'center', margin: '10px 0 8px' } },
+        h('select', {
+          className: 'ab-input', style: { width: 180 },
+          value: data.hairdoId || '',
+          onChange: (e) => setHairdo(e.target.value),
+        },
+        (data.hairdos || []).map((it) => h('option', { key: it.id, value: it.id }, it.name))),
+        h(ui.Btn, { small: true, kind: 'ghost', onClick: delHairdo }, '删掉这个')),
+      h('textarea', {
+        className: 'ab-input', rows: 2,
+        style: { width: '100%', boxSizing: 'border-box', fontSize: 12, resize: 'vertical', lineHeight: 1.6 },
+        value: hairdoDraft, onChange: (e) => setHairdoDraft(e.target.value), onBlur: saveHairdo,
+      })),
+    h(ui.Card, { title: '妆容', desc: '按场景选，描述会进生图和上下文。可以自己加。' },
+      h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', paddingBottom: 10, borderBottom: '1px solid rgba(128,128,128,.14)' } },
+        h('input', {
+          className: 'ab-input', style: { width: 140 }, placeholder: '新妆容名字',
+          value: newMakeupName, onChange: (e) => setNewMakeupName(e.target.value),
+        }),
+        h('input', {
+          className: 'ab-input', style: { flex: 1 }, placeholder: '描述：比如 淡妆，淡粉腮红，唇色淡粉微润',
+          value: newMakeupDesc, onChange: (e) => setNewMakeupDesc(e.target.value),
+        }),
+        h(ui.Btn, { small: true, disabled: busy, onClick: addMakeup }, '添加')),
+      h('div', { style: { display: 'flex', gap: 10, alignItems: 'center', margin: '10px 0 8px' } },
+        h('select', {
+          className: 'ab-input', style: { width: 180 },
+          value: data.makeupId || '',
+          onChange: (e) => setMakeup(e.target.value),
+        },
+        (data.makeups || []).map((m) => h('option', { key: m.id, value: m.id }, m.name))),
+        h(ui.Btn, { small: true, kind: 'ghost', onClick: delMakeup }, '删掉这个')),
+      h('textarea', {
+        className: 'ab-input', rows: 2,
+        style: { width: '100%', boxSizing: 'border-box', fontSize: 12, resize: 'vertical', lineHeight: 1.6 },
+        value: makeupDraft, onChange: (e) => setMakeupDraft(e.target.value), onBlur: saveMakeup,
+      })),
     h(ui.Card, { title: '生成预览', desc: '选姿势，按今天的穿搭出图。' },
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 } },
         h('div', { style: { display: 'flex', gap: 10, alignItems: 'center' } },
@@ -270,6 +422,7 @@ return function WardrobePage({ toast }) {
           h('select', { className: 'ab-input', value: pose, onChange: (e) => setPose(e.target.value) },
             (data.poses || []).map((p) => h('option', { key: p.key, value: p.key }, p.name))),
           h(ui.Btn, { small: true, disabled: busy, onClick: gen }, busy ? '画着…' : '生成'),
+          h(ui.Btn, { small: true, kind: 'ghost', onClick: copyPrompt }, '复制提示词'),
           shot ? h('div', { className: 'ab-muted', style: { fontSize: 11, lineHeight: 1.6 } },
             (shot.usedReference ? '用了参考图' : '纯文字') + ' · ' + String(shot.prompt || '').slice(0, 80)) : null),
         h('div', { style: { flex: 1, minWidth: 0 } },
