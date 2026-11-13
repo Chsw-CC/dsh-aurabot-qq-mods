@@ -153,8 +153,8 @@ export default {
         res.end('还不知道 Aurabot 的端口：先在电脑上打开一次通话面板')
         return
       }
-      // 手机浏览器 POST 会带 Origin: https://192.168.100.11:8443，
-      // DSH 的跨站校验只认自家 Origin → 403。页面本来就是从这台机器加载的（同源），
+      // 手机浏览器 POST 会带 Origin: https://<本机局域网 IP>:<端口>，
+      // 而宿主只认自家 Origin → 403。页面本来就是从这台机器加载的（同源），
       // 剥掉 Origin/Referer 不影响任何功能，只让校验放行。
       const fwd = { ...req.headers, host: `127.0.0.1:${port}` }
       delete fwd.origin
