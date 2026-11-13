@@ -639,8 +639,8 @@ test('帮助用合并转发：默认一条塞进全部页，含风险与存储�
     assert.match(all, /访问码 = 打印机控制权/)
     // 第 2 页：本地存储策略
     assert.match(all, /② 数据存在哪/)
-    assert.match(all, /modules-data/)
-    assert.match(all, /host-key/)
+    assert.match(all, /只加密存在本机/)
+    assert.match(all, /不落明文、不进日志、不上传/)
     // 第 6 页：安全码与解锁
     assert.match(all, /⑥ 凭据怎么保管/)
     assert.match(all, /暂停 · 继续 · 停止/)
@@ -684,7 +684,7 @@ test('合并转发按会话类型选 action；失败时退回文本且仍能指�
     await say(api, '/打印机 帮助 2')
     const fallback = lastText(api)
     assert.match(fallback, /帮助 2\/6/, '退回文本时仍要认页码')
-    assert.match(fallback, /modules-data/)
+    assert.match(fallback, /只加密存在本机/)
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
