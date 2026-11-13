@@ -376,7 +376,7 @@ export default {
 
     // 挂断时让她自己用一句话记住这一通（模型不行就退回流水拼装，绝不丢）
     const summarizeCall = async (rows) => {
-      const lines = rows.slice(-16).map((x) => `${x.who === 'master' ? '他' : '我'}：${x.text}`).join('\n')
+      const lines = rows.slice(-16).map((x) => `${x.who === 'master' ? '对方' : '我'}：${x.text}`).join('\n')
       const prompt = [
         '（这是一通刚挂断的电话，下面是你和主人的原话记录，识别可能有错字，按意思理解）',
         lines.slice(0, 4000),
