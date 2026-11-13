@@ -919,6 +919,9 @@ export class Vault {
   async addBinding (qq, input = {}) {
     this.#assertLoaded()
     const key = assertQQ(qq)
+    // 没有安全码之后，「有没有会话」只是缓存状态：过期或被 lock 过就自动续上，
+    // 不该让用户在写操作时撞到 LOCKED。
+    if (!this.#liveSession(key)) await this.unlock(key)
     if (!isPlainObject(input)) throw new VaultError('BAD_INPUT')
     const prep = this.#prepareBinding(input, this.#bindingCount(key))
     const now = this.now()

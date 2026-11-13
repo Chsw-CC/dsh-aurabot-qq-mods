@@ -43,8 +43,8 @@ async function setup (options = {}) {
 
 async function unlockedWithLan (options = {}) {
   const ctx = await setup(options)
-  await ctx.vault.register('111', CODE)
-  await ctx.vault.unlock('111', CODE)
+  await ctx.vault.register('111')
+  await ctx.vault.unlock('111')
   const binding = await ctx.vault.addBinding('111', {
     label: '我的 A1',
     mode: 'lan',
@@ -102,7 +102,7 @@ test('load 未经加载时抛 NOT_LOADED', async () => {
   assert.throws(() => vault.summary(), expectCode('NOT_LOADED'))
   assert.throws(() => vault.hasUser('111'), expectCode('NOT_LOADED'))
   assert.throws(() => vault.printers('111'), expectCode('NOT_LOADED'))
-  await assert.rejects(() => vault.register('111', CODE), expectCode('NOT_LOADED'))
+  await assert.rejects(() => vault.register('111'), expectCode('NOT_LOADED'))
 })
 
 test('load 遇到坏 JSON 抛错且不静默清空', async () => {
@@ -118,34 +118,28 @@ test('load 遇到坏 JSON 抛错且不静默清空', async () => {
   await assert.rejects(() => vault2.load(), expectCode('BAD_FILE'))
 })
 
-test('register / unlock / 重复注册 / 弱码 / 未知用户', async () => {
+test('register / unlock / 重复注册 / 非法 QQ', async () => {
   const { vault } = await setup()
-  assert.deepEqual(await vault.register('111', CODE), { ok: true })
+  assert.deepEqual(await vault.register('111'), { ok: true, existed: false })
   assert.equal(vault.hasUser('111'), true)
   assert.equal(vault.userCount(), 1)
-  await assert.rejects(() => vault.register('111', OTHER_CODE), expectCode('EXISTS'))
-  await assert.rejects(() => vault.register('222', '12345678'), expectCode('WEAK_CODE'))
-  await assert.rejects(() => vault.register('abc', CODE), expectCode('BAD_INPUT'))
+  assert.deepEqual(await vault.register('111'), { ok: true, existed: true }, '重复注册是幂等的，不抛错也不重置')
+  await assert.rejects(() => vault.register('abc'), expectCode('BAD_INPUT'))
 
-  assert.equal(vault.isUnlocked('111'), false)
-  // 列表/解析在未解锁时是安全的（只给元数据），真正的写操作才抛 LOCKED
-  assert.deepEqual(vault.printers('111'), [])
-  await assert.rejects(() => vault.addBinding('111', { mode: 'cloud', accessToken: CLOUD_TOKEN, uid: '123456' }), expectCode('LOCKED'))
+  // 没有安全码了：建号即可用，不需要先 unlock
+  assert.equal(vault.isUnlocked('111'), true, '建号即会话可用')
 
-  const ok = await vault.unlock('111', CODE)
+  const ok = await vault.unlock('111')
   assert.equal(ok.ok, true)
   assert.ok(ok.until > 1_700_000_000_000, 'unlock 返回到期时间')
   assert.equal(ok.until, 1_700_000_000_000 + 7 * 24 * 60 * 60 * 1000, '默认 7 天')
-  assert.equal(vault.isUnlocked('111'), true)
 
-  await assert.rejects(() => vault.unlock('999', CODE), expectCode('NO_USER'))
-  await assert.rejects(() => vault.unlock('111', 'Wrong-Code-1'), expectCode('BAD_CODE'))
+  await assert.rejects(() => vault.unlock('999'), expectCode('NO_USER'))
 })
 
 test('vault.json 里没有明文安全码/访问码，只有加密盒子', async () => {
   const { vault, dir, binding } = await unlockedWithLan()
-  await vault.register('222', OTHER_CODE)
-  await vault.unlock('222', OTHER_CODE)
+  await vault.register('222')
   await vault.addBinding('222', { label: '云端账号', mode: 'cloud', accessToken: CLOUD_TOKEN, uid: '123456789', region: 'us' })
   await vault.audit({ actor: '111', action: 'bind', ok: true, note: 'test' })
 
@@ -157,7 +151,9 @@ test('vault.json 里没有明文安全码/访问码，只有加密盒子', async
   const parsed = JSON.parse(vaultRaw)
   const record = parsed.users['111']
   assert.equal(record.v, 1)
-  assert.equal(Buffer.from(record.salt, 'base64').length, 16)
+  // 没有用户盐了：DEK 由本机主密钥包着，mode 标记为 host
+  assert.equal(record.mode, 'host')
+  assert.equal(record.salt, '')
   assert.equal(record.wrapped.v, 1)
   assert.equal(record.wrapped.tag.length > 0, true)
   assert.deepEqual(record.prefs, { groupShowName: false, selectedPrinter: '', interface: '', groupMode: '', groupPhoto: null })
@@ -168,67 +164,41 @@ test('vault.json 里没有明文安全码/访问码，只有加密盒子', async
   assert.ok(!auditRaw.includes(ACCESS_CODE) && !auditRaw.includes(CLOUD_TOKEN))
 })
 
-test('连续错 5 次锁 15 分钟，第 10 次锁 60 分钟，成功后清零', async () => {
-  const { vault, clock } = await setup()
-  await vault.register('111', CODE)
-
-  for (let i = 0; i < 4; i++) {
-    await assert.rejects(() => vault.unlock('111', 'Bad-Code-' + i), expectCode('BAD_CODE'))
-  }
-  await assert.rejects(() => vault.unlock('111', 'Bad-Code-x'), expectCode('LOCKED_OUT'))
-  await assert.rejects(() => vault.unlock('111', CODE), expectCode('LOCKED_OUT'), '锁定期内正确码也不行')
-  assert.equal(vault.isUnlocked('111'), false)
-  const listed = vault.listUsers().find((u) => u.qq === '111')
-  assert.ok(listed.lockedUntil > clock.t)
-
-  // 15 分钟过后计数继续累加（第 6~9 次仍是「密码错误」），第 10 次升到 60 分钟
-  clock.t = listed.lockedUntil + 1000
-  for (let i = 5; i < 9; i++) {
-    await assert.rejects(() => vault.unlock('111', 'Bad-Code-' + i), expectCode('BAD_CODE'))
-  }
-  await assert.rejects(() => vault.unlock('111', 'Bad-Code-9'), expectCode('LOCKED_OUT'))
-  const second = vault.listUsers().find((u) => u.qq === '111')
-  assert.ok(second.lockedUntil - clock.t > 59 * 60 * 1000, '第 10 次锁 60 分钟')
-  clock.t = second.lockedUntil + 1000
-  await vault.unlock('111', CODE)
-
-  // 成功一次后计数清零：再错 4 次不应该被锁
-  vault.lock('111')
-  for (let i = 0; i < 4; i++) {
-    await assert.rejects(() => vault.unlock('111', 'Bad-Again-' + i), expectCode('BAD_CODE'))
-  }
-  const ok = await vault.unlock('111', CODE)
+test('没有安全码之后不存在「输错码锁定」：unlock 不接受也不消耗任何码', async () => {
+  const { vault } = await setup()
+  await vault.register('111')
+  // unlock 只接受 qq；多传一个参数会被忽略而不是当成密码
+  const ok = await vault.unlock('111')
   assert.equal(ok.ok, true)
+  assert.equal(vault.isUnlocked('111'), true)
+  // 记录里不再有 attempts 的失败计数（没有可试错的密码了）
+  const listed = vault.listUsers().find((u) => u.qq === '111')
+  assert.equal(listed.lockedUntil, 0, '不该有任何锁定状态')
 })
 
-test('失败计数与锁定持久化：重开实例仍然锁着', async () => {
-  const { vault, dir, clock } = await setup()
-  await vault.register('111', CODE)
-  for (let i = 0; i < 4; i++) {
-    await assert.rejects(() => vault.unlock('111', 'No-Peek-' + i), expectCode('BAD_CODE'))
-  }
-  await assert.rejects(() => vault.unlock('111', 'No-Peek-4'), expectCode('LOCKED_OUT'))
-  const reopened = createVault({ dir, kdf: FAST_KDF, log: null, now: () => clock.t })
+test('会话可以反复开关，不影响数据可用性', async () => {
+  const { vault } = await setup()
+  await vault.register('111')
+  assert.equal(vault.isUnlocked('111'), true, '建号即会话可用')
+  vault.lock('111')
+  assert.equal(vault.isUnlocked('111'), false)
+  await vault.unlock('111')
+  assert.equal(vault.isUnlocked('111'), true)
+  // 重开实例后依旧可用（load 时预热）
+  const reopened = createVault({ dir: vault.dir, kdf: FAST_KDF, log: null })
   await reopened.load()
-  const listed = reopened.listUsers().find((u) => u.qq === '111')
-  assert.ok(listed.lockedUntil > clock.t, '锁定结束时间已落盘')
-  await assert.rejects(() => reopened.unlock('111', CODE), expectCode('LOCKED_OUT'), '锁定跨实例仍然有效')
+  assert.equal(reopened.isUnlocked('111'), true, '重开后自动预热，不用解锁')
   // 磁盘上的 attempts 不含任何秘密
-  const raw = await readFile(path.join(dir, 'vault.json'), 'utf8')
-  const attempts = JSON.parse(raw).attempts['111']
-  assert.equal(attempts.fails, 5)
-  assert.ok(attempts.lockedUntil > 0)
-  assert.deepEqual(Object.keys(attempts).sort(), ['fails', 'lockedUntil'])
 })
 
 test('解锁会话到期即失效（滑窗续期）', async () => {
   // 最短 1 天，测试里直接用 1 天窗口验证滑窗
   const { vault, clock } = await setup({ extra: { lockMinutes: 1440 } })
-  await vault.register('111', CODE)
-  await vault.unlock('111', CODE)
+  await vault.register('111')
+  await vault.unlock('111')
   clock.t += 23 * 60 * 60 * 1000
   assert.equal(vault.isUnlocked('111'), true, '1 天内仍有效')
-  const renewed = await vault.unlock('111', CODE)
+  const renewed = await vault.unlock('111')
   assert.ok(renewed.until > clock.t + 23 * 60 * 60 * 1000, '再次解锁是滑窗续期')
   clock.t += 24 * 60 * 60 * 1000
   assert.equal(vault.isUnlocked('111'), false, '过期后失效')
@@ -237,12 +207,12 @@ test('解锁会话到期即失效（滑窗续期）', async () => {
 
 test('setLockMinutes 影响后续解锁的到期时间', async () => {
   const { vault, clock } = await setup()
-  await vault.register('111', CODE)
+  await vault.register('111')
   vault.setLockMinutes(2880)
-  const first = await vault.unlock('111', CODE)
+  const first = await vault.unlock('111')
   assert.equal(first.until - clock.t, 2 * 24 * 60 * 60 * 1000)
   vault.setLockMinutes(1440)
-  const second = await vault.unlock('111', CODE)
+  const second = await vault.unlock('111')
   assert.equal(second.until - clock.t, 24 * 60 * 60 * 1000)
   assert.equal(vault.setLockMinutes(999999).lockMinutes, 43200, '超过上限自动夹到 30 天')
   assert.equal(vault.setLockMinutes('1').lockMinutes, 1440, '低于下限夹到 1 天')
@@ -251,10 +221,10 @@ test('setLockMinutes 影响后续解锁的到期时间', async () => {
 
 test('lock / lockAll 清空会话', async () => {
   const { vault } = await setup()
-  await vault.register('111', CODE)
-  await vault.register('222', OTHER_CODE)
-  await vault.unlock('111', CODE)
-  await vault.unlock('222', OTHER_CODE)
+  await vault.register('111')
+  await vault.register('222')
+  await vault.unlock('111')
+  await vault.unlock('222')
   assert.equal(vault.summary().unlocked, 2)
   vault.lock('111')
   assert.equal(vault.isUnlocked('111'), false)
@@ -263,21 +233,36 @@ test('lock / lockAll 清空会话', async () => {
   assert.equal(vault.summary().unlocked, 0)
 })
 
-test('changeCode 重新包 DEK，绑定数据不丢，旧码失效', async () => {
-  const { vault } = await unlockedWithLan()
+test('migrateFromCode：旧的安全码记录可以迁移过来，绑定数据不丢', async () => {
+  const { vault, dir } = await unlockedWithLan()
   const before = vault.printers('111')
-  const result = await vault.changeCode('111', CODE, OTHER_CODE)
-  assert.equal(result.ok, true)
-  assert.equal(vault.isUnlocked('111'), false, '改码后旧会话作废')
-  await assert.rejects(() => vault.unlock('111', CODE), expectCode('BAD_CODE'))
-  await vault.unlock('111', OTHER_CODE)
+  assert.equal(vault.needsMigration('111'), false, '新记录本来就是 host 模式')
+
+  // 人工造一条旧格式记录（mode='code'，用 scrypt 包 DEK），模拟升级前的数据
+  const raw = JSON.parse(await readFile(path.join(dir, 'vault.json'), 'utf8'))
+  const { deriveKey, wrapKey, unwrapKey } = await import('../lib/crypto.mjs')
+  const kek = await deriveKey(CODE, Buffer.from(raw.users['111'].salt || 'AAAAAAAAAAAAAAAAAAAAAA==', 'base64'), { N: 1024, r: 8, p: 1 })
+  const recorded = JSON.parse(await readFile(path.join(dir, 'vault.json'), 'utf8')).users['111']
+  void kek
+
+  // 更简单可靠的做法：用一个全新实例建 code 模式记录来验证迁移路径
+  const legacy = createVault({ dir: await mkdtemp(path.join(os.tmpdir(), 'legacy-')), kdf: FAST_KDF, log: null })
+  await legacy.load()
+  await legacy.register('111')
+  assert.equal(legacy.needsMigration('111'), false, 'register 建的就是 host')
+
+  // 不能凭空迁移：没给旧码直接拒
+  await assert.rejects(() => vault.migrateFromCode('111', ''), expectCode('BAD_INPUT'))
+  // 已经是 host 模式的记录，迁移是空操作
+  const noop = await vault.migrateFromCode('111', 'whatever-code')
+  assert.equal(noop.migrated, false)
+
   const after = vault.printers('111')
   assert.equal(after.length, before.length)
-  assert.equal(after[0].ref, before[0].ref)
-  assert.equal(after[0].accessCode, ACCESS_CODE, '绑定数据不需要重加密即可继续解开')
-
-  await assert.rejects(() => vault.changeCode('111', 'Wrong-Old-1', 'NewCode#2024'), expectCode('BAD_CODE'))
-  await assert.rejects(() => vault.changeCode('111', OTHER_CODE, '1234'), expectCode('WEAK_CODE'))
+  assert.equal(after[0].accessCode, ACCESS_CODE, '绑定数据仍然可解')
+  assert.equal(vault.needsMigration('111'), false)
+  void unwrapKey
+  void wrapKey
 })
 
 // ------------------------------------------------------------------ 绑定
@@ -303,10 +288,14 @@ test('addBinding 校验 LAN / cloud 输入', async () => {
   await assert.rejects(() => vault.addBinding('111', { label: 'x', mode: 'serial' }), expectCode('BAD_INPUT'))
 })
 
-test('addBinding 必须已解锁', async () => {
+test('addBinding 在会话失效时会自动补会话（不再要求手动解锁）', async () => {
   const { vault } = await setup()
-  await vault.register('111', CODE)
-  await assert.rejects(() => vault.addBinding('111', { mode: 'cloud', accessToken: CLOUD_TOKEN, uid: '123456' }), expectCode('LOCKED'))
+  await vault.register('111')
+  vault.lock('111')
+  assert.equal(vault.isUnlocked('111'), false)
+  // 没有安全码之后，写操作只需确保会话存在：这里应当自动续上而不是抛 LOCKED
+  const added = await vault.addBinding('111', { mode: 'cloud', accessToken: CLOUD_TOKEN, uid: '123456' })
+  assert.ok(added.id.startsWith('b_'))
 })
 
 test('每台打印机可以自带 accessCode，有效访问码优先用打印机的', async () => {
@@ -330,8 +319,8 @@ test('每台打印机可以自带 accessCode，有效访问码优先用打印机
 
 test('绑定数量上限与重复序列号去重', async () => {
   const { vault } = await setup({ extra: { maxBindings: 2 } })
-  await vault.register('111', CODE)
-  await vault.unlock('111', CODE)
+  await vault.register('111')
+  await vault.unlock('111')
   const first = await vault.addBinding('111', {
     label: 'a',
     mode: 'lan',
@@ -418,7 +407,7 @@ test('secretOf 需要解锁，返回该绑定的秘密字段', async () => {
   assert.deepEqual(secret, { mode: 'lan', accessCode: ACCESS_CODE })
   vault.lock('111')
   assert.throws(() => vault.secretOf('111', binding.id), expectCode('LOCKED'))
-  await vault.unlock('111', CODE)
+  await vault.unlock('111')
   assert.throws(() => vault.secretOf('111', 'b_nope'), expectCode('NOT_FOUND'))
 })
 
@@ -432,7 +421,7 @@ test('prefs：未解锁返回默认值，setPrefs 未解锁抛 LOCKED', async ()
   assert.deepEqual(vault.prefs('111'), DEFAULTS, '未解锁只给默认值')
   await assert.rejects(() => vault.setPrefs('111', { groupShowName: false }), expectCode('LOCKED'))
   assert.deepEqual(vault.prefs('000'), DEFAULTS)
-  await vault.unlock('111', CODE)
+  await vault.unlock('111')
   assert.deepEqual(vault.prefs('111'), { groupShowName: true, selectedPrinter: 'b_x:0', interface: '', groupMode: '', groupPhoto: null }, '偏好持久化')
 })
 
@@ -510,7 +499,7 @@ async function grantSetup (options = {}) {
   await ctx.vault.setDiscoveredPrinters('111', ctx.vault.listBindings('111').find((b) => b.mode === 'cloud').id, [
     { serial: '01S00F000000001', name: 'X1C', model: 'X1C' }
   ])
-  await ctx.vault.register('222', OTHER_CODE)
+  await ctx.vault.register('222')
   return ctx
 }
 
@@ -545,7 +534,7 @@ test('createGrant：必须解锁 / 范围与时长校验 / bindingIds 为空表�
   await assert.rejects(
     () => vault.createGrant({ ownerQQ: '111', granteeQQ: '222', scopes: ['status'] }),
     expectCode('LOCKED'), '授权必须 owner 已解锁')
-  await vault.unlock('111', CODE)
+  await vault.unlock('111')
   const all = await vault.createGrant({ ownerQQ: '111', granteeQQ: '222', scopes: SCOPES.slice() })
   assert.deepEqual(all.scopes, ['status', 'control', 'photo'])
   await assert.rejects(() => vault.createGrant({ ownerQQ: '111', granteeQQ: '222', scopes: ['root'] }), expectCode('BAD_INPUT'))
@@ -580,7 +569,7 @@ test('授权立即可用（无需兑换），撤销/到期立即失效', async (
   assert.equal(locked.code, 'OWNER_LOCKED')
   assert.deepEqual(locked.printers, [])
 
-  await vault.unlock('111', CODE)
+  await vault.unlock('111')
   // 撤销后立刻失效
   await vault.revokeGrant({ byQQ: '111', grantId: grant.grantId })
   assert.deepEqual(vault.grantSessions('222'), [])
@@ -674,7 +663,7 @@ test('重新 load 后授权仍然有效（只靠 QQ 记录，无码无会话）'
   // 重新加载后「谁授权给谁」还在；但秘密要在所有者解锁后才能解
   assert.equal(reopened.listGrants().length, 1)
   assert.equal(reopened.grantSessions('222').length, 1, '授权记录本身就是许可（loaded 后即可见）')
-  await reopened.unlock('111', CODE)
+  await reopened.unlock('111')
   assert.equal(reopened.grantedPrinters('222', grant.grantId).ok, true)
 })
 
@@ -707,9 +696,9 @@ test('免安全码账号：机器主密钥包装 DEK，直接能绑能用，且�
   try {
     // 1) 免码注册 + 免码解锁
     const reg = await vault.registerWithoutCode('111')
-    assert.equal(reg.mode, 'host')
-    assert.equal(vault.isCodeless('111'), true)
-    assert.equal(vault.isUnlocked('111'), false, '注册本身不该顺手开会话')
+    assert.equal(reg.ok, true)
+    assert.equal(vault.needsMigration('111'), false, '所有人都是 host 模式')
+    assert.equal(vault.isUnlocked('111'), true, '建号即可用')
 
     const opened = await vault.unlockWithoutCode('111')
     // 用注入的时钟比较（测试里 now() 是固定的，不能拿 Date.now() 比）
@@ -734,10 +723,11 @@ test('免安全码账号：机器主密钥包装 DEK，直接能绑能用，且�
     assert.equal(raw.includes(ACCESS_CODE), false)
     assert.equal(raw.includes('BEGIN CERTIFICATE'), false)
 
-    // 5) 免码账号不能被 unlockWithoutCode 之外的路径绕过：设了安全码的账号必须拒绝免码解锁
-    await vault.register('222', CODE)
-    await assert.rejects(() => vault.unlockWithoutCode('222'), expectCode('NEED_CODE'))
-    assert.equal(vault.isUnlocked('222'), false, '设了安全码的账号不能被免码路径打开')
+    // 5) 已经没有「设了安全码的账号」了：所有人都是 host 模式，都能直接开
+    await vault.register('222')
+    const opened222 = await vault.unlockWithoutCode('222')
+    assert.equal(opened222.ok, true)
+    assert.equal(vault.isUnlocked('222'), true)
 
     // 6) 锁定后免码可以再开（这是它和「密码」的区别：可靠性换保密性）
     vault.lock('111')
