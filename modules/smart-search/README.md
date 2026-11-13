@@ -52,7 +52,7 @@ Context7 不参与通用搜索或新闻核验：模型先查文档库，选对�
 
 要求 Aurabot **1.2.1+**、Node.js **22.2+**。发布包已经打好全部运行依赖，不需要 npm、Python 或额外运行时，也不会在首次启动下载代码。
 
-尚未上架市场时：把 `smart-search-v1.0.1.zip` 解压到 Aurabot 数据目录的 `modules/smart-search/`，确保 `index.mjs` 和 `module.json` 直接位于该目录。几秒后自动加载，在「已安装」中确认状态。不要再套一层同名目录。
+尚未上架市场时：[下载最新安装包](https://github.com/b1ghawk119/dsh-aurabot-qq-smartsearch-plugin/releases/latest)，选择 `smart-search-v1.0.1.zip`（不是 Source code）。解压到 Aurabot 数据目录的 `modules/smart-search/`，确保 `index.mjs` 和 `module.json` 直接位于该目录。几秒后自动加载，在「已安装」中确认状态。不要再套一层同名目录。
 
 模块使用跨平台 JavaScript。Windows、Linux、macOS 和 Docker 使用同一份包，不含平台专属二进制，不需要 Python；复用 DSH 已有的 Node.js。容器内的 `localhost` 指容器自身。直接读网页需要能解析并连接公网地址。直接读取不使用浏览器登录态或系统 HTTP 代理；需要代理或页面访问受限时，可启用 Tavily、Exa 或 Firecrawl 提取服务。
 

@@ -7,7 +7,8 @@
 - 正文转换升级至 `html-to-text@10.0.1`，移除带已知低危原型污染问题的旧 `deepmerge` 依赖；打包工具升级至 `fflate@0.8.3`，包含 ZIP64 解析修复。打包工具不在用户运行时使用。
 - Windows / Linux 各通过 40 项测试，新增默认读网页不多花请求、搜索规则边界的回归检查。提示词检查验证的是规则内容，真实模型每轮选择仍未做 QQ 对话验收。
 - 配置面板未改动，复用 1.0.0 的真实客户端交互及桌面、窄屏检查。
-- 安装包为跨平台独立 ESM，无平台二进制、运行时安装或 Python 依赖。macOS 由源码仓库 CI 检查，实际 DSH 安装使用验证在 Windows 完成。
+- 安装包为跨平台独立 ESM，无平台二进制、运行时安装或 Python 依赖。[源码 CI](https://github.com/b1ghawk119/dsh-aurabot-qq-smartsearch-plugin/actions/runs/43407801771) 的 Windows / Linux / macOS × Node.js 22 / 24 六种组合均通过测试与打包。实际 DSH 安装使用验证在 Windows 完成。
+- 使用市场仓库的构建脚本生成安装包，经 Aurabot 社区安装器升级到 1.0.1；新版正文转换实际读取 Node.js 关于页面，返回 5,330 字符。服务 API 适配器未改动，沿用下方有效实测记录。
 
 ## 2026-11-13 · 1.0.0
 
