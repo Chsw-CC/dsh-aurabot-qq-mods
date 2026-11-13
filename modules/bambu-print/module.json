@@ -1,7 +1,7 @@
 {
   "id": "bambu-print",
   "name": "拓竹",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "多用户、群聊可用的拓竹（Bambu Lab）3D 打印机控制：云端/本地接口可选，每个用户一条独立加密凭据，群聊默认脱敏，管理员（主人）默认也看不到别人的 token；一个面板管设置、用户总览、局域网绑定和审计。",
   "category": "tool",
   "tags": [
