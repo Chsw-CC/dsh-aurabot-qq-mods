@@ -239,8 +239,9 @@ export function learnPeerCert({ host, port = DEFAULT_CAMERA_PORT, timeoutMs = 80
       }
       resolve(value)
     }
+    // 同 captureMjpegFrame：定时器不 unref，否则事件循环空闲时 Node 会提前退出，
+    // 这个 Promise 永远不 settle（CI 上表现为 cancelledByParent）。
     const timer = setTimeout(() => finish({ ok: false, code: 'TIMEOUT', error: '读取证书超时' }), Math.max(1000, Number(timeoutMs) || 8000))
-    if (typeof timer.unref === 'function') timer.unref()
     let socket = null
     try {
       const targetPort = Number(port) > 0 ? Number(port) : DEFAULT_CAMERA_PORT
@@ -468,10 +469,15 @@ export async function captureMjpegFrame(opts = {}) {
     let needHeader = true
     let payloadLen = 0
 
+    // 不要 unref 这个定时器。
+    // unref 过的定时器不阻止进程退出：抓帧期间如果正好没有别的句柄撑着事件循环
+    // （比如注入的假 socket、或者对端一直不响应又没别的活动），Node 会直接退出，
+    // 这个 Promise 永远不 settle —— 表现就是「Promise resolution is still pending but
+    // the event loop has already resolved」。定时器本来就短（默认 15s、最坏 60s），
+    // 让它正常参与事件循环更安全；finish() 里会 clearTimeout，不会拖住进程。
     const timer = setTimeout(() => {
       finish(Object.assign(new Error('摄像头超时（' + timeoutMs + 'ms）'), { code: 'TIMEOUT' }))
     }, timeoutMs)
-    if (typeof timer.unref === 'function') timer.unref()
 
     function cleanup() {
       clearTimeout(timer)
@@ -651,10 +657,10 @@ export async function captureRtspsSnapshot(opts = {}) {
     let total = 0
     let stderrText = ''
 
+    // 同样不 unref（见 captureMjpegFrame 的说明）
     const timer = setTimeout(() => {
       finish(Object.assign(new Error('RTSPS 截帧超时（' + timeoutMs + 'ms）'), { code: 'TIMEOUT' }))
     }, timeoutMs)
-    if (typeof timer.unref === 'function') timer.unref()
 
     function killChild() {
       if (!child) return
