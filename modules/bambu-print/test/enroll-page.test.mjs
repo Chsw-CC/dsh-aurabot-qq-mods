@@ -203,6 +203,17 @@ function findBrowser () {
 }
 
 /**
+ * CI 的 ubuntu runner 上没有桌面环境：Chrome 进程能起、也能退出，但 --dump-dom
+ * 一个字节都不往 stdout 写（同样的参数在本机 Windows 上是好的）。这条端到端
+ * 只依赖真浏览器，环境不对就给不出信号，所以 CI 里默认不跑；要强制跑就显式设
+ * BAMBU_TEST_BROWSER 指向浏览器。
+ */
+function browserE2eAllowed () {
+  if (process.env.BAMBU_TEST_BROWSER) return true
+  return !/^(1|true|yes)$/i.test(String(process.env.CI || ''))
+}
+
+/**
  * 起一个只读静态服务，把 assets/enroll/ 原样发出去。
  * extra 里的条目只存在于内存（E2E 的包装页），**绝不写进 assets/enroll/**——
  * 那个目录原样发布到 GitHub Pages，测试产物落进去就会被一起发布出去。
@@ -254,8 +265,10 @@ async function runInBrowser (browser, url, { timeoutMs = 25000 } = {}) {
 
 test('真浏览器：在页面里生成信封，本进程能解开（浏览器 → 机器人 全链路）', async (t) => {
   const browser = findBrowser()
-  if (!browser) {
-    t.skip('本机没有 Edge/Chrome，跳过真浏览器端到端（设 BAMBU_TEST_BROWSER 可指定路径）')
+  if (!browser || !browserE2eAllowed()) {
+    t.skip(browser
+      ? 'CI 里没有桌面环境（Chrome --dump-dom 不输出），真浏览器端到端只在本地跑；要强制跑请设 BAMBU_TEST_BROWSER'
+      : '本机没有 Edge/Chrome，跳过真浏览器端到端（设 BAMBU_TEST_BROWSER 可指定路径）')
     return
   }
   const dir = await mkdtemp(path.join(os.tmpdir(), 'bambu-e2e-'))

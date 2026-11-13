@@ -385,22 +385,20 @@ test('仅内存模式：会删掉上一任落盘的旧私钥（否则「磁盘�
 })
 
 test('仅内存模式：私钥文件删不掉时如实报错，不能假装磁盘已经干净', async () => {
-  // 用只读目录模拟「删不掉」：POSIX 上目录只读会让 unlink 失败。
-  // Windows 上 chmod 不生效，这条用例跳过（和 vault.test.mjs 的处理一致）。
-  if (process.platform === 'win32') {
-    return
-  }
+  // 用一个同名目录占住 bbx-key.json：unlink 一个目录在 Linux 上是 EISDIR、在 Windows 上是 EPERM，
+  // 两边都会走到「删不掉」的分支。（不能靠把目录 chmod 成只读：ensure() 里的 #ensureDir() 会把它改回 0700。）
   const dir = await tmpdir()
   try {
     const fileMode = await svc(dir)
     assert.ok(fileMode.publicKey())
-    const { chmod: chmodP } = await import('node:fs/promises')
-    await chmodP(dir, 0o500)
+    const keyFile = path.join(dir, 'bbx-key.json')
+    await rm(keyFile, { force: true })
+    await fs.mkdir(keyFile, { recursive: true })
     try {
       const eph = createEnvelopeService({ dir, keyMode: 'ephemeral', log: { info () {}, warn () {}, error () {}, debug () {} } })
       await assert.rejects(() => eph.ensure(), (e) => e.code === 'IO')
     } finally {
-      await chmodP(dir, 0o700).catch(() => {})
+      await rm(keyFile, { recursive: true, force: true }).catch(() => {})
     }
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
