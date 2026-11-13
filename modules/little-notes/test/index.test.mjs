@@ -126,23 +126,38 @@ test('note_forget 按关键词：多条命中要求说清楚，唯一命中直�
   assert.equal(rOne.ok, true)
 })
 
-test('超过上限丢最旧的', async () => {
+test('超过上限丢最旧的普通条目，标星的保留', async () => {
   const db = dbFile()
   db['private:123'] = Array.from({ length: 500 }, (_, i) => ({
-    id: 'x' + i, at: i, kind: 'note', text: 't' + i, tags: [], important: false,
+    id: 'x' + i, at: i, kind: 'note', text: 't' + i, tags: [], important: i % 100 === 0,
   }))
   writeFileSync(join(dir, 'notes.json'), JSON.stringify(db))
-  const r = await byName(tools, 'note_add').execute({ text: '第501条' })
-  assert.equal(r.ok, true)
-  const after = dbFile()['private:123']
+  await byName(tools, 'note_add').execute({ text: '第501条' })
+  let after = dbFile()['private:123']
   assert.equal(after.length, 500)
-  assert.equal(after[0].text, 't1')
+  assert.ok(!after.some((e) => e.text === 't1'), '丢的是最旧的普通条目 t1')
+  for (const t of ['t0', 't100', 't200', 't300', 't400']) {
+    assert.ok(after.some((e) => e.text === t), `星标的 ${t} 保留`)
+  }
+
+  // 全是星标还超限时，才丢最旧的星标
+  const allStar = Array.from({ length: 502 }, (_, i) => ({
+    id: 'y' + i, at: i, kind: 'note', text: 's' + i, tags: [], important: true,
+  }))
+  writeFileSync(join(dir, 'notes.json'), JSON.stringify({ 'private:123': allStar }))
+  await byName(tools, 'note_add').execute({ text: '第503条' })
+  after = dbFile()['private:123']
+  assert.equal(after.length, 500)
+  assert.ok(!after.some((e) => e.text === 's0'), '全是星标时丢最旧的 s0')
+  assert.ok(!after.some((e) => e.text === 's2'), '全是星标时丢最旧的 s2')
+  assert.ok(after.some((e) => e.text === 's3'), '更新的星标保留')
 })
 
 test('面板接口：汇总 / 补记 / 标星 / 划掉留痕 / 恢复', async () => {
+  writeFileSync(join(dir, 'notes.json'), JSON.stringify({ 'private:123': [], 'group:1': [] }))
   const rNotes = await routes['/notes']()
   assert.equal(rNotes.ok, true)
-  assert.ok(rNotes.notes.length >= 3)
+  assert.ok(Array.isArray(rNotes.notes))
 
   const rAdd = await routes['/add']({ __body: { chatId: 'private:123', text: '面板补一笔', kind: 'said', about: '老公' } })
   assert.equal(rAdd.ok, true)
@@ -179,6 +194,7 @@ test('每轮上下文里有本子概况', () => {
 })
 
 test('每晚整理：挑新的补进本子，重复的跳过，同一天只跑一次', async () => {
+  writeFileSync(join(dir, 'notes.json'), JSON.stringify({ 'private:123': [], 'group:1': [] }))
   logRows = [
     { t: 1, chatId: 'private:123', who: '希希小锅锅', uid: '1', text: '第501条' },
     { t: 2, chatId: 'private:123', who: '希希小锅锅', uid: '1', text: '他说他下个月要去成都出差' },
@@ -207,6 +223,7 @@ test('整理只在深夜跑，白天不动', async () => {
 })
 
 test('日子提醒：到期当天主动说一句，只提一次，凌晨不说话', async () => {
+  writeFileSync(join(dir, 'notes.json'), JSON.stringify({ 'private:123': [], 'group:1': [] }))
   await byName(tools, 'note_add').execute({ text: '答应他6月1日一起去看展', kind: 'promise', about: '老公', due: '2026-06-01' })
   thinkReplies = ['宝贝，今天不是说好一起去看展嘛，我都记着呢！']
   await hooks.remindOnce(new Date('2026-06-01T09:00:00'))

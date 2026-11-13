@@ -46,6 +46,18 @@ function newId() {
   return Date.now().toString(36) + randomBytes(2).toString('hex')
 }
 
+// 超上限时丢最旧的普通条目；标了星的（important）尽量保住；刚写入的这条（protectId）永不丢。
+// 星标实在放不下时才丢最旧的星标。返回时保持原有时间顺序。
+function trim(list, max, protectId) {
+  if (list.length <= max) return list
+  const over = list.length - max
+  const normals = list.filter((e) => !e.important && e.id !== protectId)
+  const stars = list.filter((e) => e.important && e.id !== protectId)
+  const dropFrom = normals.length >= over ? normals : normals.concat(stars)
+  const drop = new Set(dropFrom.slice(0, over).map((e) => e.id))
+  return list.filter((e) => !drop.has(e.id))
+}
+
 function dayOf(at) {
   const t = new Date(at)
   const pad = (n) => String(n).padStart(2, '0')
@@ -87,7 +99,7 @@ function match(e, q) {
 export default {
   id: 'little-notes',
   name: '小本本',
-  version: '1.2.0',
+  version: '1.2.1',
   api: 1,
   description: '她想到就记一笔的小本本：他说过的话、她答应的事、关于他的事，按人按事翻得出来。不是每天一篇的日记。',
   category: 'manage',
@@ -133,7 +145,7 @@ export default {
       if (!entry.text) return null
       list.push(entry)
       const max = cap()
-      db[chatId] = list.slice(-max)
+      db[chatId] = trim(list, max, entry.id)
       writeDb(dir, db)
       return entry
     }
