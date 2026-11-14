@@ -78,6 +78,15 @@ async function harness(t, options = {}) {
     async rename(value) { assert.equal(value.sessionId, agent.id); assert.equal(value.title, '小爱音响接入 · 对话'); },
   };
   let flushes = 0;
+  if (options.modernModelSelection) {
+    delete controller.agents.selectForNextRequest;
+    agent.model = { select(selection) { selections.push(selection); } };
+    delete agent.ctx.tools.presentAs;
+    presentation = 'native';
+    agent.ctx.tools.selectExecutor = () => ({
+      describe: tools => ({ schemas: options.invalidNativeExecutor ? [{ name: 'unrelated-tool' }] : tools.map(tool => ({ name: tool.name })) }),
+    });
+  }
   const dsh = { workspaceRegistry: registry, sessions: { flush: async () => { flushes++; return true; } }, get: name => {
     if (name === 'sessionController') return controller;
     if (name === 'workspaceRegistry') return registry;
@@ -210,4 +219,22 @@ test('unexpected same-agent tools fail scope verification instead of exposing th
   assert.deepEqual(service.status().toolNames, []);
   assert.equal(h.mode, 'native'); assert.equal(h.masked, true);
   assert.ok(h.guards.some(fn => fn({ name: 'isolated-foreign-scoped-tool' })));
+});
+
+test('current DSH selects the model on the agent and completes a silent text turn', async t => {
+  const h = await harness(t, { modernModelSelection: true });
+  const service = await h.service();
+  await service.ensure();
+  assert.deepEqual(await service.ask('Isolated text check', { readOnly: true }),
+    { text: '中，我听着呢。', suppressSpeech: false, toolCalls: 0 });
+  assert.equal(h.selections.length, 2);
+  assert.deepEqual(h.selections[1], { provider: 'isolated-provider', model: 'isolated-model', reasoningEffort: 'low' });
+  assert.deepEqual(h.calls, []);
+});
+
+test('current DSH rejects an unexpected native executor schema', async t => {
+  const h = await harness(t, { modernModelSelection: true, invalidNativeExecutor: true });
+  const service = await h.service();
+  await assert.rejects(service.ensure(), { code: 'FAMILY_SESSION_SCOPE' });
+  assert.deepEqual(h.calls, []);
 });

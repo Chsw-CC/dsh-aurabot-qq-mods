@@ -2,7 +2,7 @@ import { setupOnboarding } from './lib/companion/onboarding.mjs';
 import { VoiceCursor } from './lib/speaker/cursor.mjs';
 import { loadWindowsCredentials, saveWindowsCredentials } from './lib/speaker/windows.mjs';
 import { connectSpeaker, verifySpeakerLogin, historyFailure } from './lib/speaker/mina.mjs';
-import { SpeakerProbe, matchSavedSongSources } from './lib/speaker/probe.mjs';
+import { SpeakerProbe, matchSavedSongSources, WAKE_ACK_LEAD_IN_MS } from './lib/speaker/probe.mjs';
 import { askProbeModel, MODEL_TOKEN_BUDGET, MODEL_TEST_QUESTION } from './lib/speaker/model.mjs';
 import { SpeakerLogin } from './lib/speaker/login.mjs';
 import { authObservation, completeServiceLogin } from './lib/speaker/transport.mjs';
@@ -13,6 +13,8 @@ import { FamilyPlayback } from './lib/songs/playback.mjs';
 import { SongPlaylists } from './lib/songs/playlists.mjs';
 import { resourcePaths } from './lib/songs/storage.mjs';
 import { companionFailure } from './lib/companion/runtime.mjs';
+import { createDialogueSpeech } from './lib/companion/speech.mjs';
+import { createWakeAudio } from './lib/companion/wake-audio.mjs';
 import { ListenerPreference } from './lib/speaker/listener.mjs';
 import { suggestWakeNames } from './lib/speaker/wake-ai.mjs';
 import { WakePreference } from './lib/speaker/wake.mjs';
@@ -64,7 +66,7 @@ export function speakerFailure(error) {
 export default {
   id: 'xiaoai-music',
   name: 'xiaoai music · 小爱音响接入',
-  version: '0.15.1',
+  version: '0.15.2',
   api: 1,
   description: '小爱音箱接入、歌曲与歌单播放、提醒及 AI 称呼同音词补足。',
   defaults: { networkInterface: '', speakerDevice: '', resourceRoot: '' },
@@ -122,6 +124,22 @@ async function setupRuntime(api) {
     await preference.open();
     const wakePreference = new WakePreference(join(dirname(resources.listenerFile), '家庭称呼.json'));
     await wakePreference.open();
+    const wakeSpeech = createDialogueSpeech(api, { workRoot: resources.dialogueWorkRoot });
+    const wakeReply = () => wakePreference.get().acknowledgement;
+    const wakeAudio = createWakeAudio({
+      getText: wakeReply,
+      signature: () => {
+        const config = api.config();
+        return [config.voice, config.song?.root, Boolean(api.core?.local?.active?.('tts'))];
+      },
+      prepare: text => wakeSpeech.prepare(text, { leadInMs: WAKE_ACK_LEAD_IN_MS }),
+      failure: error => companionFailure(error).message,
+    });
+    const warmWakeAudio = () => {
+      try {
+        if (getVoiceOptions(api).dialogue?.configured) void wakeAudio.generate(wakeReply()).catch(() => {});
+      } catch { /* An unconfigured voice must not prevent the module from starting. */ }
+    };
     const login = new SpeakerLogin({
       environment: () => loadWindowsCredentials(api.settings().networkInterface, { allowMissing: true }),
       finalize: completeServiceLogin,
@@ -337,15 +355,17 @@ async function setupRuntime(api) {
           if (!options.isCurrent()) return '';
           return (await ensureCompanion()).converse(text, options);
         },
-        prepareAnswer: async text => (await ensureCompanion()).prepare(text),
+        prepareAnswer: async (text, options) => options.leadInMs > 0
+          ? wakeAudio.acquire(text) : (await ensureCompanion()).prepare(text, options),
         answerFailure: error => companionFailure(error).message,
         playAnswer: async (prepared, { isCurrent }) => {
           const intent = ++familyIntent;
           await ensureSongs();
-          if (!isCurrent() || intent !== familyIntent) return { cancelled: true };
-          await playback.audio({ id: 'sister-dialogue', absoluteFile: prepared.file, duration: prepared.duration }, { isCurrent });
+          const currentAnswer = () => isCurrent() && (prepared.isCurrent?.() ?? true);
+          if (!currentAnswer() || intent !== familyIntent) return { cancelled: true };
+          await playback.audio({ id: 'sister-dialogue', absoluteFile: prepared.file, duration: prepared.duration }, { isCurrent: currentAnswer });
           await playback.task;
-          if (!isCurrent()) return { cancelled: true };
+          if (!currentAnswer()) return { cancelled: true };
           if (playback.error) throw new FamilySongError(playback.error.code, playback.error.message);
           return { accepted: true, voice: 'family-dialogue', engine: prepared.engine, fallback: prepared.fallback,
             conversion: prepared.conversion };
@@ -386,7 +406,11 @@ async function setupRuntime(api) {
     api.route('/storage/verification', async req => localRequest(req) && req.method === 'GET'
       ? { ok: true, verification: resourceVerification } : { ok: false, message: '需要本机读取核验状态。' });
     api.route('/speaker/wake', async req => localRequest(req) && req.method === 'GET'
-      ? { ok: true, wake: wakePreference.get() } : { ok: false, message: '需要本机读取家庭称呼。' });
+      ? { ok: true, wake: wakePreference.get(), acknowledgementAudio: wakeAudio.state(wakeReply()) }
+      : { ok: false, message: '需要本机读取家庭称呼。' });
+    api.route('/speaker/wake/audio', createLocalAudioHandler({
+      library: { get: id => wakeAudio.preview(wakeReply(), id) }, isLocalRequest: localRequest,
+    }));
     api.route('/songs/local-audio', createLocalAudioHandler({
       library: { get: async id => (await ensureSongs()).library.get(id) }, isLocalRequest: localRequest,
     }));
@@ -416,11 +440,26 @@ async function setupRuntime(api) {
     });
     post('/speaker/wake/suggest', async body => suggestWakeNames(options => api.ask(options), body));
     post('/speaker/wake/save', async body => {
-      try { return { wake: await wakePreference.save(body) }; }
-      catch (error) { return { ok: false, message: error.message }; }
+      const latestWake = () => {
+        const wake = wakePreference.get();
+        return { ok: false, code: 'WAKE_SETTINGS_CHANGED', message: '称呼设置已更新，请核对后再保存。',
+          wake, acknowledgementAudio: wakeAudio.state(wake.acknowledgement) };
+      };
+      let wake;
+      try { wake = await wakePreference.save(body, body?.expectedWake); }
+      catch (error) {
+        if (error.code === 'WAKE_SETTINGS_CHANGED') return latestWake();
+        return { ok: false, message: error.message };
+      }
+      const text = wake.acknowledgement;
+      try { await wakeAudio.generate(text); } catch {}
+      if (JSON.stringify(wake) !== JSON.stringify(wakePreference.get())) return latestWake();
+      const acknowledgementAudio = wakeAudio.state(text);
+      return { wake, acknowledgementAudio, message: acknowledgementAudio.phase === 'failed'
+        ? '称呼已保存，语音生成失败。' : '称呼已保存。' };
     });
     api.route('/capabilities', async () => ({ ok: true,
-      module: 'xiaoai-music', version: '0.15.1',
+      module: 'xiaoai-music', version: '0.15.2',
       tools: [{ name: 'xiaoai_music', parameters: { type: 'object', properties: PLAYBACK_PROPERTIES, required: ['action'], additionalProperties: false } },
         { name: 'xiaoai_reminder', parameters: { type: 'object', properties: REMINDER_PROPERTIES, required: ['action'], additionalProperties: false } }],
       moduleCalls: { playback: "api.use('xiaoai-music').execute(args)", reminders: "api.use('xiaoai-music').remind(args)" },
@@ -657,16 +696,20 @@ async function setupRuntime(api) {
       }
     }, '小爱家庭入口');
     api.on('config', async (next, previous) => {
+      if (JSON.stringify(next.voice) !== JSON.stringify(previous.voice) || next.song?.root !== previous.song?.root) {
+        warmWakeAudio();
+      }
       if (savingLoginDevice) return;
       if (JSON.stringify(next.ext?.[api.id]) !== JSON.stringify(previous.ext?.[api.id])) await dispose();
     });
     api.onDispose(async () => {
       disposed = true;
-      const closing = Promise.allSettled([reminders.close(), reminderDialogue?.close()]);
+      const closing = Promise.allSettled([reminders.close(), reminderDialogue?.close(), wakeAudio.close()]);
       try {
         const results = await closing;
         if (results.some(result => result.status === 'rejected')) throw new Error('家庭提醒收尾未完成。');
       } finally { await dispose(); await companion?.close(); }
     });
+    warmWakeAudio();
     return { status, execute: callFamily, remind: callReminder };
 }

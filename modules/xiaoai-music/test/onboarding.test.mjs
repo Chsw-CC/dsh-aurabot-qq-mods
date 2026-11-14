@@ -26,13 +26,18 @@ test('fresh actual module waits for storage without creating default library or 
   assert.equal(instance.status().onboarding.complete,false);
   assert.equal((await instance.execute({action:'catalog'})).ok,false);
   assert.equal(h.timers.length,0); assert.equal(h.routes.has('/speaker/login/start'),false);
+  for (const route of ['/speaker/listener/start','/speaker/arm']) {
+    assert.equal((await h.post(route)).code,'XIAOAI_SETUP_REQUIRED');
+  }
   const chosen=join(h.root,'chosen');
   const result=await h.post('/onboarding/storage',{root:chosen});
   assert.equal(result.ok,true); assert.equal(result.onboarding.storageReady,true); assert.equal(result.onboarding.complete,false);
   assert.equal(h.settings.resourceRoot,chosen); assert.equal(h.settings.setupComplete,false);
   assert.deepEqual(await readdir(h.root),['chosen']);
   assert.equal((await h.post('/songs/check')).code,'XIAOAI_SETUP_REQUIRED');
-  assert.equal((await h.post('/speaker/listener/start')).ok,false);
+  for (const route of ['/speaker/listener/start','/speaker/arm']) {
+    assert.equal((await h.post(route)).code,'XIAOAI_SETUP_REQUIRED');
+  }
   assert.equal((await h.post('/onboarding/complete')).ok,false);
   assert.equal((await h.post('/onboarding/storage',{root:join(h.root,'other')})).ok,false);
   assert.equal(h.settings.resourceRoot,chosen);
@@ -105,4 +110,38 @@ test('onboarding refuses remote storage writes and cannot start after disposal',
   await h.disposers[0]();
   assert.equal((await h.post('/onboarding/storage',{root:join(h.root,'chosen')})).ok,false);
   assert.deepEqual(await readdir(h.root),[]);
+});
+
+
+test('in-flight connection check cannot approve a different saved network', async t => {
+  const h = await fixture(t);
+  let checked;
+  const gate = new Promise(resolve => { checked = resolve; });
+  let first = true;
+  let starts = 0;
+  const runtime = async api => {
+    api.route('/speaker/check', async () => {
+      if (first) { first = false; await gate; }
+      return { ok: true, historyReadable: true };
+    });
+    api.route('/speaker/wake/save', async () => ({ ok: true, wake: { names: ['小伴'] } }));
+    api.route('/speaker/listener/start', async () => { starts++; return { ok: true }; });
+    return { status: () => ({ ok: true }), execute() {}, remind() {} };
+  };
+  const instance = await setupOnboarding(h.api, runtime, { localPost: r => r.method === 'POST', localRequest: () => true });
+  await h.post('/onboarding/storage', { root: join(h.root, 'chosen') });
+  await h.post('/speaker/wake/save');
+  h.settings.networkInterface = 'Synthetic A';
+  const checking = h.post('/speaker/check');
+  h.settings.networkInterface = 'Synthetic B';
+  checked();
+  assert.equal((await checking).ok, false);
+  assert.equal(instance.status().onboarding.speakerVerified, false);
+  assert.equal((await h.post('/onboarding/complete')).ok, false);
+  assert.equal((await h.post('/speaker/listener/start')).code, 'XIAOAI_SETUP_REQUIRED');
+  assert.equal(starts, 0);
+  await h.post('/speaker/check');
+  assert.equal((await h.post('/onboarding/complete')).ok, true);
+  assert.equal((await h.post('/speaker/listener/start')).ok, true);
+  assert.equal(starts, 1);
 });

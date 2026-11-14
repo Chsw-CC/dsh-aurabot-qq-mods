@@ -130,16 +130,22 @@ export async function createFamilySession(api, resources, { persona, execute, ti
   function verifyTools() {
     const names = agent.ctx.tools.schemas(agent).map(item => item.name).sort();
     if (names.length !== 1 || names[0] !== TOOL) throw new FamilySessionError('FAMILY_SESSION_SCOPE');
+    if (requireNativeTools && typeof agent.ctx.tools.presentAs !== 'function') {
+      const schemas = agent.ctx.tools.selectExecutor(agent).describe([tool]).schemas;
+      if (schemas.length !== 1 || schemas[0].name !== TOOL) throw new FamilySessionError('FAMILY_SESSION_SCOPE');
+    }
   }
   async function applyModel() {
     try {
       const { defaultModel, pickReasoningEffort } = api.lib('core/llm.js');
       const config = api.config();
       const target = defaultModel(api.dsh, config);
-      if (!target?.provider || !target?.model || typeof controller.agents?.selectForNextRequest !== 'function') throw new Error();
+      if (!target?.provider || !target?.model) throw new Error();
       const effort = await pickReasoningEffort(api.dsh, target.provider, target.model, config.model?.reasoningEffort);
-      await controller.agents.selectForNextRequest(agent, { provider: target.provider, model: target.model,
-        ...(effort ? { reasoningEffort: effort } : {}) });
+      const selection = { provider: target.provider, model: target.model, ...(effort ? { reasoningEffort: effort } : {}) };
+      if (typeof agent.model?.select === 'function') await agent.model.select(selection);
+      else if (typeof controller.agents?.selectForNextRequest === 'function') await controller.agents.selectForNextRequest(agent, selection);
+      else throw new Error();
     } catch { throw new FamilySessionError('FAMILY_SESSION_MODEL'); }
   }
   function mount() {
@@ -148,7 +154,7 @@ export async function createFamilySession(api, resources, { persona, execute, ti
       fence = fences.get(agent);
       if (fence?.owner) throw new Error();
       if (!fence) {
-        const nativeOff = requireNativeTools ? ctx.tools.presentAs('native') : ctx.tools.presentAs?.('native');
+        const nativeOff = ctx.tools.presentAs?.('native');
         let maskOff;
         try {
           maskOff = ctx.tools.restrict({ allow: [] });

@@ -179,11 +179,11 @@ test('reloading the resident listener begins at now and never replays stopped-pe
   assert.equal(questions.length, 1);
 });
 
-test('session routing preserves request punctuation and sends bare invocation to the session while retaining pause and stop', () => {
+test('session routing preserves request punctuation and acknowledges bare invocation while retaining pause and stop', () => {
   const options = { sessionRouting: true };
   assert.deepEqual(parseProbeCommand('小爱同学，小 伴：播放《小星星》，然后告诉我为什么？', options),
     { action: 'ask-test', text: '播放《小星星》，然后告诉我为什么？' });
-  assert.deepEqual(parseProbeCommand('小伴', options), { action: 'ask-test', text: '请简短应一声。' });
+  assert.deepEqual(parseProbeCommand('小伴', options), { action: 'wake-ack', text: '我在' });
   assert.deepEqual(parseProbeCommand('小伴，继续播放。', options), { action: 'ask-test', text: '继续播放。' });
   assert.deepEqual(parseProbeCommand('小伴，先暂停吧。', options), { action: 'pause' });
   assert.deepEqual(parseProbeCommand('小伴，停止播放。', options), { action: 'stop' });
@@ -191,6 +191,22 @@ test('session routing preserves request punctuation and sends bare invocation to
   assert.equal(parseProbeCommand('播放小星星', options), null);
   assert.equal(parseProbeCommand('小伴'), null);
   assert.deepEqual(parseProbeCommand('小伴，播放小星星'), { action: 'play-song', text: '小星星' });
+});
+
+test('spoken name uses the saved reply without a model turn and duplicate records are ignored', async t => {
+  const preparations = [];
+  const h = await harness(t, { probe: {
+    getWakeConfig: () => ({ names: ['小伴', '小半'], greetingNames: [], acknowledgement: '小伴收到' }),
+    prepareAnswer: async (text, options) => { preparations.push(options); return text; },
+  } });
+  await h.probe.arm({ persistent: true });
+  h.setRecords([record(100001, 'wake', '小爱同学，小半！')]);
+  await h.probe.poll(); await settle(); await h.probe.pending;
+  await h.probe.poll(); await settle();
+  assert.deepEqual(h.actions, ['say:小伴收到']);
+  assert.deepEqual(preparations, [{ leadInMs: 750 }]);
+  assert.deepEqual(h.questions, []);
+  assert.equal(h.probe.status().lastAction, 'wake-ack');
 });
 
 test('tool responses suppress speech and normal empty answers still fail', async t => {

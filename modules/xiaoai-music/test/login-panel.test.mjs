@@ -2,14 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-async function harness({ firstUse = false, music = { entries: [] }, playlists = [] } = {}) {
+async function harness({ firstUse = false, dialogue = false, music = { entries: [] }, playlists = [] } = {}) {
   const source = await readFile(new URL('../panel.js', import.meta.url), 'utf8');
   const states = [], effects = [], timers = new Map(), requests = [];
   let cursor = 0, effectCursor = 0, timerId = 0, nodes = [], jobs = [];
   let phase = 'idle', failStatus = false, failStart = false;
   let root = '', complete = false, checked = false, wakeSaved = false;
   const status = () => ({ ok: true, ...(firstUse ? { onboarding: { resourceRoot: root, storageReady: Boolean(root), complete,
-    speakerVerified: checked, wakeSaved, features: { original: true, model: false, dialogue: false, singing: false } } } : {}),
+    speakerVerified: checked, wakeSaved, features: { original: true, model: false, dialogue, singing: false } } } : {}),
     login: { phase, message: '状态：' + phase }, playback: { phase: 'idle' }, listener: { enabled: false }, songs: music, playlists });
   const call = async (path, body) => {
     requests.push({ path, body });
@@ -120,22 +120,35 @@ test('QR appears inline only after click; poll verification and success then hid
 });
 
 test('first-use panel gates music until storage, connection and names, with optional AI and singing', async t => {
-  const h = await harness({ firstUse: true }); t.after(h.close);
+  const h = await harness({ firstUse: true, dialogue: true }); t.after(h.close);
   const label = name => h.nodes().find(n => n.props['aria-label'] === name);
+  const notice = () => h.nodes().find(n => n.props.role === 'alert' && n.props.className === 'ab-note err');
+  const switchProps = () => h.nodes().map(n => n.props.right?.props).find(props => props?.title === '小爱音响接入开关');
+  assert.equal(h.nodes()[1], notice());
+  assert.match(notice().children[0], /确认保存位置/);
   assert.ok(label('首次保存目录'));
   assert.equal(h.requests.some(r => r.path === '/songs/check'), false);
   assert.equal(h.nodes().some(n => n.props.title === '歌曲与歌单'), false);
   label('首次保存目录').props.onChange({ target: { value: '/synthetic-chosen-root' } }); h.render();
   await h.button('确认位置并继续').props.onClick(); await h.settle(); await h.settle();
   assert.equal(label('首次保存目录'), undefined);
+  assert.equal(h.nodes()[1], notice());
+  assert.match(notice().children[0], /检查登录与连接/);
+  assert.equal(switchProps().disabled, true);
   assert.ok(label('可用网卡')); assert.ok(label('主要称呼'));
   assert.equal(h.button('完成配置，进入模块').props.disabled, true);
   assert.equal(h.button('AI 补足同音词').props.disabled, true);
   await h.button('检查登录与连接').props.onClick(); h.render();
+  assert.match(notice().children[0], /保存主要称呼/);
+  assert.equal(switchProps().disabled, true);
   await h.button('保存称呼').props.onClick(); h.render();
   assert.equal(h.button('完成配置，进入模块').props.disabled, false);
+  assert.match(notice().children[0], /完成配置，进入模块/);
+  assert.equal(switchProps().disabled, true);
   await h.button('完成配置，进入模块').props.onClick(); h.render();
   assert.equal(h.button('完成配置，进入模块'), undefined);
+  assert.equal(notice(), undefined);
+  assert.equal(switchProps().disabled, false);
   assert.ok(h.nodes().some(n => n.props.title === '歌曲与歌单'));
   assert.equal(h.requests.some(r => r.path === '/speaker/listener/start'), false);
   assert.equal(h.requests.some(r => r.path === '/speaker/wake/suggest'), false);

@@ -90,12 +90,12 @@ export async function createFamilyCompanion(api, resources, { execute,
         throw error;
       }
     },
-    async prepare(text) {
+    async prepare(text, options) {
       const operation = ++stateOperation;
       const ticket = cancellation;
       last = { ...last, phase: 'synthesizing', error: null };
       try {
-        const prepared = await speech.prepare(text);
+        const prepared = await speech.prepare(text, options);
         if (closed || ticket !== cancellation) { await prepared.cleanup(); throw new FamilySessionError('FAMILY_SESSION_CANCELLED'); }
         if (operation === stateOperation) last = { ...last, voiceChecked: true, phase: 'ready', requestedEngine: prepared.requestedEngine,
           engine: prepared.engine, fallback: prepared.fallback, conversion: prepared.conversion, duration: prepared.duration };

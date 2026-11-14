@@ -71,6 +71,11 @@ return function Panel({ settings = {}, draftSettings, setSettings, toast = () =>
   const [localSong, setLocalSong] = useState('');
   const [wakeNames, setWakeNames] = useState('');
   const [wakePrimary, setWakePrimary] = useState('');
+  const [wakeAcknowledgement, setWakeAcknowledgement] = useState('');
+  const [wakeAudio, setWakeAudio] = useState({ phase: 'idle' });
+  const [wakeSaving, setWakeSaving] = useState(false);
+  const [wakeSaved, setWakeSaved] = useState(null);
+  const wakeAudioRef = useRef(null);
   const [wakeSuggestion, setWakeSuggestion] = useState(null);
   const [wakeSuggesting, setWakeSuggesting] = useState(false);
   const [storageTarget, setStorageTarget] = useState('');
@@ -108,9 +113,36 @@ return function Panel({ settings = {}, draftSettings, setSettings, toast = () =>
       setReminders(result.reminders); setReminderSession(result.session); setReminderError(result.error);
     } catch { setReminderError({ message: '提醒列表刷新未完成，显示的可能是旧状态；请刷新列表，不要重复保存。' }); }
   };
+  const applyWake = (result, preserveDraft = false) => {
+    const next = { ...result.wake, acknowledgement: result.wake.acknowledgement || '' };
+    if (preserveDraft) {
+      setWakePrimary(draft => draft === wakeSaved.names[0] ? (next.names[0] || '') : draft);
+      setWakeNames(draft => draft === wakeSaved.names.slice(1).join('，') ? next.names.slice(1).join('，') : draft);
+      setWakeAcknowledgement(draft => draft === wakeSaved.acknowledgement ? next.acknowledgement : draft);
+    } else {
+      setWakePrimary(next.names[0] || '');
+      setWakeNames(next.names.slice(1).join('，'));
+      setWakeAcknowledgement(next.acknowledgement);
+      setWakeSuggestion(null);
+    }
+    setWakeSaved(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
+    setWakeAudio(result.acknowledgementAudio || { phase: 'idle' });
+  };
   const loadWake = async () => {
     const result = await call('/speaker/wake');
-    if (result.ok) { setWakePrimary(result.wake.names[0] || ''); setWakeNames(result.wake.names.slice(1).join('，')); setWakeSuggestion(null); }
+    if (result.ok) applyWake(result);
+  };
+  const canPreviewWake = !wakeSaving && wakeAudio.phase === 'ready' &&
+    wakeAcknowledgement.trim() === wakeSaved?.acknowledgement;
+  useEffect(() => {
+    const audio = wakeAudioRef.current;
+    return () => audio?.pause();
+  }, [canPreviewWake, wakeAudio.id]);
+  const previewWake = () => {
+    const audio = wakeAudioRef.current;
+    if (!audio || !wakeAudio.id) return;
+    audio.currentTime = 0;
+    audio.play().catch(() => toast('试听未能开始，请重新保存称呼后再试。'));
   };
   const playLocalAt = index => {
     const queue = localQueueRef.current;
@@ -162,6 +194,22 @@ return function Panel({ settings = {}, draftSettings, setSettings, toast = () =>
     call('/onboarding/networks').then(result => { if (result.ok) setNetworks(result.networks); }).catch(() => toast('网卡列表读取未完成，可手动填写。'));
   }, [onboarding?.storageReady, needsSetup]);
   useEffect(() => { const audio = localAudioRef.current; return () => { audio?.pause(); }; }, []);
+  useEffect(() => {
+    if (!wakeSaved || wakeSaving) return;
+    let active = true;
+    let reading = false;
+    const timer = setInterval(async () => {
+      if (reading) return;
+      reading = true;
+      try {
+        const result = await call('/speaker/wake');
+        if (!active || !result.ok) return;
+        if (JSON.stringify(result.wake) !== JSON.stringify(wakeSaved)) applyWake(result, true);
+        else setWakeAudio(result.acknowledgementAudio || { phase: 'idle' });
+      } catch {} finally { reading = false; }
+    }, 1000);
+    return () => { active = false; clearInterval(timer); };
+  }, [wakeSaved, wakeSaving]);
   useEffect(() => {
     if (storageVerification.phase !== 'checking') return;
     const timer = setInterval(() => { call('/storage/verification').then(result => {
@@ -293,7 +341,13 @@ return function Panel({ settings = {}, draftSettings, setSettings, toast = () =>
     config[key] && !voiceOptions?.options?.some(option => option.id === config[key])
       ? h('option', { value: config[key], disabled: true }, '原音色不可用，请重新选择') : null));
 
+  const setupNotice = needsSetup && h('div', { className: 'ab-note err', role: 'alert',
+    style: { color: '#c5222e', fontWeight: 600 } },
+  '首次配置尚未完成，暂不能开启小爱音响接入。' + (!onboarding.storageReady ? '请先确认保存位置。'
+    : !onboarding.speakerVerified ? '请先检查登录与连接。'
+    : !onboarding.wakeSaved ? '请先保存主要称呼。' : '请点击下方「完成配置，进入模块」。'));
   if (onboarding && !onboarding.storageReady) return h('div', { className: 'ab-grid' },
+    setupNotice,
     h(ui.Card, { title: '首次配置 · 1. 选择保存位置', desc: '先确定歌曲和模块资料的保存目录，再配置音箱。建议使用非 C 盘、有足够空间的专用文件夹。' },
       h(ui.Row, { label: '保存目录', hint: '输入完整路径；确认前不会在默认位置生成歌曲、歌单或会话数据。此步骤不搬迁或覆盖已有资料。' },
         h('input', { className: 'ab-input', 'aria-label': '首次保存目录', value: setupRoot || onboarding.resourceRoot || '',
@@ -302,6 +356,7 @@ return function Panel({ settings = {}, draftSettings, setSettings, toast = () =>
         onboarding.resourceRoot ? '重试初始化' : '确认位置并继续')));
 
   return h('div', { ref: rootRef, className: 'ab-grid' },
+    setupNotice,
     h(ui.Card, { title: needsSetup ? '首次配置 · 2. 音箱连接' : '小爱音响接入',
       desc: '小爱音箱接入与音乐播放；对话跟随 Aurabot 当前人设。',
       right: h(ui.Switch, { on: Boolean(state?.listener?.enabled), disabled: busy || loginPending || needsSetup || features?.dialogue === false || !state,
@@ -365,6 +420,46 @@ return function Panel({ settings = {}, draftSettings, setSettings, toast = () =>
             motherVoice: config.motherVoice || '' });
           if (result?.ok) { await loadOptions(); reload?.(); }
         } }, '保存连接与音色设置'))),
+    h(ui.Card, { title: needsSetup ? '首次配置 · 3. 语音称呼' : '语音称呼' },
+      h(ui.Row, { label: '主要称呼', hint: '填写并保存你希望使用的称呼，AI 补足可跳过。配置完成后打开页面顶部的“小爱音响接入”开关。每次先说“小爱同学”唤醒音箱，再说“称呼＋问题或指令”。例如称呼填“小伴”，就说“小伴，今天天气怎么样”或“小伴，播放小星星”。称呼不能替代音箱唤醒词，无需先说“你好”。' },
+        h('input', { className: 'ab-input', value: wakePrimary, disabled: busy || wakeSuggesting, 'aria-label': '主要称呼', onChange: e => { setWakePrimary(e.target.value); setWakeSuggestion(null); } })),
+      h(ui.Row, { label: '同音词与识别变体', hint: '逗号分隔，可手动增删；AI 每次至少给出 10 个候选，不会直接保存。' },
+        h('textarea', { className: 'ab-textarea', value: wakeNames, rows: 3, disabled: busy || wakeSuggesting, 'aria-label': '同音词与识别变体', onChange: e => { setWakeNames(e.target.value); setWakeSuggestion(null); } })),
+      h(ui.Btn, { disabled: busy || wakeSuggesting || features?.model === false || !wakePrimary.trim(), onClick: async () => {
+        setWakeSuggesting(true); setWakeSuggestion(null);
+        try {
+          const r = await call('/speaker/wake/suggest', { primary: wakePrimary.trim(), existing: wakeNames.split(/[，,、;；\n]+/u).map(x => x.trim()).filter(Boolean) });
+          if (r.ok) setWakeSuggestion(r); else toast(r.message || '同音词生成未完成。');
+        } catch { toast('同音词生成未完成，请重试。'); } finally { setWakeSuggesting(false); }
+      } }, wakeSuggesting ? 'AI 补足中…' : 'AI 补足同音词'),
+      wakeSuggestion && h('div', { className: 'ab-note', role: 'status' },
+        h('p', null, 'AI 候选（' + wakeSuggestion.names.length + ' 个）：' + wakeSuggestion.names.join('，')),
+        h(ui.Btn, { disabled: busy, onClick: () => { setWakeNames([...new Set([...wakeNames.split(/[，,、;；\n]+/u).map(x => x.trim()).filter(Boolean), ...wakeSuggestion.names])].join('，')); setWakeSuggestion(null); } }, '采用候选到草稿'),
+        h(ui.Btn, { disabled: busy, onClick: () => setWakeSuggestion(null) }, '保留原稿')),
+      h(ui.Row, { label: '称呼应答', hint: '只说称呼时播报这句话。留空使用默认的“我在”。保存后可在电脑上试听。' },
+        h('input', { className: 'ab-input', value: wakeAcknowledgement, maxLength: 160, disabled: busy,
+          'aria-label': '称呼应答', onChange: e => {
+            wakeAudioRef.current?.pause();
+            setWakeAcknowledgement(e.target.value);
+          } }),
+        (wakeSaving || wakeAudio.phase === 'generating') && h('span', { role: 'status', className: 'ab-small' }, '生成中…'),
+        !wakeSaving && wakeAudio.phase === 'failed' && h('p', { role: 'status', className: 'ab-small' },
+          wakeAudio.message || '生成失败，请再次保存称呼。'),
+        canPreviewWake &&
+          h('div', null,
+            h('audio', { ref: wakeAudioRef, preload: 'none', src: '/aurabot/api/ext/xiaoai-music/speaker/wake/audio?id=' + encodeURIComponent(wakeAudio.id) }),
+            h(ui.Btn, { small: true, disabled: busy, onClick: previewWake }, '试听'))),
+      h(ui.Btn, { disabled: busy || wakeSuggesting || Boolean(wakeSuggestion), onClick: async () => {
+        const split = value => value.split(/[，,、;；\n]+/u).map(item => item.trim()).filter(Boolean);
+        setWakeSaving(true);
+        try {
+          const result = await run('/speaker/wake/save', { names: [...new Set([wakePrimary.trim(), ...split(wakeNames)])],
+            greetingNames: [], acknowledgement: wakeAcknowledgement.trim(), expectedWake: wakeSaved || undefined });
+          if (result?.ok) applyWake(result);
+          else if (result?.code === 'WAKE_SETTINGS_CHANGED' && result.wake) applyWake(result, Boolean(wakeSaved));
+        } finally { setWakeSaving(false); }
+      } }, '保存称呼'),
+      state?.listener?.error && h('p', { className: 'ab-note err' }, state.listener.error.message)),
     !needsSetup && h(ui.Card, { title: '歌曲与歌单' },
       h('div', { ref: addSongRef, style: { paddingBottom: 14, borderBottom: '1px solid var(--ab-line)' } },
         h('div', { style: { ...flex, justifyContent: 'space-between' } },
@@ -622,28 +717,6 @@ return function Panel({ settings = {}, draftSettings, setSettings, toast = () =>
           await run('/reminders/cancel', { id: item.id }); await loadReminders();
         } }, '取消提醒')))),
       !reminders.some(item => item.state === 'active') && h('p', { className: 'ab-small ab-muted' }, '还没有待执行的提醒。')),
-    h(ui.Card, { title: needsSetup ? '首次配置 · 3. 语音称呼' : '语音称呼' },
-      h(ui.Row, { label: '主要称呼', hint: '填写并保存你希望使用的称呼，AI 补足可跳过。配置完成后打开页面顶部的“小爱音响接入”开关。每次先说“小爱同学”唤醒音箱，再说“称呼＋问题或指令”。例如称呼填“小伴”，就说“小伴，今天天气怎么样”或“小伴，播放小星星”。称呼不能替代音箱唤醒词，无需先说“你好”。' },
-        h('input', { className: 'ab-input', value: wakePrimary, disabled: busy || wakeSuggesting, 'aria-label': '主要称呼', onChange: e => { setWakePrimary(e.target.value); setWakeSuggestion(null); } })),
-      h(ui.Row, { label: '同音词与识别变体', hint: '逗号分隔，可手动增删；AI 每次至少给出 10 个候选，不会直接保存。' },
-        h('textarea', { className: 'ab-textarea', value: wakeNames, rows: 3, disabled: busy || wakeSuggesting, 'aria-label': '同音词与识别变体', onChange: e => { setWakeNames(e.target.value); setWakeSuggestion(null); } })),
-      h(ui.Btn, { disabled: busy || wakeSuggesting || features?.model === false || !wakePrimary.trim(), onClick: async () => {
-        setWakeSuggesting(true); setWakeSuggestion(null);
-        try {
-          const r = await call('/speaker/wake/suggest', { primary: wakePrimary.trim(), existing: wakeNames.split(/[，,、;；\n]+/u).map(x => x.trim()).filter(Boolean) });
-          if (r.ok) setWakeSuggestion(r); else toast(r.message || '同音词生成未完成。');
-        } catch { toast('同音词生成未完成，请重试。'); } finally { setWakeSuggesting(false); }
-      } }, wakeSuggesting ? 'AI 补足中…' : 'AI 补足同音词'),
-      wakeSuggestion && h('div', { className: 'ab-note', role: 'status' },
-        h('p', null, 'AI 候选（' + wakeSuggestion.names.length + ' 个）：' + wakeSuggestion.names.join('，')),
-        h(ui.Btn, { disabled: busy, onClick: () => { setWakeNames([...new Set([...wakeNames.split(/[，,、;；\n]+/u).map(x => x.trim()).filter(Boolean), ...wakeSuggestion.names])].join('，')); setWakeSuggestion(null); } }, '采用候选到草稿'),
-        h(ui.Btn, { disabled: busy, onClick: () => setWakeSuggestion(null) }, '保留原稿')),
-      h(ui.Btn, { disabled: busy || wakeSuggesting || Boolean(wakeSuggestion), onClick: async () => {
-        const split = value => value.split(/[，,、;；\n]+/u).map(item => item.trim()).filter(Boolean);
-        const result = await run('/speaker/wake/save', { names: [...new Set([wakePrimary.trim(), ...split(wakeNames)])], greetingNames: [] });
-        if (result?.ok) await loadWake();
-      } }, '保存称呼'),
-      state?.listener?.error && h('p', { className: 'ab-note err' }, state.listener.error.message)),
     onboarding && h(ui.Card, { title: needsSetup ? '首次配置 · 4. 功能检查与完成' : '功能配置状态',
       desc: '按需配置功能。原曲播放不要求翻唱音色；AI 补词可跳过。这里检查配置，不会试播音箱。' },
       ...[['original', '原曲搜索与保存', '请配置表达 → 翻唱 → 网易云'], ['model', 'AI 补词', '请配置 AuraBot 当前模型'],

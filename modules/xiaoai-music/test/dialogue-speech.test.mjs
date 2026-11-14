@@ -46,6 +46,8 @@ async function harness(t, options = {}) {
       if (options.ttsFailure) throw new Error('https://private-service.invalid/secret');
       const file = args[args.indexOf('--write-media') + 1];
       await writeFile(file, Buffer.alloc(600));
+    } else if (args.includes('adelay=750:all=1')) {
+      await writeFile(args.at(-1), Buffer.alloc(800));
     } else if (command.endsWith('ffprobe.exe')) return { code: options.probeFailure ? 1 : 0, out: '1.25\n' };
     else throw new Error('unexpected process');
     return { code: 0, out: '' };
@@ -68,6 +70,15 @@ test('dialogue follows the default TTS without using a singing voice or global c
   await result.cleanup();
   await result.cleanup();
   assert.deepEqual(await readdir(h.workRoot), []);
+});
+
+test('a wake acknowledgement measures the padded output that will be played', async t => {
+  const h = await harness(t);
+  const result = await h.speech.prepare('我在', { leadInMs: 750 });
+  assert.equal(result.file, h.calls[1].args.at(-1));
+  assert.equal(result.file, h.calls[2].args.at(-1));
+  assert.match(result.file, /leadin\.wav$/);
+  await result.cleanup();
 });
 
 test('a selected engine failure is fixed and cannot fall back to another engine or leak details', async t => {
