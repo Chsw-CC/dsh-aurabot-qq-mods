@@ -34,13 +34,31 @@ export default {
     const state = () => ({ ok: true, ...publicState(store, runner.runtime) })
 
     route('/state', state)
-    route('/subscription/add', async (req) => ({ ok: true, item: store.addSubscription(await body(req)) }))
+    route('/subscription/add', async (req) => {
+      const item = store.addSubscription(await body(req))
+      // 新增订阅即刻拉一次源码并把识别到 Cron 的脚本登记为定时任务（新任务仍默认停用、待审批）
+      let synced = null
+      if (item.enabled !== false) {
+        try { synced = await runner.sync(item.id) }
+        catch (error) {
+          return { ok: true, item, syncError: String(error?.message || error).slice(0, 600), message: `订阅已保存，但首次同步失败：${String(error?.message || error).slice(0, 200)}。可点「立即同步」重试。` }
+        }
+      }
+      return { ok: true, item, syncError: null, message: `订阅已保存并同步${synced?.added ? `，新增 ${synced.added} 个定时任务` : ''}` }
+    })
     route('/subscription/update', async (req) => {
       const input = await body(req)
       if (!input.id) throw new Error('缺少订阅 id')
+      const before = store.state().subscriptions.find((s) => s.id === input.id)
+      const sourceChanged = before && (String(input.url ?? before.url) !== before.url || String(input.branch ?? before.branch) !== before.branch)
       const item = store.updateSubscription(input.id, input)
       if (!item.enabled) store.revokeTasks(item.id, '订阅已停用，任务已关闭且旧审批失效')
-      return { ok: true, item }
+      // 刚打开「自动发现 Cron」或换了源，就顺手同步一次，让定时任务立即出现
+      let synced = null
+      if (item.enabled !== false && (sourceChanged || (before && before.autoAddCron !== true && item.autoAddCron === true))) {
+        try { synced = await runner.sync(item.id) } catch (error) { return { ok: true, item, syncError: String(error?.message || error).slice(0, 600) } }
+      }
+      return { ok: true, item, syncError: null, synced }
     })
     route('/subscription/sync', async (req) => runner.sync(String((await body(req)).id || '')))
     route('/subscription/delete', async (req) => {

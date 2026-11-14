@@ -156,3 +156,60 @@ test('并发上限：超过 maxConcurrent 时拒绝新任务', async (t) => {
   await assert.rejects(fx.runner.run(fx.taskId, 'manual', { confirm: true }), /正在运行/)
   await waitFinish(fx.store, fx.taskId)
 })
+
+test('同步即写入定时任务：自动登记、幂等、识别 Cron、尊重用户关闭', async (t) => {
+  const { execFileSync } = await import('node:child_process')
+  const { writeFileSync } = await import('node:fs')
+  const root = temp(t)
+  const upstream = join(root, 'upstream')
+  mkdirSync(upstream, { recursive: true })
+  const git = (...args) => execFileSync('git', args, { cwd: upstream, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+  writeFileSync(join(upstream, 'jd_bean.js'), '// cron 5 9 * * *\nconsole.log("a")\n')
+  writeFileSync(join(upstream, 'jx_sign.js'), '/* cron 10 20 * * * */\nconsole.log("b")\n')
+  writeFileSync(join(upstream, 'helper.js'), 'console.log("no cron")\n')
+  git('add', '-A'); git('commit', '-qm', 'init')
+
+  const dataDir = join(root, 'data')
+  const store = createStore(dataDir)
+  store.addSubscription({ id: 'local', name: '本地源', url: 'https://example.com/local.git', branch: 'main', whitelist: '', blacklist: '', extensions: 'js', enabled: true })
+  const repo = join(dataDir, 'repos', 'local')
+  execFileSync('git', ['clone', '-q', upstream, repo], { encoding: 'utf8' })
+  writeFileSync(join(dataDir, 'repos', 'local.source'), 'https://example.com/local.git#main')
+
+  const runner = createRunner({ store, log: null, settings: () => ({ enabled: false }) })
+  t.after(() => runner.dispose())
+
+  const first = await runner.sync('local')
+  assert.equal(first.added, 2, '识别到 Cron 的 2 个脚本应自动登记为任务')
+  assert.equal(first.scripts, 3)
+  const tasks = store.state().tasks
+  assert.equal(tasks.length, 2)
+  assert.deepEqual(tasks.map((x) => x.cron).sort(), ['10 20 * * *', '5 9 * * *'])
+  assert.ok(tasks.every((x) => x.enabled === false && x.approval === null), '自动建任务不等于授权执行')
+
+  const second = await runner.sync('local')
+  assert.equal(second.added, 0, '重复同步不应重复建任务')
+  assert.equal(store.state().tasks.length, 2)
+
+  store.updateSubscription('local', { autoAddCron: false })
+  const third = await runner.sync('local')
+  assert.equal(third.added, 0)
+  assert.equal(store.state().subscriptions.find((s) => s.id === 'local').autoAddCron, false, '用户主动关闭后同步不得偷偷打开')
+})
+
+test('旧状态迁移：内置订阅升级为自动写入，用户改过的不覆盖', (t) => {
+  const legacyDir = temp(t)
+  writeFileSync(join(legacyDir, 'state.json'), JSON.stringify({
+    subscriptions: [
+      { id: 'jdpro', name: 'jd', url: 'https://github.com/cyuni1996/jdpro.git', branch: 'main', extensions: 'js py sh', enabled: true, autoAddCron: false },
+      { id: 'custom', name: 'c', url: 'https://example.com/c.git', branch: 'main', extensions: 'js', enabled: true, autoAddCron: false, updatedAt: '2026-01-01T00:00:00.000Z' },
+    ],
+    tasks: [],
+  }))
+  const legacy = createStore(legacyDir)
+  const jd = legacy.state().subscriptions.find((s) => s.id === 'jdpro')
+  const custom = legacy.state().subscriptions.find((s) => s.id === 'custom')
+  assert.equal(jd.autoAddCron, true, '未被用户改过的内置订阅应升级')
+  assert.equal(custom.autoAddCron, false, '用户保存过的订阅不应被覆盖')
+})

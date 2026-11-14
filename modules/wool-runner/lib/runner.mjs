@@ -121,12 +121,18 @@ export function createRunner({ store, log, settings }) {
       if (item.commit && nextCommit && item.commit !== nextCommit) store.revokeTasks(id, '订阅已更新到新 commit，旧审批失效，任务已停用')
       const discovered = discover(id)
       let added = 0
+      let updated = 0
       if (item.autoAddCron) {
         for (const script of discovered.filter((x) => x.cron)) {
           const tid = taskId(id, script.file)
-          if (!store.state().tasks.some((t) => t.id === tid)) {
+          const existing = store.state().tasks.find((t) => t.id === tid)
+          if (!existing) {
             store.upsertTask({ id: tid, subscriptionId: id, file: script.file, name: script.file, cron: script.cron, enabled: false, envNames: [], approval: null })
             added++
+          } else if (existing.cron !== script.cron) {
+            // 脚本里的 Cron 变了：只更新表达式，审批仍需重新确认（enabled 保持原状由审批门控）
+            store.upsertTask({ ...existing, cron: script.cron })
+            updated++
           }
         }
       }
@@ -135,10 +141,15 @@ export function createRunner({ store, log, settings }) {
         for (const t of [...store.state().tasks]) if (t.subscriptionId === id && !existing.has(t.file)) { await stop(t.id, '脚本已从订阅消失'); store.removeTask(t.id) }
       }
       store.updateSubscription(id, {
-        lastSyncAt: new Date().toISOString(), lastSyncStatus: 'ok', lastSyncMessage: `发现 ${discovered.length} 个脚本，新增 ${added} 个任务（默认停用）`,
+        lastSyncAt: new Date().toISOString(), lastSyncStatus: 'ok',
+        lastSyncMessage: `发现 ${discovered.length} 个脚本，新增 ${added} 个任务${updated ? `，更新 ${updated} 个 Cron` : ''}（新任务默认停用，需审批后启用）`,
         commit: nextCommit,
       })
-      return { ok: true, message: `同步完成：${discovered.length} 个脚本，新增 ${added} 个任务；更新后需重新审批`, scripts: discovered.length, added }
+      return {
+        ok: true,
+        message: `同步完成：${discovered.length} 个脚本，新增 ${added} 个定时任务${updated ? `，更新 ${updated} 个 Cron` : ''}；新任务默认停用，需在任务列表确认审批后启用`,
+        scripts: discovered.length, added, updated, tasks: store.state().tasks.filter((t) => t.subscriptionId === id).length,
+      }
     })().finally(() => syncing.delete(id))
     syncing.set(id, job)
     return job
