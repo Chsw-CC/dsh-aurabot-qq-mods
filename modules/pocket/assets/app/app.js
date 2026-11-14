@@ -336,13 +336,10 @@ async function playVoice(bubbleEl, text) {
   // 正在放的是同一条 → 停掉就行
   if (S.playing && S.playingText === text) {
     S.playing.pause()
-    cleanupPlaying()
+    if (S.stopPlaying) S.stopPlaying()
     return
   }
-  if (S.playing) {
-    S.playing.pause()
-    cleanupPlaying()
-  }
+  stopPlaying()
   const btn = bubbleEl.querySelector('.voice-btn')
   const old = btn.textContent
   btn.textContent = '…合成中'
@@ -361,18 +358,66 @@ async function playVoice(bubbleEl, text) {
     btn.textContent = '■ 播放中'
     audio.onended = cleanupPlaying
     audio.onerror = cleanupPlaying
+    S.stopPlaying = cleanupPlaying
     await audio.play()
     function cleanupPlaying() {
       bubbleEl.classList.remove('playing')
       btn.textContent = old
       S.playing = null
       S.playingText = ''
+      S.stopPlaying = null
       URL.revokeObjectURL(url)
     }
   } catch (e) {
     btn.textContent = old
     addSysToast(e.message || '语音失败')
   }
+}
+
+/** 停掉当前在放的那条（不营是真实语音条还是合成的），并把它的按钮恢复 */
+function stopPlaying() {
+  if (S.playing) {
+    try { S.playing.pause() } catch {}
+    S.playing = null
+  }
+  if (S.stopPlaying) {
+    const f = S.stopPlaying
+    S.stopPlaying = null
+    f()
+  }
+}
+
+/** 放她发来的真实语音条（send 钩子抓的原始音频，data:URL）；按钮状态跟 playVoice 一致 */
+function playBlob(bubbleEl, btn, src) {
+  if (S.playing && S.playingSrc === src) {
+    S.playing.pause()
+    if (S.stopPlaying) S.stopPlaying()
+    return
+  }
+  stopPlaying()
+  const old = btn.textContent
+  const audio = new Audio(src)
+  S.playing = audio
+  S.playingSrc = src
+  S.playingText = ''
+  bubbleEl.classList.add('playing')
+  btn.textContent = '■ 播放中'
+  const cleanup = () => {
+    bubbleEl.classList.remove('playing')
+    btn.textContent = old
+    if (S.playing === audio) {
+      S.playing = null
+      S.playingSrc = ''
+    }
+    S.stopPlaying = null
+  }
+  S.stopPlaying = cleanup
+  audio.onended = cleanup
+  audio.onerror = () => {
+    cleanup()
+    addSysToast('这条语音放不出来')
+  }
+  audio.play().catch(() => {})
 }
 
 /** 屏幕下方的浮动提示（设置页也能看见，不像聊天里的系统气泡） */

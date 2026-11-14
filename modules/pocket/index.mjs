@@ -394,7 +394,7 @@ const MIME = {
 export default {
   id: 'pocket',
   name: '口袋aurabot',
-  version: '1.4.1',
+  version: '1.4.2',
   api: 1,
   description: '把她的对话流接进手机 app：app 消息走她原生流程（记忆、心情、表情包、语音、模组全在），回复与主动搭话实时推回手机；记忆与 QQ 端共用一套。',
   category: 'platform',
@@ -606,7 +606,7 @@ export default {
         // 只给探活需要的最小信息：人格名/主人名等不算敏感但也没必要出现在免鉴权接口里
         ok: true,
         app: 'pocket',
-        version: '1.4.1',
+        version: '1.4.2',
         tone: tone(),
       }),
       state: () => {
