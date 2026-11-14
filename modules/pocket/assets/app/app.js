@@ -27,6 +27,8 @@ const S = {
   online: true,
   state: null,
   playing: null,
+  srvVersion: '', // 电脑端模块版本（/api/health 给的，界面功能都跟它走）
+  appVersion: window.__pocketApp || '', // 壳版本（安卓端注入；浏览器打开时为空）
   img: null, // 待发送的图片 { dataUrl, b64 }
   recording: false,
   recStart: 0,
@@ -73,6 +75,8 @@ function takeFromUrl() {
 function normalizeHost(v) {
   let s = String(v || '').trim()
   if (!s) return ''
+  // 中文输入法容易打出全角符号（：．。 以及首尾的全角空格），先归一化，不然会被当成路径拼出废地址
+  s = s.replace(/[\u3000]/g, ' ').replace(/：/g, ':').replace(/[．。]/g, '.').trim()
   let scheme = ''
   const m = s.match(/^(https?):\/\//i)
   if (m) {
@@ -118,6 +122,160 @@ async function switchHost() {
     } catch {}
   }
   return false
+}
+
+/**
+ * 连不上代号表（自查 + 报障用）。编号有规律：
+ *   P1x 连接层根本没通（手机 → 电脑）
+ *   P2x 通了但被电脑拒（密钥 / 端口 / 服务）
+ *   P3x 手机当前这个网络本身有问题
+ *   P99 其他
+ * 报障时报代号（比如「P13」）比自己描述快得多。
+ */
+const CODES = {
+  P11: {
+    t: '局域网地址超时',
+    side: '手机 / 电脑',
+    why: '手机不在这台 WiFi 上；或电脑防火墙没放行端口；或手机开着 VPN / 代理把它接走了',
+    fix: '手机连回同一个 WiFi；关掉 VPN 和代理；电脑上放行 7788 入站',
+  },
+  P12: {
+    t: '公网 IPv6 超时',
+    side: '运营商 / 路由器 / 当前 WiFi',
+    why: '手机的流量没有 IPv6；或光猫 / 路由器没放行端口；或你现在连的这个 WiFi（公司、酒店、校园网）封了 7788 这类高位端口',
+    fix: '手机浏览器开 test-ipv6.com 看是不是 0/10；封端口的环境（外面的 WiFi 常见）只能走隧道，隧道走 443 一般能过',
+  },
+  P13: {
+    t: '隧道域名超时',
+    side: '电脑 / 代理',
+    why: '电脑上的隧道已经停了（重启电脑后最常见）；或代理把 trycloudflare 域名拦了',
+    fix: '面板看隧道是不是「运行中」，不是就点「启动隧道」；关掉代理；电脑重启后域名会变，要重新填进 app',
+  },
+  P14: {
+    t: '局域网地址不可达',
+    side: '手机 / 电脑',
+    why: '这个地址现在没有服务在听：模块开关关着、换过网络、或地址是旧的',
+    fix: '确认面板上「口袋aurabot」的开关是开的，地址从面板重新抄一遍',
+  },
+  P15: {
+    t: '公网 IPv6 不可达',
+    side: '运营商 / 路由器 / 当前 WiFi',
+    why: '这台 IPv6 当前不可路由：手机没 IPv6、连的 WiFi 只给 IPv4、或地址变了',
+    fix: '改走隧道；长期要用就在路由器里给电脑做固定的 DHCPv6 分配',
+  },
+  P16: {
+    t: '隧道域名不可达',
+    side: '电脑',
+    why: '隧道已停，或域名解析被代理带偏',
+    fix: '面板重启隧道，把新地址填回来；关掉代理',
+  },
+  P17: {
+    t: '域名解析失败',
+    side: '手机当前网络',
+    why: 'DNS 被代理 / 广告拦截 / 私人 DNS 改过，解析不出这个域名',
+    fix: '关掉 VPN、代理、私人 DNS 再试',
+  },
+  P18: {
+    t: '证书不对（疑似被劫持）',
+    side: '中间人',
+    why: '有代理或抓包软件在中间解 TLS，看到的证书不是 Cloudflare 的',
+    fix: '关掉代理 / 抓包工具，或把这个域名加进直连白名单',
+  },
+  P19: {
+    t: '地址格式不对',
+    side: '填写',
+    why: '这一条解析不出有效地址：端口写了两个、IPv6 少了方括号、多了斜杠或空格',
+    fix: '照面板原样复制；多条用逗号隔开（中英文逗号都行）',
+  },
+  P21: {
+    t: '密钥不对',
+    side: '填写',
+    why: '网络是通的，但配对密钥和电脑上的对不上',
+    fix: '抄面板「口袋aurabot」页那条 pk_ 开头的；换过密钥要重新配对',
+  },
+  P22: {
+    t: '密钥试错太多，被限流',
+    side: '安全机制',
+    why: '同一来源 60 秒内错了 10 次，服务暂时不受理',
+    fix: '等一分钟，再用正确的密钥连',
+  },
+  P23: {
+    t: '电脑接口没正常响应',
+    side: '电脑',
+    why: '地址通了，但那个端口回的不是口袋的接口（被别的程序占了，或服务没起来）',
+    fix: '面板看「服务端口」有没有报错；确认没别的程序占着这个端口',
+  },
+  P24: {
+    t: '电脑那边出错了',
+    side: '电脑',
+    why: '接口返回 5xx，服务内部报错',
+    fix: '看 DSH 日志里 pocket 相关的报错，重开一次模块',
+  },
+  P30: {
+    t: '手机当前网络本身没通',
+    side: '手机当前 WiFi',
+    why: '这个 WiFi 需要网页登录才能上网（酒店、机场、商场、公司访客网都很常见），或者根本没联网、信号是假的',
+    fix: '先用手机浏览器随便打开一个网页：能上网再回来配对；公共 WiFi 记得点「同意 / 登录」那一步',
+  },
+  P99: {
+    t: '未知原因',
+    side: '—',
+    why: '浏览器给的错误没法归到上面任何一类',
+    fix: '把原始报错和代号一起发出来',
+  },
+}
+
+/** 一条地址为什么连不上 → 代号 */
+function failCode(cand, e) {
+  const https = /^https:\/\//.test(cand)
+  const v6 = /^https?:\/\/\[/.test(cand)
+  const name = (e && e.name) || ''
+  const msg = String((e && e.message) || e || '')
+  if (/CERT|certificate|SSL|TLS|证书/i.test(msg)) return 'P18'
+  if (/NAME_NOT_RESOLVED|Name not resolved|getaddrinfo|ENOTFOUND|dns/i.test(msg)) return 'P17'
+  if (name === 'TimeoutError' || name === 'AbortError' || /abort/i.test(msg)) return https ? 'P13' : v6 ? 'P12' : 'P11'
+  if (/Failed to fetch|NetworkError|Load failed|fetch|网络/i.test(msg)) return https ? 'P16' : v6 ? 'P15' : 'P14'
+  return 'P99'
+}
+
+/** 手机当前这个网络到底能不能上网——把「整个网络不通」和「到电脑的路不通」分开（P30 vs P1x） */
+async function netBaseline(ms = 4000) {
+  const urls = ['https://www.baidu.com/favicon.ico', 'https://cp.cloudflare.com/generate_204']
+  for (const u of urls) {
+    try {
+      await fetch(`${u}${u.includes('?') ? '&' : '?'}_=${Date.now()}`, {
+        mode: 'no-cors',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(ms),
+      })
+      return true
+    } catch {}
+  }
+  return false
+}
+
+/** 并行探一遍所有候选地址，谁先通用谁；全不通时逐条给代号，并顺手判断是不是手机自己没网 */
+async function probeAll(list, ms = 6000) {
+  const out = await Promise.all(
+    list.map(async (cand) => {
+      try {
+        const h = await fetch(`${cand}/api/health`, { signal: AbortSignal.timeout(ms) })
+        if (h.ok) return { cand, ok: true, code: '' }
+        // 端口通了但回的不是口袋：401/403 当作密钥问题，429 是限流，其余算接口没起来
+        const code = h.status === 401 || h.status === 403 ? 'P21' : h.status === 429 ? 'P22' : 'P23'
+        return { cand, ok: false, code, status: h.status }
+      } catch (e) {
+        return { cand, ok: false, code: failCode(cand, e) }
+      }
+    }),
+  )
+  const good = out.find((x) => x.ok)
+  if (good) return { ok: good.cand, code: '', detail: '', selfDown: false, results: out }
+
+  // 全都不通：先看手机自己有没有网，再看每条地址
+  const selfDown = !(await netBaseline())
+  const lines = out.map((x) => `· ${x.code} ${CODES[x.code].t} —— ${x.cand}`)
+  return { ok: null, code: selfDown ? 'P30' : out[0].code, detail: lines.join('\n'), selfDown, results: out }
 }
 
 async function api(path, { method = 'GET', body, timeout = 15000 } = {}) {
@@ -823,6 +981,10 @@ function renderStatus(qqOnline) {
   $('#set-host').textContent = S.host || location.host || '本机'
   $('#set-token').textContent = S.token ? S.token.slice(0, 5) + '…' : '–'
   $('#set-mem').textContent = st.memoryCount != null ? st.memoryCount + ' 条' : '–'
+  // 显示电脑端模块版本：界面和功能都跟着它走，apk 只是外壳（1.0.x）
+  $('#set-ver').textContent = S.srvVersion
+    ? `模块 ${S.srvVersion} · ${S.appVersion ? 'App ' + S.appVersion : '网页版'}`
+    : '–'
 }
 
 // ---------- 空间 ----------
@@ -992,11 +1154,48 @@ function renderSettings() {
   renderStatus(st.qqOnline)
 }
 
-function toPair(reason) {
+// ---------- 代号速查（配对页折叠表，只建一次） ----------
+function renderCodes() {
+  const box = $('#pair-codes')
+  if (!box || box.dataset.done) return
+  box.dataset.done = '1'
+  const rows = Object.entries(CODES)
+    .map(([k, v]) => `<details class="code-row" data-code="${k}"><summary><b>${k}</b> ${v.t}</summary><p><i>${v.side}</i> · 原因：${v.why}</p><p>怎么办：${v.fix}</p></details>`)
+    .join('')
+  box.innerHTML = `<details class="code-wrap"><summary>代号速查（连不上时对照这里）</summary>${rows}</details>`
+}
+
+/** 报错时把命中的那几条展开高亮，其余收着，省得手动翻 */
+function openCodes(codes = []) {
+  const box = $('#pair-codes')
+  if (!box || !codes.length) return
+  renderCodes()
+  const wrap = box.querySelector('.code-wrap')
+  if (wrap) wrap.open = true
+  box.querySelectorAll('.code-row').forEach((d) => {
+    const hit = codes.includes(d.dataset.code)
+    d.classList.toggle('hit', hit)
+    d.open = hit
+  })
+  // 不自动滚动：红色错误正文比表格更重要，滚下去会把结论推出屏幕
+}
+
+function showPairErr(text, codes = []) {
+  const el = $('#pair-err')
+  el.textContent = text
+  el.hidden = false
+  openCodes(codes)
+}
+
+function toPair(reason, codes) {
   clearInterval(S.polling)
   S.polling = null
-  $('#pair-err').textContent = reason || ''
-  $('#pair-err').hidden = !reason
+  if (reason) showPairErr(reason, codes || [])
+  else {
+    $('#pair-err').hidden = true
+    $('#pair-err').textContent = ''
+  }
+  renderCodes()
   $('#pair-host').value = (S.hosts.length ? S.hosts.join(',') : S.host) || localStorage.getItem(LS.host) || ''
   $('#pair-token').value = ''
   show('pair')
@@ -1004,28 +1203,31 @@ function toPair(reason) {
 
 async function doPair() {
   const err = $('#pair-err')
-  const hosts = hostList($('#pair-host').value)
+  const raw = String($('#pair-host').value || '').trim()
+  const hosts = hostList(raw)
   const token = $('#pair-token').value.trim()
   err.hidden = true
-  if (!hosts.length) return (err.textContent = '先填电脑地址（面板上有；家里/外面两个地址都用逗号填上）'), (err.hidden = false)
-  if (!token) return (err.textContent = '先填配对密钥'), (err.hidden = false)
+  if (!hosts.length) {
+    if (raw) return showPairErr(`[P19] 地址格式不对：${raw}\n照面板原样复制；多条用逗号隔开（中英文逗号都行）。`, ['P19'])
+    return showPairErr('先填电脑地址（面板上有；家里 / 外面两个地址都用逗号填上）')
+  }
+  if (!token) return showPairErr('先填配对密钥')
   const btn = $('#pair-go')
   btn.disabled = true
   btn.textContent = '正在连…'
   try {
-    // 挨个探活，谁通用谁（多地址时其余的留着做备用）
-    let ok = null
-    let lastErr = null
-    for (const cand of hosts) {
-      try {
-        const h = await fetch(`${cand}/api/health`, { signal: AbortSignal.timeout(6000) })
-        if (h.ok) { ok = cand; break }
-        lastErr = new Error('电脑上的口袋没开（' + h.status + '）')
-      } catch (e) {
-        lastErr = e
-      }
+    // 并行探活，谁通用谁（多地址时其余的留着做备用）；都不通就把每条的原因摊开成代号
+    const probe = await probeAll(hosts)
+    if (!probe.ok) {
+      const codes = probe.results.map((x) => x.code)
+      if (probe.selfDown) codes.unshift('P30')
+      const tip = probe.selfDown
+        ? '[P30] 手机现在这个网络本身没通\n先用浏览器随便打开一个网页：能上网再回来配对（公共 WiFi 常要先点「同意 / 登录」这一步）。\n\n这几条地址也都试了，同样不通：\n' +
+          probe.detail
+        : '这几条都不通：\n' + probe.detail + '\n\n点下面「代号速查」看每条怎么修；报障把代号发我（比如 P11）就够。'
+      throw Object.assign(new Error(tip), { plain: true, codes })
     }
-    if (!ok) throw lastErr || new Error('都连不上')
+    const ok = probe.ok
     S.host = ok
     S.hosts = [ok, ...hosts.filter((x) => x !== ok)]
     S.token = token
@@ -1035,8 +1237,14 @@ async function doPair() {
     localStorage.setItem(LS.token, token)
     boot()
   } catch (e) {
-    err.textContent = e.name === 'TimeoutError' || e.name === 'AbortError' ? '连不上：检查地址；在家要和电脑同一个 WiFi，在外面要填公网 IPv6 地址（并放行 7788 端口）' : '连不上：' + (e.message || e)
-    err.hidden = false
+    if (e.code === 401) {
+      showPairErr('[P21] 密钥不对\n网络是通的，密钥和电脑上的对不上：抄面板「口袋aurabot」页那条 pk_ 开头的，注意别带空格。', ['P21'])
+    } else if (e.plain) {
+      showPairErr(e.message, e.codes || [])
+    } else {
+      const c = failCode(S.host || hosts[0], e)
+      showPairErr(`[${c}] ${CODES[c].t}\n${CODES[c].fix}`, [c])
+    }
   } finally {
     btn.disabled = false
     btn.textContent = '连上她'
@@ -1056,6 +1264,7 @@ async function boot() {
   buildToneGrid()
   $('#btn-repair').onclick = () => toPair()
   $('#pair-go').onclick = doPair
+  renderCodes()
   $('#chat-send').onclick = send
   $('#btn-scroll-down').onclick = () => scrollBottom(true)
   $('#chat-emoji').onclick = () => {
@@ -1107,6 +1316,14 @@ async function boot() {
     if (!st || !st.ok) throw new Error((st && st.message) || '连不上')
     S.state = st
     S.seq = 0
+    // 版本号（设置页显示「模块 x · App y」）：health 不需要密钥，失败也不影响主流程
+    fetch(base() + '/api/health', { signal: AbortSignal.timeout(4000) })
+      .then((r) => r.json())
+      .then((j) => {
+        S.srvVersion = (j && j.version) || ''
+        renderSettings()
+      })
+      .catch(() => {})
     renderStatus(st.qqOnline)
     renderPet(st.pet)
     buildFoods(st.pet && st.pet.foods)
@@ -1118,8 +1335,18 @@ async function boot() {
     S.polling = setInterval(poll, 1600)
     poll()
   } catch (e) {
-    if (e.code === 401) return toPair('密钥不对，重新输一下')
-    toPair('连不上电脑：' + (e.message || e))
+    if (e.code === 401) return toPair('[P21] 密钥不对\n抄面板「口袋aurabot」页那条 pk_ 开头的，重新输一下。', ['P21'])
+    const list = S.hosts.length ? S.hosts : S.host ? [S.host] : []
+    const p = list.length ? await probeAll(list).catch(() => null) : null
+    if (p && !p.ok) {
+      const codes = p.selfDown ? ['P30', ...p.results.map((x) => x.code)] : p.results.map((x) => x.code)
+      return toPair(
+        (p.selfDown ? '[P30] 手机现在这个网络本身没通\n' : '连不上电脑：\n') + p.detail + '\n报障把代号发我（比如 P11）就够。',
+        codes,
+      )
+    }
+    const c = failCode(S.host || list[0] || '', e)
+    toPair(`[${c}] ${CODES[c].t}\n${CODES[c].fix}`, [c])
   }
 }
 
