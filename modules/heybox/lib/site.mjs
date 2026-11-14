@@ -11,7 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { HeyboxClient, HeyboxError, cosSign, newDeviceId, WEB_BASE, TOPICS } from './api.mjs'
 import { POST_STYLES, DEFAULT_POST_STYLE, styleOf, stylePrompt } from './styles.mjs'
-import { startQrLogin, pollQrLogin, verifyCookie } from './qr.mjs'
+import { startQrLogin, pollQrLogin, verifyCookie, fetchWebToken } from './qr.mjs'
 import { createVerifier } from './verify.mjs'
 import { createBrowser } from './browser.mjs'
 import { postViaWeb, shouldFallbackToWeb } from './webpost.mjs'
@@ -163,7 +163,7 @@ export function linkIdOf(input) {
   return digits.length >= 6 ? digits : ''
 }
 
-export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive, stateFile = path.join(HOME, '.dsh', 'heybox-state.json'), credFile = CRED_FILE, now = () => Date.now(), clientFactory = (options) => new HeyboxClient(options), verifier: injectedVerifier, imagegen = null, memeRoot = null, imageDir = null } = {}) {
+export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive, stateFile = path.join(HOME, '.dsh', 'heybox-state.json'), credFile = CRED_FILE, now = () => Date.now(), clientFactory = (options) => new HeyboxClient(options), verifier: injectedVerifier, imagegen = null, memeRoot = null, imageDir = null, tokenBrowser: injectedTokenBrowser = null } = {}) {
   let client = null
   let verifier = injectedVerifier || null
   let verifySession = null
@@ -176,8 +176,10 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
 
   // 网页兜底发帖用的浏览器：跟扫码验证共用同一个 profile，登录态能复用；
   // 慢慢起、起不来就如实回报（别让发帖链路因为这个炸掉）。
-  let webBrowser = null
+  let webBrowser = injectedTokenBrowser || null
+  // 测试可注入一个假浏览器：扫码补取 token 那一步不该在单测里真启动 Edge
   async function getWebBrowser() {
+    if (injectedTokenBrowser) return { ok: true, browser: injectedTokenBrowser }
     if (disposed) return { ok: false, message: '模块已关闭' }
     try {
       webBrowser ||= createBrowser({ profileDir: dataDir('heybox', 'edge-profile'), browserPath: () => getConfig().heybox?.browserPath || '', log, useEgo: () => false })
@@ -2272,13 +2274,41 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive
       if (!r.hasPkey || r.verified !== true) return { ok: false, state: 'unverified', verified: false, message: '扫码账号尚未验证通过：' + (r.verifyError || '未取得可用账号') }
       if (session.riskToken !== c.riskToken() || session.originalCookie !== cookie()) return { ok: false, state: 'unverified', verified: false, message: '账号或风控状态已改变，请重新开始' }
       if (typeof setCookie !== 'function') return { ok: false, state: 'save-failed', message: '配置保存接口不可用' }
-      await setCookie(r.cookie)
+      // ── 补取 x_xhh_tokenid ──
+      // 扫码接口只给 pkey；写操作要的 x_xhh_tokenid 是网页前端 JS 种进浏览器的
+      // （实测：灌 pkey 打开首页 3~6 秒后出现），所以这里必须借一次浏览器。
+      // 取不到不算失败：扫码本身成功了，保留只有 pkey 的 Cookie 并如实告知限制。
+      let finalCookie = r.cookie
+      let tokenNote = ''
+      if (!/x_xhh_tokenid=/.test(finalCookie)) {
+        const br = await getWebBrowser().catch((e) => ({ ok: false, message: e.message }))
+        if (br.ok) {
+          const got = await fetchWebToken({ browser: br.browser, cookie: finalCookie, log })
+          if (got.ok) {
+            finalCookie = finalCookie + '; x_xhh_tokenid=' + got.token
+            tokenNote = '（含发帖令牌）'
+          } else {
+            tokenNote = '（缺 x_xhh_tokenid：' + got.reason + '）'
+            log?.warn?.('扫码登录：没能取回 x_xhh_tokenid —— ' + got.reason)
+          }
+        } else {
+          tokenNote = '（缺 x_xhh_tokenid：浏览器起不来）'
+          log?.warn?.('扫码登录：浏览器起不来，无法补取 x_xhh_tokenid —— ' + br.message)
+        }
+      } else {
+        tokenNote = '（含发帖令牌）'
+      }
+      await setCookie(finalCookie)
       if (disposed || qrSession !== session) return { ok: false, state: 'cancelled', message: '模块已关闭' }
-      saveCookie(r.cookie)
+      saveCookie(finalCookie)
       // 保存后如果发生了新风控，不得清除新冷却。
       if (session.riskToken === c.riskToken()) c.clearRisk()
       qrSession = null
-      return { ok: true, state: 'ok', verified: true, nickname: r.nickname, heyboxId: r.heyboxId, message: '扫码登录成功' }
+      return {
+        ok: true, state: 'ok', verified: true, nickname: r.nickname, heyboxId: r.heyboxId,
+        hasToken: /x_xhh_tokenid=/.test(finalCookie),
+        message: '扫码登录成功' + tokenNote,
+      }
     } catch (e) { return { ok: false, state: 'error', message: '查询扫码状态失败：' + e.message } }
     finally {
       // 未验证的候选 Cookie 不写入配置，也不保留在扫码会话中。
