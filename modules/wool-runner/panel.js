@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React
 
-const emptySource = { id: '', name: '', url: 'https://github.com/', branch: 'main', whitelist: '', blacklist: '', dependences: '', extensions: 'js py sh', enabled: true, autoAddCron: true, autoDelCron: false }
+const emptySource = { id: '', name: '', url: 'https://github.com/', branch: 'main', whitelist: '', blacklist: '', dependences: '', extensions: 'js py sh', enabled: true, autoAddCron: true, autoDelCron: true }
 const inputStyle = { width: '100%', boxSizing: 'border-box', marginBottom: 6 }
 const rowStyle = { borderTop: '1px solid var(--ab-border, #e5e7eb)', padding: '10px 0' }
 
@@ -47,7 +47,7 @@ return function Panel({ toast, settings, save }) {
     h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 8 } },
       field('id', '订阅 ID（小写字母/数字/-）'), field('name', '显示名称'), field('url', 'Git 仓库地址（https://… .git）'), field('branch', '分支'), field('extensions', '文件后缀（空格分隔）')),
     field('whitelist', '脚本白名单正则'), field('blacklist', '脚本黑名单正则'), field('dependences', '依赖文件正则（仅记录，不执行）'),
-    boolField('enabled', '启用订阅'), boolField('autoAddCron', '同步后自动写入定时任务', '识别到 Cron 的脚本会立即出现在任务列表；新任务默认停用，需逐条审批后启用'), boolField('autoDelCron', '同步后删除已消失的脚本任务'),
+    boolField('enabled', '启用订阅'), boolField('autoAddCron', '同步后自动写入定时任务', '识别到 Cron 的脚本会立即出现在任务列表；新任务默认停用，需逐条审批后启用'), boolField('autoDelCron', '同步后清理本订阅已消失的脚本任务', '同步即与本订阅对齐；只清理本订阅的任务，不影响其它源'),
     h('div', { className: 'ab-flex' },
       h(ui.Btn, { kind: 'primary', small: true, disabled: busy === 'source-save', onClick: async () => {
         const exists = (data?.subscriptions || []).some((s) => s.id === source.id)
@@ -64,17 +64,18 @@ return function Panel({ toast, settings, save }) {
         h('div', { style: { minWidth: 220, flex: 1 } },
           h('strong', null, s.name), ' ', h('span', { className: 'ab-badge' }, s.id),
           h('div', { className: 'ab-small ab-muted', style: { wordBreak: 'break-all' } }, s.url, ' · ', s.branch),
-          h('div', { className: 'ab-small' }, s.lastSyncStatus === 'ok' ? `已同步 ${s.commit || ''} · ${s.lastSyncMessage}` : s.lastSyncStatus === 'error' ? `同步失败：${s.lastSyncMessage}` : '尚未同步')),
+          h('div', { className: 'ab-small' }, s.lastSyncStatus === 'ok' ? `已同步 ${s.commit || ''} · ${s.lastSyncMessage}` : s.lastSyncStatus === 'offline' ? `⚠️ 离线 ${s.commit || ''} · ${s.lastSyncMessage}` : s.lastSyncStatus === 'error' ? `同步失败：${s.lastSyncMessage}` : '尚未同步')),
         h('div', { className: 'ab-flex' },
           h(ui.Btn, { small: true, kind: 'primary', disabled: busy === 'sync-' + s.id, onClick: async () => {
             const r = await act('sync-' + s.id, '/subscription/sync', { id: s.id })
             if (r?.ok) {
               const parts = [`发现 ${r.scripts ?? 0} 个脚本`]
               if (r.added) parts.push(`新增 ${r.added} 个定时任务`)
+              if (r.removed) parts.push(`清理 ${r.removed} 个失效任务`)
               if (r.updated) parts.push(`更新 ${r.updated} 个 Cron`)
-              if (r.tasks) parts.push(`当前共 ${r.tasks} 个任务`)
-              toast(parts.join('，') + '（新任务默认停用，需审批后启用）', 'ok')
-              if (r.added) setTab('tasks')
+              if (typeof r.tasks === 'number') parts.push(`本订阅现有 ${r.tasks} 个任务`)
+              toast(parts.join('，') + '（新任务默认停用，需审批后启用）', r.offline ? 'err' : 'ok')
+              if (r.added || r.removed) setTab('tasks')
             }
           } }, busy === 'sync-' + s.id ? '同步中…' : '立即同步'),
           h(ui.Btn, { small: true, onClick: () => setSource({ ...s }) }, '切换源 / 编辑'),
