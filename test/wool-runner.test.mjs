@@ -307,3 +307,88 @@ test('同步即对齐：删除本订阅已消失的脚本任务，且不影响�
   assert.equal(second.removed, 0, '用户关闭清理后不得删除任务')
   assert.equal(store.state().tasks.some((x) => x.file === 'jd_c.js'), true)
 })
+
+test('Cron 解析：逗号列表、快捷语法、注释与引号', () => {
+  assert.equal(parseCron('0 6,18 * * *').raw, '0 6,18 * * *')
+  assert.equal(parseCron('@daily').raw, '0 0 * * *')
+  assert.equal(parseCron('@hourly').raw, '0 * * * *')
+  assert.equal(parseCron('1 1 1 1 *; 仅执行一次').raw, '1 1 1 1 *')
+  assert.equal(parseCron('"15 2 * * *"').raw, '15 2 * * *')
+  assert.throws(() => parseCron(''), /不能为空/)
+})
+
+test('Cron 提取：兼容各仓库真实写法', () => {
+  assert.equal(extractCron('// cron */1 * * * * *'), '*/1 * * * * *')
+  assert.equal(extractCron('/* cron 31 11 * * *\n * next */'), '31 11 * * *')
+  assert.equal(extractCron('const cron = "15 2 * * *"'), '15 2 * * *')
+  assert.equal(extractCron('cron:1 1 1 1 *'), '1 1 1 1 *')
+  // 注释末尾带文件名（ql-public 常见）
+  assert.equal(extractCron(' * cron 17 18 * * *  gqft.js'), '17 18 * * *')
+  // 注释末尾带中文说明
+  assert.equal(extractCron(' * cron 0 6,18 * * *  好奇车生活.js'), '0 6,18 * * *')
+  assert.equal(extractCron('# 定时：30 8 * * *'), '30 8 * * *')
+  // 没有 cron 声明时不应误报
+  assert.equal(extractCron('function Env(o,t){class s{}}'), '')
+})
+
+test('重复添加任务不报错：已存在时更新 Cron 并停用待确认', async (t) => {
+  const { execFileSync } = await import('node:child_process')
+  const { writeFileSync } = await import('node:fs')
+  const root = temp(t)
+  const up = join(root, 'up')
+  mkdirSync(up, { recursive: true })
+  const git = (...a) => execFileSync('git', a, { cwd: up, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+  writeFileSync(join(up, 'a.js'), '// cron 1 8 * * *\nconsole.log(1)\n')
+  git('add', '-A'); git('commit', '-qm', 'init')
+
+  const dataDir = join(root, 'data')
+  const store = createStore(dataDir)
+  store.addSubscription({ id: 'src-a', name: 'A', url: 'https://example.com/repo-src-a.git', branch: 'main', extensions: 'js', enabled: true })
+  execFileSync('git', ['clone', '-q', up, join(dataDir, 'repos', 'src-a')], { encoding: 'utf8' })
+  writeFileSync(join(dataDir, 'repos', 'src-a.source'), 'https://example.com/repo-src-a.git#main')
+  const runner = createRunner({ store, log: null, settings: () => ({ enabled: false }) })
+  t.after(() => runner.dispose())
+  await runner.sync('src-a')
+
+  const [task] = store.state().tasks
+  // 模拟面板再次点「添加」：同步后改为更新而非抛错
+  const updated = store.upsertTask({ ...task, cron: '5 9 * * *', enabled: false, revokedReason: 'Cron 已修改，请重新确认后启用' })
+  assert.equal(updated.cron, '5 9 * * *')
+  assert.equal(store.state().tasks.length, 1, '不应产生重复任务')
+  assert.equal(updated.enabled, false)
+})
+
+test('一键开启：逐个授权各自指纹，可再次全部停用', async (t) => {
+  const { execFileSync } = await import('node:child_process')
+  const { writeFileSync } = await import('node:fs')
+  const root = temp(t)
+  const up = join(root, 'up')
+  mkdirSync(up, { recursive: true })
+  const git = (...a) => execFileSync('git', a, { cwd: up, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+  writeFileSync(join(up, 'a.js'), '// cron 1 8 * * *\nconsole.log(1)\n')
+  writeFileSync(join(up, 'b.js'), '// cron 2 8 * * *\nconsole.log(2)\n')
+  git('add', '-A'); git('commit', '-qm', 'init')
+
+  const dataDir = join(root, 'data')
+  const store = createStore(dataDir)
+  store.addSubscription({ id: 'src-a', name: 'A', url: 'https://example.com/repo-src-a.git', branch: 'main', extensions: 'js', enabled: true })
+  execFileSync('git', ['clone', '-q', up, join(dataDir, 'repos', 'src-a')], { encoding: 'utf8' })
+  writeFileSync(join(dataDir, 'repos', 'src-a.source'), 'https://example.com/repo-src-a.git#main')
+  const runner = createRunner({ store, log: null, settings: () => ({ enabled: false }) })
+  t.after(() => runner.dispose())
+  await runner.sync('src-a')
+  assert.equal(store.state().tasks.length, 2)
+
+  for (const item of store.state().tasks) {
+    runner.authorize(item.id)
+    store.upsertTask({ ...store.state().tasks.find((x) => x.id === item.id), enabled: true })
+  }
+  assert.equal(store.state().tasks.every((x) => x.enabled), true)
+  const fps = store.state().tasks.map((x) => x.approval.fingerprint)
+  assert.equal(new Set(fps).size, 2, '每个任务的审批指纹应各不相同')
+
+  for (const x of store.state().tasks) store.upsertTask({ ...x, enabled: false })
+  assert.equal(store.state().tasks.every((x) => !x.enabled && x.approval), true, '停用不丢审批')
+})
