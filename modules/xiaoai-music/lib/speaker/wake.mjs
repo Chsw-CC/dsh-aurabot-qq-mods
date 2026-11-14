@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 export const DEFAULT_WAKE_CONFIG = Object.freeze({
   names: Object.freeze(['小伴', '小半', '小办', '小瓣', '小拌', '小绊', '小扮', '小版']),
   greetingNames: Object.freeze([]),
+  acknowledgement: '我在',
 });
 
 export function validateWakeConfig(value) {
@@ -16,12 +17,16 @@ export function validateWakeConfig(value) {
   if (all.some(v => !/^[\p{L}\p{N}]{2,16}$/u.test(v)) || new Set(all).size !== all.length) {
     throw new Error('称呼需为2至16个文字或数字，且不能重复。');
   }
-  return { names, greetingNames };
+  const reply = value.acknowledgement;
+  if (reply !== undefined && (typeof reply !== 'string' || reply.trim().length > 160)) {
+    throw new Error('称呼应答最多160字。');
+  }
+  return { names, greetingNames, acknowledgement: reply?.trim() || DEFAULT_WAKE_CONFIG.acknowledgement };
 }
 
 export class WakePreference {
   constructor(file) { this.file = file; this.value = validateWakeConfig(DEFAULT_WAKE_CONFIG); this.queue = Promise.resolve(); }
-  get() { return { names: [...this.value.names], greetingNames: [...this.value.greetingNames] }; }
+  get() { return { ...this.value, names: [...this.value.names], greetingNames: [...this.value.greetingNames] }; }
   async open() {
     try {
       const data = JSON.parse(await readFile(this.file, 'utf8'));
@@ -30,10 +35,17 @@ export class WakePreference {
     } catch (error) { if (error.code !== 'ENOENT') throw new Error('家庭称呼设置不可读，未启用该配置。'); }
     return this.get();
   }
-  save(value) {
-    let next;
-    try { next = validateWakeConfig(value); } catch (error) { return Promise.reject(error); }
+  save(value, expected) {
+    let next, baseline;
+    try {
+      next = validateWakeConfig(value);
+      if (expected !== undefined) baseline = JSON.stringify(validateWakeConfig(expected));
+    } catch (error) { return Promise.reject(error); }
     const operation = this.queue.then(async () => {
+      if (baseline !== undefined && baseline !== JSON.stringify(this.value)) {
+        throw Object.assign(new Error('称呼设置已更新，请核对后再保存。'), { code: 'WAKE_SETTINGS_CHANGED' });
+      }
+      if (value.acknowledgement === undefined) next.acknowledgement = this.value.acknowledgement;
       const temporary = this.file + '.tmp-' + randomUUID();
       try {
         await mkdir(dirname(this.file), { recursive: true });

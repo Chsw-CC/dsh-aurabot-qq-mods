@@ -1,6 +1,8 @@
 import { modelFailureMessage } from './model.mjs';
 import { historyFailure } from './mina.mjs';
-import { matchWakePrefix } from './wake.mjs';
+import { DEFAULT_WAKE_CONFIG, matchWakePrefix } from './wake.mjs';
+
+export const WAKE_ACK_LEAD_IN_MS = 750;
 
 export class SpeakerProbe {
   constructor({ speaker, cursor, ask, familyAction, prepareAnswer, playAnswer,
@@ -52,8 +54,8 @@ export class SpeakerProbe {
   // Device calls stay ordered: an in-flight play is always followed by stop.
   act(action, text = '', at = this.now()) {
     if (!this.active()) return Promise.reject(new Error('请先开启小爱入口。'));
-    if (['stop', 'pause', 'cancel-answer', 'play-test', 'next', 'play-song', 'play-playlist', 'shuffle-playlist', 'ask-test'].includes(action)) this.invalidate();
-    if (action === 'ask-test') this.answerSince = at;
+    if (['stop', 'pause', 'cancel-answer', 'play-test', 'next', 'play-song', 'play-playlist', 'shuffle-playlist', 'ask-test', 'wake-ack'].includes(action)) this.invalidate();
+    if (action === 'ask-test' || action === 'wake-ack') this.answerSince = at;
     if (action === 'cancel-answer') {
       this.stats.lastAction = 'cancel-answer';
       this.stats.lastError = '';
@@ -71,7 +73,7 @@ export class SpeakerProbe {
       this.stats.lastError = '';
       return result;
     });
-    if (action === 'ask-test') return this.answer(text, ticket);
+    if (action === 'ask-test' || action === 'wake-ack') return this.answer(text, ticket, action);
     return this.enqueue(action, text, ticket);
   }
   enqueue(action, text, ticket) {
@@ -79,12 +81,12 @@ export class SpeakerProbe {
     this.pending = operation.catch(() => {});
     return operation;
   }
-  async answer(text, ticket) {
+  async answer(text, ticket, action) {
     this.answersPending++;
     let prepared;
     const isCurrent = () => this.active() && ticket === this.generation;
     try {
-      const answer = await this.ask(text || '一加一等于几？请只回答一句。', { isCurrent });
+      const answer = action === 'wake-ack' ? text : await this.ask(text || '一加一等于几？请只回答一句。', { isCurrent });
       if (!isCurrent()) return { cancelled: true };
       if (answer && typeof answer === 'object' && answer.suppressSpeech === true) {
         this.stats.lastAction = 'ask-test';
@@ -93,9 +95,10 @@ export class SpeakerProbe {
       }
       if (typeof answer !== 'string' || !answer.trim()) throw new Error();
       const spoken = answer.trim().slice(0, 160);
-      prepared = this.prepareAnswer ? await this.prepareAnswer(spoken) : spoken;
+      const leadInMs = action === 'wake-ack' ? WAKE_ACK_LEAD_IN_MS : 0;
+      prepared = this.prepareAnswer ? await this.prepareAnswer(spoken, { leadInMs }) : spoken;
       if (!isCurrent()) return { cancelled: true };
-      return await this.enqueue('say-answer', prepared, ticket);
+      return await this.enqueue(action === 'wake-ack' ? 'say-ack' : 'say-answer', prepared, ticket);
     } catch (error) {
       if (!isCurrent()) return { cancelled: true };
       this.stats.failures++;
@@ -115,10 +118,10 @@ export class SpeakerProbe {
       else if (action === 'pause') result = await this.speaker.operate('pause');
       else if (action === 'resume') result = await this.speaker.operate('play');
       else if (action === 'stop') result = await this.speaker.operate('stop');
-      else if (action === 'say-answer') result = this.playAnswer
+      else if (action === 'say-answer' || action === 'say-ack') result = this.playAnswer
         ? await this.playAnswer(text, { isCurrent: () => this.active() && ticket === this.generation }) : await this.speaker.say(text);
       else throw new Error('不支持的测试操作。');
-      this.stats.lastAction = action === 'say-answer' ? 'ask-test' : action;
+      this.stats.lastAction = action === 'say-answer' ? 'ask-test' : action === 'say-ack' ? 'wake-ack' : action;
       this.stats.lastError = '';
       return result;
     } catch {
@@ -191,7 +194,8 @@ export function parseProbeCommand(query, { sessionRouting = false, wakeConfig } 
       if (consumed === prefix[0].length) break;
     }
     const spoken = raw.slice(offset).replace(/^[\s，。！？、,.!?：:]+/, '').replace(/^[啊呀][\s，。！？、,.!?：:]*/, '').trim();
-    return { action: 'ask-test', text: spoken || '请简短应一声。' };
+    if (spoken) return { action: 'ask-test', text: spoken };
+    return { action: 'wake-ack', text: wakeConfig?.acknowledgement?.trim() || DEFAULT_WAKE_CONFIG.acknowledgement };
   }
   if (/^(?:继续(?:播放|放|播|唱)?|接着(?:播放|放|播|唱)|恢复(?:播放)?)$/.test(control)) return { action: 'resume' };
   if (/^(?:下一首(?:歌)?|下一曲|换一首(?:歌)?|换首歌|切歌)$/.test(control)) return { action: 'next' };

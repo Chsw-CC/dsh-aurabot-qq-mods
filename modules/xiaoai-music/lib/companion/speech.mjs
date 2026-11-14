@@ -12,18 +12,21 @@ export function createDialogueSpeech(api, { workRoot, run = runSpeechProcess, fe
   platform = process.platform, synthesize, probeDuration } = {}) {
   const root = workRoot ? resolve(workRoot) : null;
   const synth = synthesize || createIsolatedTTS(api, { run, fetchImpl, platform });
+  function ffmpegFor(songConfig) {
+    const { pathsOf, defaultRoot } = api.lib('song/studio.js');
+    return pathsOf(songConfig.root || defaultRoot()).ffmpeg;
+  }
   async function durationOf(file, songConfig) {
     try {
       if (probeDuration) return await probeDuration(file);
-      const { pathsOf, defaultRoot } = api.lib('song/studio.js');
-      const paths = pathsOf(songConfig.root || defaultRoot());
-      const probe = join(dirname(paths.ffmpeg), platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+      const ffmpeg = ffmpegFor(songConfig);
+      const probe = join(dirname(ffmpeg), platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
       let hasProbe = false;
       try { hasProbe = (await stat(probe)).isFile(); } catch {}
       if (!hasProbe) {
         // AuraBot's installed song studio also reads metadata through ffmpeg.
         // The executor returns only the parsed numeric Duration, never stderr.
-        const result = await run(paths.ffmpeg, ['-hide_banner', '-i', file], { timeoutMs: 30000, readDuration: true });
+        const result = await run(ffmpeg, ['-hide_banner', '-i', file], { timeoutMs: 30000, readDuration: true });
         if (![0, 1].includes(result.code)) throw new Error();
         return result.duration;
       }
@@ -33,7 +36,7 @@ export function createDialogueSpeech(api, { workRoot, run = runSpeechProcess, fe
     } catch { throw new DialogueSpeechError('DIALOGUE_AUDIO_INVALID'); }
   }
   return {
-    async prepare(text) {
+    async prepare(text, { leadInMs = 0 } = {}) {
       const clean = String(text || '').trim();
       if (!clean) throw new DialogueSpeechError('DIALOGUE_VOICE_CONFIG');
       if (!root) throw new DialogueSpeechError('DIALOGUE_WORK_FAILED');
@@ -83,6 +86,13 @@ export function createDialogueSpeech(api, { workRoot, run = runSpeechProcess, fe
           file = await realpath(file);
           if (!within(dir, file) || (await stat(file)).size < 400) throw new Error();
         } catch { throw new DialogueSpeechError('DIALOGUE_AUDIO_INVALID'); }
+        if (leadInMs > 0) {
+          const padded = join(dir, 'leadin.wav');
+          const result = await run(ffmpegFor(songConfig), ['-nostdin', '-hide_banner', '-loglevel', 'error',
+            '-i', file, '-af', 'adelay=' + leadInMs + ':all=1', '-c:a', 'pcm_s16le', padded], { timeoutMs: 30000 });
+          if (result.code !== 0 || (await stat(padded)).size < 400) throw new DialogueSpeechError('DIALOGUE_AUDIO_INVALID');
+          file = padded;
+        }
         const duration = await durationOf(file, songConfig);
         if (!Number.isFinite(duration) || duration <= 0) throw new DialogueSpeechError('DIALOGUE_AUDIO_INVALID');
         return { file, duration, requestedEngine: String(voice.engine || 'auto'), engine: result.engine,

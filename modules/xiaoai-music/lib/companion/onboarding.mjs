@@ -52,6 +52,7 @@ export async function setupOnboarding(api, setupRuntime, { localPost, localReque
   }
   let complete = Boolean(root) && api.settings().setupComplete !== false;
   let runtime, starting, closed = false, wakeSaved = false, verifiedConnection = '';
+  let connectionCheck = 0;
   const signature = () => JSON.stringify([api.settings().networkInterface || '', api.settings().speakerDevice || '']);
   const blocked = () => ({ ok: false, code: 'XIAOAI_SETUP_REQUIRED', message: '请先完成首次配置，再使用此功能。' });
   const view = () => ({ resourceRoot: root, storageReady: Boolean(runtime), complete,
@@ -60,7 +61,7 @@ export async function setupOnboarding(api, setupRuntime, { localPost, localReque
   const status = () => ({ ...(runtime?.status() || { ok: true, connected: false, songs: { entries: [], jobs: [] }, playlists: [],
     playback: { phase: 'idle' }, listener: { enabled: false }, login: { phase: 'idle' }, storage: { root } }), onboarding: view() });
   const setupRoutes = new Set(['/status', '/settings/options', '/settings/save', '/speaker/check', '/speaker/login/start',
-    '/speaker/login/select', '/speaker/login/qr', '/speaker/login', '/speaker/wake', '/speaker/wake/save', '/speaker/wake/suggest', '/capabilities']);
+    '/speaker/login/select', '/speaker/login/qr', '/speaker/login', '/speaker/wake', '/speaker/wake/audio', '/speaker/wake/save', '/speaker/wake/suggest', '/capabilities']);
   api.onDispose(() => { closed = true; });
   const start = async () => {
     if (runtime) return runtime;
@@ -71,8 +72,18 @@ export async function setupOnboarding(api, setupRuntime, { localPost, localReque
       const wrapped = { ...api, settings: () => ({ ...api.settings(), resourceRoot: root }),
         route: (path, handler) => api.route(path, async (...args) => {
           if (!complete && !setupRoutes.has(path)) return blocked();
+          if (path === '/speaker/check' && !complete) {
+            const check = ++connectionCheck;
+            const checkedSettings = signature();
+            verifiedConnection = '';
+            const result = await handler(...args);
+            if (check !== connectionCheck || checkedSettings !== signature()) {
+              return { ok: false, message: '连接检查期间设置已变更或开始了新一轮检查，请查看最新结果。' };
+            }
+            if (result?.ok && result.historyReadable) verifiedConnection = checkedSettings;
+            return result;
+          }
           const result = await handler(...args);
-          if (path === '/speaker/check' && result?.ok && result.historyReadable) verifiedConnection = signature();
           if (path === '/speaker/wake/save' && result?.ok && result.wake) wakeSaved = true;
           return result?.storage || path === '/status' ? { ...result, onboarding: view() } : result;
         }),
@@ -86,6 +97,8 @@ export async function setupOnboarding(api, setupRuntime, { localPost, localReque
     try { return await starting; } finally { starting = null; }
   };
   api.route('/status', async () => status());
+  api.route('/speaker/listener/start', async () => blocked());
+  api.route('/speaker/arm', async () => blocked());
   api.route('/onboarding/networks', async req => {
     if (!localRequest(req) || req.method !== 'GET') return { ok: false, message: '需要本机访问。' };
     return { ok: true, networks: Object.entries(networkInterfaces()).flatMap(([name, addresses]) => {

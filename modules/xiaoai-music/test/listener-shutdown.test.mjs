@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
-import { SpeakerProbe, matchSavedSongSources } from '../lib/speaker/probe.mjs';
+import { SpeakerProbe, matchSavedSongSources, WAKE_ACK_LEAD_IN_MS } from '../lib/speaker/probe.mjs';
 
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -65,7 +65,7 @@ async function fixture() {
     './lib/speaker/cursor.mjs': { VoiceCursor: Cursor },
     './lib/speaker/windows.mjs': { loadWindowsCredentials: async () => ({}), saveWindowsCredentials: async () => {} },
     './lib/speaker/mina.mjs': { connectSpeaker: async () => { connections++; return speaker; }, verifySpeakerLogin: async () => {}, historyFailure: () => ({}) },
-    './lib/speaker/probe.mjs': { SpeakerProbe, matchSavedSongSources },
+    './lib/speaker/probe.mjs': { SpeakerProbe, matchSavedSongSources, WAKE_ACK_LEAD_IN_MS },
     './lib/speaker/model.mjs': { askProbeModel: async () => '', MODEL_TOKEN_BUDGET: 120, MODEL_TEST_QUESTION: '隔离' },
     './lib/speaker/login.mjs': { SpeakerLogin: Login },
     './lib/speaker/transport.mjs': { authObservation: () => ({}), completeServiceLogin: async () => {} },
@@ -74,6 +74,8 @@ async function fixture() {
     './lib/songs/playback.mjs': { FamilyPlayback: Playback }, './lib/songs/playlists.mjs': { SongPlaylists: Lists },
     './lib/songs/runtime.mjs': { createFamilySongs: async () => ({ library }) },
     './lib/songs/storage.mjs': { resourcePaths: () => ({ cursorFile: join(root, 'cursor.json'), listenerFile: join(root, 'listener.json') }) },
+    './lib/companion/speech.mjs': { createDialogueSpeech: () => ({}) },
+    './lib/companion/wake-audio.mjs': { createWakeAudio: () => ({ close: async () => {} }) },
     './lib/companion/runtime.mjs': { companionFailure: () => ({}), createFamilyCompanion: async () => service },
     './lib/speaker/wake-ai.mjs': { suggestWakeNames: async () => ({ ok: true }) },
     './lib/speaker/wake.mjs': { WakePreference: class { async open() {} get() { return undefined; } } },
