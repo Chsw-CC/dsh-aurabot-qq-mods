@@ -394,7 +394,7 @@ const MIME = {
 export default {
   id: 'pocket',
   name: '口袋aurabot',
-  version: '1.4.2',
+  version: '1.4.3',
   api: 1,
   description: '把她的对话流接进手机 app：app 消息走她原生流程（记忆、心情、表情包、语音、模组全在），回复与主动搭话实时推回手机；记忆与 QQ 端共用一套。',
   category: 'platform',
@@ -404,7 +404,7 @@ export default {
   minPluginVersion: '1.2.0',
   requires: [],
   capabilities: ['filesystem', 'plugin-config', 'plugin-internals', 'network'],
-  defaults: { enabled: false, token: '', port: DEFAULT_PORT, tone: 'ocean' },
+  defaults: { enabled: false, token: '', port: DEFAULT_PORT, tone: 'ocean', tunnelAuto: false },
   panel: 'panel.js',
   settings: [
     { key: 'enabled', label: '启用手机接口', type: 'switch', hint: '关掉后 app 连不上（QQ 端不受影响）' },
@@ -606,7 +606,7 @@ export default {
         // 只给探活需要的最小信息：人格名/主人名等不算敏感但也没必要出现在免鉴权接口里
         ok: true,
         app: 'pocket',
-        version: '1.4.2',
+        version: '1.4.3',
         tone: tone(),
       }),
       state: () => {
@@ -825,16 +825,45 @@ export default {
 
     function tunnelInfo() {
       const saved = readTunnelFile()
-      if (!tunnelProc && !tunnelUrl && saved.pid && pidAlive(saved.pid)) {
-        tunnelUrl = String(saved.url || '')
-      }
+      const alive = cfRunning()
+      // 地址来源优先级：本进程抓到的 → pid 存活时存盘的 → 外部启动时写进日志的
+      let url = tunnelUrl || ''
+      if (!url && saved.pid && pidAlive(saved.pid)) url = String(saved.url || '')
+      if (!url && alive) url = urlFromLog()
+      if (url) tunnelUrl = url
       return {
         ok: true,
         installed: !!findCloudflared(),
-        running: !!tunnelProc || (!!saved.pid && pidAlive(saved.pid) && !!tunnelUrl),
-        url: tunnelUrl || (saved.pid && pidAlive(saved.pid) ? String(saved.url || '') : ''),
+        running: !!tunnelProc || (alive && !!url),
+        url: alive ? url : '',
         error: tunnelErr,
-        pid: tunnelProc?.pid || (pidAlive(saved.pid) ? saved.pid : 0),
+        pid: tunnelProc?.pid || saved.pid || 0,
+        auto: s().tunnelAuto === true,
+      }
+    }
+
+    // cloudflared 是不是在跑（不管是谁拉起来的：模组、面板按钮、还是用户自己开的）
+    function cfRunning() {
+      try {
+        const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq cloudflared.exe', '/FO', 'CSV', '/NH'], {
+          encoding: 'utf8',
+          windowsHide: true,
+          timeout: 5000,
+        })
+        return /cloudflared\.exe/i.test(String(out))
+      } catch {
+        return false
+      }
+    }
+
+    // 外部启动的隧道把地址打在 tunnel.log 里，退而求其次从日志尾部捞一次
+    function urlFromLog() {
+      try {
+        const s = readFileSync(join(api.dataDir(), 'tunnel.log'), 'utf8')
+        const all = s.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/gi) || []
+        return all.length ? all[all.length - 1] : ''
+      } catch {
+        return ''
       }
     }
 
@@ -851,7 +880,17 @@ export default {
       }
       tunnelUrl = ''
       tunnelErr = ''
-      const p = spawn(exe, ['tunnel', '--url', `http://127.0.0.1:${port()}`, '--no-autoupdate'], { windowsHide: true })
+      // detached + unref：DSH 退出/模组热重载都不带走隧道，重开面板照样能认出来
+      const p = spawn(exe, ['tunnel', '--url', `http://127.0.0.1:${port()}`, '--no-autoupdate'], {
+        windowsHide: true,
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      try {
+        p.unref()
+        p.stdout?.unref?.()
+        p.stderr?.unref?.()
+      } catch {}
       tunnelProc = p
       const grab = (buf) => {
         const m = String(buf).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i)
@@ -886,7 +925,8 @@ export default {
 
     function tunnelStop() {
       const saved = readTunnelFile()
-      const targets = new Set([tunnelProc?.pid, saved.pid].filter(Boolean))
+      const targets = new Set([tunnelProc?.pid].filter(Boolean))
+      if (saved.pid && pidAlive(saved.pid)) targets.add(saved.pid)
       tunnelProc = null
       tunnelUrl = ''
       tunnelErr = ''
@@ -894,6 +934,13 @@ export default {
       for (const pid of targets) {
         try {
           process.kill(Number(pid))
+          killed++
+        } catch {}
+      }
+      // 外部（或历史遗留）拉起的隧道没有可靠 pid，按镜像名收掉；这个 exe 只为本模组服务
+      if (!killed && cfRunning()) {
+        try {
+          execFileSync('taskkill', ['/IM', 'cloudflared.exe', '/F'], { windowsHide: true, timeout: 8000 })
           killed++
         } catch {}
       }
@@ -1050,6 +1097,16 @@ export default {
 
       const route = p.slice(5)
       try {
+        // 隧道启停：面板点按钮、或本地脚本 / 另一台机器都能叫（同一套密钥鉴权）
+        if (route === 'tunnel') {
+          if (req.method === 'POST') {
+            const b = await readBody(req)
+            if (b.action === 'start') return json(res, 200, await tunnelStart())
+            if (b.action === 'stop') return json(res, 200, tunnelStop())
+            return json(res, 200, tunnelInfo())
+          }
+          return json(res, 200, tunnelInfo())
+        }
         if (route === 'state') return json(res, 200, ops.state())
         if (route === 'events') return json(res, 200, ops.events(url.searchParams.get('after')))
         if (route === 'history') return json(res, 200, ops.history(Number(url.searchParams.get('days') || 3) || 3))
@@ -1124,6 +1181,12 @@ export default {
           const t = tokenOf()
           // 日志脱敏：只露前两位，别把配对密钥写进日志
           api.log.info(`口袋已开：http://${addrs[0] || '127.0.0.1'}:${p}（密钥 ${t ? t.slice(0, 2) + '****' : '未生成'}，完整密钥见面板）`)
+          // 开了「隧道自动启动」时，服务一起来就把外网通道也拉起来（DSH 重启后自动恢复）
+          if (s().tunnelAuto === true) {
+            setTimeout(() => {
+              tunnelStart().catch((e) => api.log.warn('隧道自启失败：', String(e?.message || e)))
+            }, 1500)
+          }
         })
       }
       try {

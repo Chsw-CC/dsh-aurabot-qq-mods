@@ -57,6 +57,8 @@ DSH 面板那个端口要登录态，手机拿不到。所以模组自带一个�
    - 电脑装 [cloudflared](https://github.com/cloudflare/cloudflared/releases/latest)（下载 `cloudflared-windows-amd64.exe` 放到任意位置，如 `C:\Users\你\auratools\bin\`；面板会自动找到，找不到就在模块设置里把完整路径填进「cloudflaredPath」）
    - 面板「口袋aurabot」页点「启动隧道」，几秒后得到一个 `https://xxx.trycloudflare.com`，点「复制隧道地址」填进 app
    - https 是真安全上下文：手机浏览器直接开这个网址也能用，且 `getUserMedia` 可用（语音条不依赖 app 原生录音）
+   - 隧道是**脱离 DSH 的独立进程**（`detached` + `unref`）：DSH 退出、模组热重载都不带走它，重开面板照样能认出地址、能停；外部手工拉起的 cloudflared 也能被面板识别（按镜像名 + 日志里的地址）
+   - 想让它在服务启动时自动恢复：设置里把 `tunnelAuto` 打开；脚本化启停用接口 `GET /api/tunnel` 看状态、`POST /api/tunnel {"action":"start"|"stop"}`（同一套密钥鉴权），面板不在手上时也能操作
    - 临时域名每次重启会变，重启后重新点一次「启动隧道」、把新地址更新到 app；固定域名要绑自己的域名到 Cloudflare（免费）
 3. **Tailscale（公司网络封端口、上面两条都走不通时的兜底）**
    - 电脑和手机都装，登同一账号，电脑会多出 `100.x.x.x`（模组会自动识别这个网段）
