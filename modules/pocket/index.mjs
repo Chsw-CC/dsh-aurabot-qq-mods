@@ -9,14 +9,15 @@
 // 安全边界：接口全要配对密钥；消息只能注入主人私聊，不能发给别人、不能操作群。
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { join, extname, normalize, sep } from 'node:path'
 import { homedir, networkInterfaces, tmpdir } from 'node:os'
 import { createServer } from 'node:http'
 import { spawn, execFileSync } from 'node:child_process'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
+const VERSION = '1.4.7'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -351,11 +352,17 @@ function petInteract(dir, action, foodId, host) {
 
 // ---------- 私网地址收集（配对用） ----------
 
+// 虚拟网卡（VPN 客户端、Docker、VM 那类）拿到的地址手机根本连不上，
+// 混进列表里只会让人一条条白试。Tailscale 例外：它就是拿来打洞的。
+const VIRTUAL_NIC = /(docker|vethernet|vmware|virtualbox|hyper-?v|\bwsl\b|wintun|clash|mihomo|meta|zerotier|radmin|hamachi|npcap|bluetooth|蓝牙|loopback|vpn)/i
+const nicUsable = (name) => /tailscale/i.test(String(name || '')) || !VIRTUAL_NIC.test(String(name || ''))
+
 function lanAddresses() {
   const out = []
   const v6 = []
   try {
-    for (const list of Object.values(networkInterfaces())) {
+    for (const [name, list] of Object.entries(networkInterfaces())) {
+      if (!nicUsable(name)) continue
       for (const ni of list || []) {
         if (ni.internal) continue
         if (ni.family === 'IPv4') {
@@ -394,7 +401,7 @@ const MIME = {
 export default {
   id: 'pocket',
   name: '口袋aurabot',
-  version: '1.4.4',
+  version: VERSION,
   api: 1,
   description: '把她的对话流接进手机 app：app 消息走她原生流程（记忆、心情、表情包、语音、模组全在），回复与主动搭话实时推回手机；记忆与 QQ 端共用一套。',
   category: 'platform',
@@ -403,7 +410,7 @@ export default {
   license: 'MIT',
   minPluginVersion: '1.2.0',
   requires: [],
-  capabilities: ['filesystem', 'plugin-config', 'plugin-internals', 'network'],
+  capabilities: ['filesystem', 'plugin-config', 'plugin-internals', 'network', 'process'],
   defaults: { enabled: false, token: '', port: DEFAULT_PORT, tone: 'ocean', tunnelAuto: false },
   panel: 'panel.js',
   settings: [
@@ -418,6 +425,50 @@ export default {
     // 界面放在 assets/app（市场规范只允许 lib/test/assets/docs 四个子目录）
     const base = api.dir || dir
     const appDir = existsSync(join(base, 'assets', 'app', 'index.html')) ? join(base, 'assets', 'app') : join(base, 'app')
+    // 启动流水账：服务没起来时，「面板说不清为什么」的部分在这里能查到（只留最后 40 行左右）
+    const bootLogFile = join(dir, 'boot.log')
+    const bootLog = (msg) => {
+      try {
+        if (existsSync(bootLogFile) && statSync(bootLogFile).size > 32 * 1024) writeFileSync(bootLogFile, '')
+        appendFileSync(bootLogFile, `${new Date().toISOString()} ${msg}\n`)
+      } catch {}
+    }
+    const bootTail = (n = 8) => {
+      try {
+        return readFileSync(bootLogFile, 'utf8').trim().split('\n').slice(-n)
+      } catch {
+        return []
+      }
+    }
+    bootLog(`模块加载 v${VERSION}｜dir=${base}｜app=${appDir}`)
+
+    // ---- 「代码换了但没被重载」的检测 ----
+    // DSH 对服务类模块的热重载不总生效：磁盘上的文件已经变了，内存里跑的还是旧那份，
+    // 表现就是「改完没反应」「手动重启服务也没用」。这里用「本文件的 mtime 是否晚于本次 setup」
+    // 判断，面板据此直接叫用户重启，而不是让人对着旧界面猜。
+    const loadedAt = Date.now()
+    const selfFile = (() => {
+      try {
+        return fileURLToPath(import.meta.url)
+      } catch {
+        return join(base, 'index.mjs')
+      }
+    })()
+    const staleInfo = () => {
+      const out = { stale: false, running: VERSION, disk: VERSION, changedAt: 0 }
+      try {
+        const st = statSync(selfFile)
+        out.changedAt = Math.round(st.mtimeMs)
+        // +2s 容忍：热重载扫描和 setup 之间本来就有几百毫秒差
+        if (st.mtimeMs > loadedAt + 2000) out.stale = true
+      } catch {}
+      try {
+        const j = JSON.parse(readFileSync(join(base, 'module.json'), 'utf8'))
+        if (j && j.version) out.disk = String(j.version)
+        if (out.disk !== VERSION) out.stale = true
+      } catch {}
+      return out
+    }
     const cfg = () => api.config()
     const s = () => api.settings()
     const on = () => s().enabled === true // 默认关，面板里手动开
@@ -606,7 +657,7 @@ export default {
         // 只给探活需要的最小信息：人格名/主人名等不算敏感但也没必要出现在免鉴权接口里
         ok: true,
         app: 'pocket',
-        version: '1.4.4',
+        version: VERSION,
         tone: tone(),
       }),
       state: () => {
@@ -950,7 +1001,16 @@ export default {
       return { ok: true, message: killed ? '隧道已停' : '本来就没在跑' }
     }
 
-    api.route('/net-info', () => ({ ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo() }))
+    api.route('/net-info', () => {
+      // 打开面板就顺手自愈一次：开关开着但没在监听（热重载失败、端口被占后进程退出）时重新起
+      if (on() && !server) start()
+      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo() }
+    })
+    api.route('/service', async (req) => {
+      const b = await bodyOf(req).catch(() => ({}))
+      if (b.action === 'restart') return restart()
+      return svcInfo()
+    })
     api.route('/tunnel', async (req) => {
       const b = await bodyOf(req).catch(() => ({}))
       if (b.action === 'start') return tunnelStart()
@@ -1010,6 +1070,8 @@ export default {
     let server = null
     let listening = 0
     let listenErr = ''
+    let ipv4Only = false // 双栈监听起来时退回只监听 IPv4（系统禁了 IPv6 的机器上很常见）
+    let retryTimer = null // 端口被上一实例短暂占用时的重试定时器
 
     function send(res, code, body, type, extra) {
       const buf = Buffer.isBuffer(body) ? body : Buffer.from(String(body ?? ''))
@@ -1153,10 +1215,19 @@ export default {
       }
     }
 
-    function start() {
+    function start(attempt = 0) {
       if (server) return
       const base = port()
-      const tryListen = (p, left) => {
+      const entry = join(appDir, 'index.html')
+      bootLog(`start 尝试#${attempt}：port=${base} app=${appDir}`)
+      // 前端文件缺失时不能静默跳过：面板会以为「端口在、服务开着」，其实什么都没监听
+      if (!existsSync(entry)) {
+        listenErr = `前端文件缺失（${entry}），模块没装完整，服务没启动`
+        api.log.error('口袋：' + listenErr)
+        bootLog('失败：' + listenErr)
+        return
+      }
+      const tryListen = (p, left, host) => {
         const srv = createServer((req, res) => {
           Promise.resolve(handle(req, res)).catch((e) => {
             try {
@@ -1166,28 +1237,52 @@ export default {
         })
         srv.on('error', (e) => {
           listenErr = String(e?.message || e)
+          const code = e?.code || ''
           try {
             srv.close()
           } catch {}
-          if (e?.code === 'EADDRINUSE' && left > 0) return tryListen(p + 1, left - 1)
+          // 端口被占：往上找空位
+          if (code === 'EADDRINUSE' && left > 0) return tryListen(p + 1, left - 1, host)
+          // 双栈监听起来又失败（系统或网卡禁了 IPv6）：退回只监听 IPv4，先让服务能用
+          if (!host && (code === 'EAFNOSUPPORT' || code === 'EADDRNOTAVAIL' || code === 'EINVAL')) {
+            api.log.warn(`口袋：IPv6 双栈监听失败（${code}），改为只监听 IPv4`)
+            ipv4Only = true
+            return tryListen(p, left, '0.0.0.0')
+          }
           api.log.warn(`口袋服务起不来（端口 ${p}）：${listenErr}`)
+          bootLog(`listen ${p} 失败：${code || ''} ${listenErr}`)
+          // 上一个实例还没退干净时端口会短暂占用：隔几秒再试，最多 3 次，别让人手动重启模块
+          if (attempt < 3) {
+            if (retryTimer) clearTimeout(retryTimer)
+            retryTimer = setTimeout(() => {
+              retryTimer = null
+              start(attempt + 1)
+            }, 3000 * (attempt + 1))
+            retryTimer.unref?.()
+          }
         })
         // 不指定 host = 监听 ::（IPv6 双栈），这样 IPv4 和公网 IPv6 都能进 —— 在外 4G/5G 直连靠的就是 IPv6
-        srv.listen(p, () => {
+        const done = () => {
           server = srv
           listening = p
           listenErr = ''
           const addrs = lanAddresses()
           const t = tokenOf()
           // 日志脱敏：只露前两位，别把配对密钥写进日志
-          api.log.info(`口袋已开：http://${addrs[0] || '127.0.0.1'}:${p}（密钥 ${t ? t.slice(0, 2) + '****' : '未生成'}，完整密钥见面板）`)
+          api.log.info(
+            `口袋已开：http://${addrs[0] || '127.0.0.1'}:${p}${ipv4Only ? '（仅 IPv4）' : ''}（密钥 ${t ? t.slice(0, 2) + '****' : '未生成'}，完整密钥见面板）`,
+          )
+          if (p !== base) api.log.warn(`口袋：端口 ${base} 被占用，实际监听 ${p}——手机要填 ${p}`)
+          bootLog(`监听成功 ${p}${ipv4Only ? '（仅 IPv4）' : ''}${p !== base ? `（${base} 被占用）` : ''}`)
           // 开了「隧道自动启动」时，服务一起来就把外网通道也拉起来（DSH 重启后自动恢复）
           if (s().tunnelAuto === true) {
             setTimeout(() => {
               tunnelStart().catch((e) => api.log.warn('隧道自启失败：', String(e?.message || e)))
             }, 1500)
           }
-        })
+        }
+        if (host) srv.listen(p, host, done)
+        else srv.listen(p, done)
       }
       try {
         tryListen(base, 6)
@@ -1197,16 +1292,43 @@ export default {
       }
     }
 
-    // app 界面在才开服务（仓库 CI 里没带 app 目录，不占端口）
-    if (on() && existsSync(join(appDir, 'index.html'))) start()
+    /** 服务真实状态：面板据此区分「根本没起来」和「起来了但端口漂了」 */
+    function svcInfo() {
+      return { started: !!server, listening: listening || 0, wantPort: port(), ipv4Only, error: listenErr, tail: bootTail(6) }
+    }
+
+    /** 重启监听：端口被别人占、或模块热重载后没起来时，面板点一下就能自愈，不用关整个模块 */
+    function restart() {
+      bootLog('手动重启服务')
+      if (retryTimer) {
+        clearTimeout(retryTimer)
+        retryTimer = null
+      }
+      try {
+        server?.close()
+      } catch {}
+      server = null
+      listening = 0
+      listenErr = ''
+      ipv4Only = false
+      start()
+      return { ok: true, started: !!server, listening, wantPort: port(), error: listenErr }
+    }
+
+    // 开关开着就起服务；前端文件缺失由 start() 内部置 listenErr（面板能看见，不再静默失败）
+    if (on()) start()
     api.onDispose(() => {
+      if (retryTimer) {
+        clearTimeout(retryTimer)
+        retryTimer = null
+      }
       try {
         server?.close()
       } catch {}
       server = null
     })
 
-    // 面板要的信息
+    /** 面板要的信息 */
     hooks.__panel = () => ({
       enabled: on(),
       port: listening || port(),
@@ -1215,6 +1337,7 @@ export default {
       tone: tone(),
       tones: TONES,
       error: listenErr,
+      ...svcInfo(),
     })
 
     hooks.__test = { inject, voiceNote, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime }
