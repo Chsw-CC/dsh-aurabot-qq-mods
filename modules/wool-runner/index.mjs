@@ -8,7 +8,7 @@ import { parseCron } from './lib/cron.mjs'
 export default {
   id: 'wool-runner',
   name: '薅羊毛任务中心',
-  version: '1.0.0',
+  version: '1.0.1',
   api: 1,
   description: '参考青龙的订阅、环境变量、Cron 任务与日志管理，内置 jdpro、smzdm_script、QLScriptPublic 源，支持京东扫码获取 JD_COOKIE',
   panel: 'panel.js',
